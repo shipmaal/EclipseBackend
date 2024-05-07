@@ -1,0 +1,18 @@
+!    -*- f90 -*-
+! Note: the context of this file is case sensitive.
+
+python module elp82b ! in 
+    interface  ! in :elp82b
+        subroutine elp82b(tjj,prec,nulog,r,ierr) ! in :elp82b:elp82b.f
+            double precision, intent(in) :: tjj
+            double precision, intent(in) :: prec
+            integer, intent(in) :: nulog
+            double precision, dimension(3), intent(out) :: r
+            integer, intent(out) :: ierr
+        end subroutine elp82b
+    end interface 
+end python module elp82b
+
+! This file was auto-generated with f2py (version:1.26.4).
+! See:
+! https://web.archive.org/web/20140822061353/http://cens.ioc.ee/projects/f2py2e

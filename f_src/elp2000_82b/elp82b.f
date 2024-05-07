@@ -181,10 +181,11 @@
       x=coef(1)+tgv*(delnp-am*delnu)+coef(3)*delg+coef(4)*dele+
      .coef(5)*delep
       y=0.d0
-      do 220 k=1,5
-      do 220 i=1,4
-      y=y+ilu(i)*del(i,k)*t(k)
-220   continue
+      do k=1,5
+            do i=1,4
+                y=y+ilu(i)*del(i,k)*t(k)
+            end do
+        end do
       if (iv.eq.3) y=y+pis2
       y=dmod(y,cpi2)
       r(iv)=r(iv)+x*dsin(y)
@@ -209,11 +210,12 @@
       if (ific.ge.25.and.ific.le.27) x=x*t(2)
       if (ific.ge.34.and.ific.le.36) x=x*t(3)
       y=pha*deg
-      do 320 k=1,2
-      y=y+iz*zeta(k)*t(k)
-      do 320 i=1,4
-      y=y+ilu(i)*del(i,k)*t(k)
-320   continue
+      do k=1,2
+            y=y+iz*zeta(k)*t(k)
+            do i=1,4
+                  y=y+ilu(i)*del(i,k)*t(k)
+            end do
+      end do
       y=dmod(y,cpi2)
       r(iv)=r(iv)+x*dsin(y)
       go to 310
@@ -233,18 +235,21 @@
       if (ific.ge.19.and.ific.le.21) x=x*t(2)
       y=pha*deg
       if (ific.ge.16) go to 430
-      do 420 k=1,2
-      y=y+(ipla(9)*del(1,k)+ipla(10)*del(3,k)+ipla(11)*del(4,k))*t(k)
-      do 420 i=1,8
-      y=y+ipla(i)*p(i,k)*t(k)
-420   continue
+      do k=1,2
+            y=y+(ipla(9)*del(1,k)+ipla(10)*del(3,k)+ipla(11)*del(4,k))*t(k)
+            do i=1,8
+                  y=y+ipla(i)*p(i,k)*t(k)
+            end do
+      end do
       go to 470
-430   do 460 k=1,2
-      do 440 i=1,4
-440   y=y+ipla(i+7)*del(i,k)*t(k)
-      do 450 i=1,7
-450   y=y+ipla(i)*p(i,k)*t(k)
-460   continue
+430   do k=1,2
+            do i=1,4
+                y=y+ipla(i+7)*del(i,k)*t(k)
+            end do
+            do i=1,7
+                y=y+ipla(i)*p(i,k)*t(k)
+            end do
+      end do
 470   y=dmod(y,cpi2)
       r(iv)=r(iv)+x*dsin(y)
       go to 410

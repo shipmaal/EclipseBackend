@@ -1,0 +1,9 @@
+arguments.c
+elp2000-82b.c
+elp2000-82bmodule.c
+series.c
+setup.py
+Elp2000Module.egg-info/PKG-INFO
+Elp2000Module.egg-info/SOURCES.txt
+Elp2000Module.egg-info/dependency_links.txt
+Elp2000Module.egg-info/top_level.txt

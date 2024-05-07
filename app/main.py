@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 import elp2000
 
+
 from dataclasses import asdict
 
 import numpy as np

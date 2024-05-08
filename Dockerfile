@@ -1,5 +1,5 @@
 # --- Build stage for C extensions ---
-FROM python:3.10-slim as builder
+FROM debian:stable-slim as builder
 
 # Set work directory
 WORKDIR /build
@@ -19,7 +19,7 @@ WORKDIR /build/c_src/elp2000_82b
 RUN make
 
 # --- Production stage ---
-FROM python:3.10-slim
+FROM python:3.10
 
 # Create a new user
 RUN adduser --disabled-password --gecos '' myuser
@@ -29,7 +29,7 @@ WORKDIR /app
 
 # Install minimal runtime dependencies if necessary
 RUN apt-get update && apt-get install -y \
-    libffi6 \
+    libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the compiled C binaries and other necessary files
@@ -37,10 +37,10 @@ COPY --from=builder /build/c_src/elp2000_82b /app/c_src/elp2000_82b
 COPY ./app /app/app
 
 # Install Python dependencies
-COPY pyproject.toml poetry.lock /app/app/
+COPY pyproject.toml poetry.lock ./
 RUN pip install poetry gunicorn && \
     poetry config virtualenvs.create false && \
-    poetry install --no-dev
+    poetry install --only main
 
 # Switch to the new user
 USER myuser

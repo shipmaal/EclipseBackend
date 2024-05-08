@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 import elp2000
 
-
 from dataclasses import asdict
 
 import numpy as np
@@ -27,13 +26,11 @@ app = FastAPI()
 @app.get("/")
 async def root():
     # 18:00 UT April 8, 2024
-    T0 = ModifiedTime(2460409.25, format='jd')
+    # 2460409.25
+    # 2444239.5
+    T0 = ModifiedTime(2300000.5, format='jd')
     moon = get_body('moon', T0, ephemeris='jpl')
     print(moon.cartesian.xyz.to(u.km))
-    print(moon)
-    T0J2000 = (2460409.25 - 2451545.0) / 36525
-    print(elp2000.geocentric_moon_position_of_FK5(T0J2000))
-    print(elp2000.geocentric_moon_position(T0J2000))
 
     
     # franks attributes

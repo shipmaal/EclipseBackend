@@ -1,0 +1,7 @@
+/home/atshi/repos/source/EclipseBackend/venv/lib/python3.10/site-packages/__init__.py
+/home/atshi/repos/source/EclipseBackend/venv/lib/python3.10/site-packages/__pycache__/__init__.cpython-310.pyc
+/home/atshi/repos/source/EclipseBackend/venv/lib/python3.10/site-packages/ElpMpp02.cpython-310-x86_64-linux-gnu.so
+/home/atshi/repos/source/EclipseBackend/venv/lib/python3.10/site-packages/ElpMpp02-1.0.egg-info/dependency_links.txt
+/home/atshi/repos/source/EclipseBackend/venv/lib/python3.10/site-packages/ElpMpp02-1.0.egg-info/PKG-INFO
+/home/atshi/repos/source/EclipseBackend/venv/lib/python3.10/site-packages/ElpMpp02-1.0.egg-info/SOURCES.txt
+/home/atshi/repos/source/EclipseBackend/venv/lib/python3.10/site-packages/ElpMpp02-1.0.egg-info/top_level.txt

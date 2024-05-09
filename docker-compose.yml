@@ -1,0 +1,11 @@
+version: '3'
+services:
+  web:
+    build: .
+    container_name: ${CONTAINER_NAME}
+    ports:
+      - "${HOST_PORT}:${CONTAINER_PORT}"
+    volumes:
+      - ${CONTAINER_NAME}-bsp-data:/app/data/bsp
+volumes:
+  bsp-data:

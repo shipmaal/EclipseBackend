@@ -1,22 +1,20 @@
-# --- Build stage for C extensions ---
-FROM debian:stable-slim as builder
+# --- Build stage ---
+FROM python:3.10 AS build
 
-# Set work directory
+# Set the working directory in the container
 WORKDIR /build
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
-    gcc \
     libffi-dev \
-    make \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy C source files
-COPY ./c_src/elp2000_82b /build/c_src/elp2000_82b
+# Copy the C source files
+COPY ./c_src/ElpMpp02 /build/ElpMpp02
 
-# Compile C code
-WORKDIR /build/c_src/elp2000_82b
-RUN make
+# Build the Python C API extension
+WORKDIR /build/ElpMpp02
+RUN pip install .
 
 # --- Production stage ---
 FROM python:3.10
@@ -27,13 +25,10 @@ RUN adduser --disabled-password --gecos '' myuser
 # Set the working directory in the container
 WORKDIR /app
 
-# Install minimal runtime dependencies if necessary
-RUN apt-get update && apt-get install -y \
-    libffi-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Copy the compiled C binaries from the build stage
+COPY --from=build /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 
-# Copy the compiled C binaries and other necessary files
-COPY --from=builder /build/c_src/elp2000_82b /app/c_src/elp2000_82b
+# Copy the application files
 COPY ./app /app/app
 
 # Install Python dependencies
@@ -48,6 +43,7 @@ USER myuser
 # Make port 8000 available to the world outside this container
 EXPOSE 8000
 
+WORKDIR /app/app
+
 # Run the application with Gunicorn with Uvicorn workers
 CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:8000", "main:app"]
-    

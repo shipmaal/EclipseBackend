@@ -16,3 +16,9 @@
 /venv/
 
 .pdf
+
+/data/bsp/
+
+/c_src/spice/cspice
+/c_src/spice/cspice.tar
+/c_src/spice/importCSpice.csh

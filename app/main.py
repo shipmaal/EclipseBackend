@@ -1,6 +1,7 @@
 from fastapi import FastAPI
-import elp2000
-
+import sys
+from pathlib import Path
+import inspect
 from dataclasses import asdict
 
 import numpy as np
@@ -10,13 +11,13 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.basemap import Basemap
 
 from astropy.coordinates import Latitude, Longitude
-from astropy.coordinates import SkyCoord, solar_system_ephemeris, get_sun, get_body
 from astropy import units as u
 
 from utils import fund_to_geo, output_data_for_df
 from classes import BesselianElements, ModifiedTime
 import test
 
+import spice
 
 app = FastAPI()
 # ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -28,9 +29,9 @@ async def root():
     # 18:00 UT April 8, 2024
     # 2460409.25
     # 2444239.5
-    T0 = ModifiedTime(2300000.5, format='jd')
-    moon = get_body('moon', T0, ephemeris='jpl')
-    print(moon.cartesian.xyz.to(u.km))
+    T0 = ModifiedTime(2460409.25, format='jd')
+    for name, obj in inspect.getmembers(spice):
+        print(name)
 
     
     # franks attributes
@@ -46,11 +47,9 @@ async def root():
     }
     tn = 1 + 52/60
     t_array = np.linspace(0, tn, int(30*tn+1))
-    print(len(t_array))
     elements = BesselianElements(T0, 'sun', 'moon')
     calced_elements = elements.compute_elements(t_array)
     frank_elements = elements.compute_elements(t_array, attributes)
-
     
     lons = []
     lats = []

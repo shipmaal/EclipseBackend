@@ -1,0 +1,7 @@
+__init__.py
+setup.py
+spicemodule.c
+spice.egg-info/PKG-INFO
+spice.egg-info/SOURCES.txt
+spice.egg-info/dependency_links.txt
+spice.egg-info/top_level.txt

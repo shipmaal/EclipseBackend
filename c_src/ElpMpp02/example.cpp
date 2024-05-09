@@ -23,7 +23,7 @@ int main(int argc, char *argv[]) {
    corr = 0; // use parameters fitted to the LLR data
    setup_parameters(corr, paras, facs);
    setup_Elp_coefs(coefs, facs);
-   T = (JD - 2451545.0)/36525.0;
+   T = (JD - 2451545.0) / 36525.0;
    getX2000(T, paras, coefs, X,Y,Z);
    printf("-------------------------------------------------------\n");
    printf("Lunar coordinates (J2000.0 mean ecliptic and equinox):\n");

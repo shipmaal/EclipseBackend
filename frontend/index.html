@@ -47,9 +47,13 @@
   #status { margin-top: 12px; font-size: 12px; color: var(--muted); min-height: 16px; }
   #status.err { color: #ff8080; }
   #readout { margin-top: 8px; font-size: 12px; color: var(--text); display: none; }
-  #readout table { width: 100%; border-collapse: collapse; }
-  #readout td { padding: 2px 0; }
-  #readout td:last-child { text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+  #readout table, #player table { width: 100%; border-collapse: collapse; }
+  #readout td, #player td { padding: 2px 0; font-size: 12px; }
+  #readout td:last-child, #player td:last-child { text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+  #player { display: none; margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+  .playrow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .playrow button { flex: 0 0 38px; padding: 6px 0; }
+  .playrow input[type=range] { flex: 1; accent-color: var(--accent); }
   details { margin-top: 12px; }
   summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
@@ -102,6 +106,18 @@
     </table>
   </div>
 
+  <div id="player">
+    <div class="playrow">
+      <button id="play" title="Play/pause">▶</button>
+      <input id="scrub" type="range" min="0" max="0" value="0" step="1" />
+    </div>
+    <table>
+      <tr><td>Time (from T0)</td><td id="p-time">–</td></tr>
+      <tr><td>Position</td><td id="p-pos">–</td></tr>
+      <tr><td>Umbra width</td><td id="p-umbra">–</td></tr>
+    </table>
+  </div>
+
   <details>
     <summary>Backend</summary>
     <label for="api">API base URL</label>
@@ -142,10 +158,11 @@ controls.enableDamping = true;
 controls.minDistance = 1.25;
 controls.maxDistance = 12;
 
-scene.add(new THREE.AmbientLight(0x8899bb, 0.55));
-const sun = new THREE.DirectionalLight(0xfff4e0, 1.5);
-sun.position.set(5, 3, 5);
-scene.add(sun);
+// Low ambient so the night side is dark and the sunlight creates a terminator.
+scene.add(new THREE.AmbientLight(0x9fb0d0, 0.16));
+const sunLight = new THREE.DirectionalLight(0xfff4e0, 2.4);
+sunLight.position.set(5, 2, 3);   // repositioned to the sub-solar point when data loads
+scene.add(sunLight);
 
 // starfield
 {
@@ -209,8 +226,45 @@ function llToVec3(latDeg, lonDeg, r = R) {
   );
 }
 
+const EARTH_KM = 6378.137;
+
+// --- soft shadow sprite -----------------------------------------------------
+function softShadowTexture(coreAlpha) {
+  const s = 128, cv = document.createElement("canvas");
+  cv.width = cv.height = s;
+  const ctx = cv.getContext("2d");
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0.0, `rgba(0,0,0,${coreAlpha})`);
+  g.addColorStop(0.55, `rgba(0,0,0,${coreAlpha * 0.55})`);
+  g.addColorStop(1.0, "rgba(0,0,0,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  return new THREE.CanvasTexture(cv);
+}
+
+// Penumbra (large, faint) and umbra (small, dark) shadow blobs on the surface.
+const penumbra = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: softShadowTexture(0.5), transparent: true, depthWrite: false, opacity: 0.7,
+}));
+const umbra = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: softShadowTexture(0.95), transparent: true, depthWrite: false, color: 0x110d06,
+}));
+penumbra.visible = umbra.visible = false;
+scene.add(penumbra, umbra);
+
+function placeShadow(pt) {
+  const pos = llToVec3(pt.lat, pt.lon, R * 1.01);
+  // Penumbra shown at true scale (diameter), umbra floored so it stays visible.
+  const penD = 2 * (pt.penumbra_km / EARTH_KM) * R;
+  const umbD = Math.max(2 * (pt.umbra_km / EARTH_KM) * R, 0.03);
+  penumbra.position.copy(pos); penumbra.scale.set(penD, penD, 1); penumbra.visible = true;
+  umbra.position.copy(pos); umbra.scale.set(umbD, umbD, 1); umbra.visible = true;
+  umbra.material.color.set(pt.is_total ? 0x120d06 : 0x3a2a12); // annular a touch lighter
+}
+
 // --- path drawing -----------------------------------------------------------
 let pathGroup = null;
+let currentPoints = [];
 
 function clearPath() {
   if (!pathGroup) return;
@@ -221,6 +275,7 @@ function clearPath() {
 
 function drawPath(points) {
   clearPath();
+  currentPoints = points;
   if (points.length < 2) { setStatus("No central line for this range (axis misses Earth).", true); return; }
 
   pathGroup = new THREE.Group();
@@ -228,31 +283,59 @@ function drawPath(points) {
 
   const curve = new THREE.CatmullRomCurve3(curvePts);
   const tube = new THREE.Mesh(
-    new THREE.TubeGeometry(curve, curvePts.length * 4, 0.006, 8, false),
+    new THREE.TubeGeometry(curve, curvePts.length * 4, 0.005, 8, false),
     new THREE.MeshBasicMaterial({ color: 0xffb454 })
   );
   pathGroup.add(tube);
 
-  const markerGeo = new THREE.SphereGeometry(0.018, 16, 16);
+  const markerGeo = new THREE.SphereGeometry(0.016, 16, 16);
   const start = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: 0x5ad16a }));
   start.position.copy(curvePts[0]);
   const end = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: 0xff5a5a }));
   end.position.copy(curvePts[curvePts.length - 1]);
   pathGroup.add(start, end);
-
   scene.add(pathGroup);
 
-  // ease the camera to look at the middle of the track
+  // Frame the camera on the middle of the track.
   const mid = curvePts[Math.floor(curvePts.length / 2)].clone();
   controls.target.set(0, 0, 0);
   camera.position.copy(mid.clone().multiplyScalar(2.6));
 }
 
-// --- data fetching ----------------------------------------------------------
+function setSunLight(sun) {
+  if (!sun) return;
+  sunLight.position.copy(llToVec3(sun.lat, sun.lon, 6));
+}
+
+// --- scrubber / playback ----------------------------------------------------
 const $ = (id) => document.getElementById(id);
+let frame = 0, playing = false, lastStep = 0;
+
+function updateFrame(i) {
+  if (!currentPoints.length) return;
+  frame = Math.max(0, Math.min(i, currentPoints.length - 1));
+  const p = currentPoints[frame];
+  placeShadow(p);
+  $("scrub").value = frame;
+  $("p-time").textContent = p.offset;
+  $("p-pos").textContent = `${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`;
+  $("p-umbra").textContent = `${(2 * p.umbra_km).toFixed(0)} km ${p.is_total ? "(total)" : "(annular)"}`;
+}
+
+$("scrub").addEventListener("input", (e) => { playing = false; $("play").textContent = "▶"; updateFrame(+e.target.value); });
+$("play").addEventListener("click", () => {
+  if (!currentPoints.length) return;
+  playing = !playing;
+  if (playing && frame >= currentPoints.length - 1) frame = 0;
+  $("play").textContent = playing ? "❚❚" : "▶";
+});
+
+// --- data handling ----------------------------------------------------------
 function setStatus(msg, isErr) { const s = $("status"); s.textContent = msg; s.className = isErr ? "err" : ""; }
 
-function showReadout(data) {
+function onData(data, note) {
+  drawPath(data.central_line);
+  setSunLight(data.sun);
   const cl = data.central_line;
   $("r-count").textContent = data.count;
   $("r-frame").textContent = data.frame;
@@ -260,6 +343,15 @@ function showReadout(data) {
   $("r-start").textContent = cl.length ? fmt(cl[0]) : "–";
   $("r-end").textContent = cl.length ? fmt(cl[cl.length - 1]) : "–";
   $("readout").style.display = "block";
+  if (cl.length >= 2) {
+    $("scrub").max = cl.length - 1;
+    $("player").style.display = "block";
+    playing = false; $("play").textContent = "▶";
+    updateFrame(0);
+  } else {
+    $("player").style.display = "none";
+  }
+  setStatus(note, false);
 }
 
 function apiBase() { return $("api").value.trim().replace(/\/$/, ""); }
@@ -272,16 +364,13 @@ async function compute() {
     step_minutes: $("step").value,
     window_hours: $("window").value,
   });
-  const url = `${apiBase()}/central-line?${params}`;
   setStatus("Computing…", false);
   $("compute").disabled = true;
   try {
-    const res = await fetch(url);
+    const res = await fetch(`${apiBase()}/central-line?${params}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || res.statusText);
-    drawPath(data.central_line);
-    showReadout(data);
-    setStatus(`Rendered ${data.count} points (${data.frame}).`, false);
+    onData(data, `Rendered ${data.count} points (${data.frame}).`);
   } catch (e) {
     setStatus(`Backend error: ${e.message}. Try “Load sample”.`, true);
   } finally {
@@ -293,9 +382,7 @@ async function loadSample() {
   setStatus("Loading bundled sample…", false);
   try {
     const data = await (await fetch("./sample.json")).json();
-    drawPath(data.central_line);
-    showReadout(data);
-    setStatus("Rendered bundled sample (2024-04-08).", false);
+    onData(data, "Rendered bundled sample (2024-04-08).");
   } catch (e) {
     setStatus(`Could not load sample: ${e.message}`, true);
   }
@@ -314,11 +401,16 @@ function resize() {
 addEventListener("resize", resize);
 resize();
 
-(function animate() {
+(function animate(now) {
   requestAnimationFrame(animate);
+  if (playing && now - lastStep > 90) {           // ~11 fps shadow stepping
+    lastStep = now;
+    if (frame >= currentPoints.length - 1) { playing = false; $("play").textContent = "▶"; }
+    else updateFrame(frame + 1);
+  }
   controls.update();
   renderer.render(scene, camera);
-})();
+})(0);
 
 // Try the live backend first; if it is not reachable, fall back to the sample.
 compute().then(() => {

@@ -40,11 +40,18 @@ Earth PCK), set `SPICE_EARTH_FRAME=IAU_EARTH`.
 ## Frontend
 
 `frontend/` is a dependency-free Three.js globe (Three.js is vendored under
-`frontend/vendor/`, so it works offline). It calls `/central-line` and draws the
-shadow-axis track on the Earth. Served by the backend at `/ui`, or standalone
-with any static server (`python -m http.server` in `frontend/`, then set the
-API base URL in the panel). It ships a bundled `sample.json` so it renders even
-without a running backend ("Load sample").
+`frontend/vendor/`, so it works offline). It calls `/central-line` and:
+
+* draws the shadow-axis central line on the Earth;
+* lights the globe from the **sub-solar point** (`sun` in the response), giving a
+  real day/night terminator;
+* casts the Moon's **umbra + penumbra** as shadow blobs sized from each point's
+  `umbra_km` / `penumbra_km`, animated along the track with a play/scrub control.
+
+Served by the backend at `/ui`, or standalone with any static server
+(`python -m http.server` in `frontend/`, then set the API base URL in the panel).
+It ships a bundled `sample.json` so it renders even without a running backend
+("Load sample").
 
 ## HTTP API
 

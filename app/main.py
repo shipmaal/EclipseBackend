@@ -90,10 +90,11 @@ async def central_line(
             elems["x"][i], elems["y"][i], elems["d"][i],
             elems["l1"][i], elems["l2"][i], elems["tan_f1"][i], elems["tan_f2"][i],
         )
-        h, m, s = dec_to_hms(float(ti))
+        sign = "-" if ti < 0 else "+"
+        h, m, s = dec_to_hms(abs(float(ti)))
         points.append({
             "t_hours": round(float(ti), 4),
-            "offset": f"{h:+03d}:{m:02d}:{s:04.1f}",
+            "offset": f"{sign}{h:02d}:{m:02d}:{s:04.1f}",
             "lon": round(lon, 5),
             "lat": round(lat, 5),
             "umbra_km": round(umb_km, 1),

@@ -15,7 +15,18 @@ The generated `eclipse.tm` metakernel loads the set below. The engine
 | `naif0012.tls` | LSK (leapseconds) | UTC ↔ ET (TDB) conversion in `str2et`. |
 | `de440s.bsp` | SPK (ephemeris) | Apparent positions of Sun, Moon and Earth (JPL DE440s, 1550–2650). Use `de440.bsp` for a wider span. |
 | `pck00011.tpc` | text PCK | Body radii (`bodvrd`) and the low-precision `IAU_EARTH` frame. |
-| `earth_latest_high_prec.bpc` | binary PCK | High-precision Earth orientation — defines the **ITRF93** frame with precession, nutation and true (UT1) rotation. This is what makes the Besselian `mu` and the geographic track accurate; without it, fall back to `IAU_EARTH` (coarse). |
+| `earth_latest_high_prec.bpc` | binary PCK | High-precision Earth orientation — defines the **ITRF93** frame with precession, nutation and true (UT1/EOP) rotation. Optional: the default **`TOD`** frame (pyerfa true-of-date) is already high precision without it. |
+
+## Earth-orientation frames (`SPICE_EARTH_FRAME` / `frame=` query)
+
+| Frame | Needs | Accuracy vs published tracks |
+| --- | --- | --- |
+| `TOD` (default) | nothing beyond the mirror set | sub-km latitude, ~few-km longitude |
+| `ITRF93` | `earth_latest_high_prec.bpc` (NAIF only) | best (adds real EOP/UT1) |
+| `IAU_EARTH` | text PCK | coarse fallback (~5–10 km) |
+
+The dominant historical error was **not** the frame but a parametric-vs-geodetic
+latitude conversion bug (now fixed); the frame contributes only a few km.
 
 ## Why this set, and not a lunar theory (ELP2000-82B / ELP/MPP02)
 

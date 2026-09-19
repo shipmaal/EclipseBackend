@@ -10,6 +10,7 @@ readme = "README.md"
 # astropy / basemap are intentionally gone.
 dependencies = [
     "spiceypy>=6.0.0",
+    "pyerfa>=2.0.0",
     "numpy>=1.26,<2.1",
     "pandas>=2.2",
     "fastapi>=0.110",

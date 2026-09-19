@@ -16,8 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .besselian import BesselianModel
-from .ephemeris import DEFAULT_EARTH_FRAME
-from .geography import dec_to_hms, fund_to_geo
+from .ephemeris import DEFAULT_EARTH_FRAME, sub_solar_point, utc_to_et
+from .geography import dec_to_hms, fund_to_geo, shadow_radii
+
+_FRAMES = ("ITRF93", "TOD", "IAU_EARTH")
 
 app = FastAPI(title="EclipseBackend", version="0.1.0")
 
@@ -32,6 +34,8 @@ app.add_middleware(
 
 
 def _build_model(epoch: str, window_hours: float, frame: str) -> BesselianModel:
+    if frame not in _FRAMES:
+        raise HTTPException(status_code=400, detail=f"frame must be one of {_FRAMES}")
     try:
         return BesselianModel(
             t0_utc=epoch, earth_frame=frame, half_window_hours=window_hours
@@ -52,7 +56,7 @@ async def health() -> dict:
 async def besselian(
     epoch: str = Query(..., description="Reference epoch T0, UTC ISO-8601, e.g. 2024-04-08T18:00:00"),
     window_hours: float = Query(2.0, ge=0.5, le=6.0, description="Half-window sampled around T0"),
-    frame: str = Query(DEFAULT_EARTH_FRAME, description="Earth body-fixed frame (ITRF93 or IAU_EARTH)"),
+    frame: str = Query(DEFAULT_EARTH_FRAME, description="Earth-orientation frame: ITRF93, TOD or IAU_EARTH"),
 ) -> dict:
     """Besselian element polynomials (coefficients in powers of t = hours from T0)."""
     model = _build_model(epoch, window_hours, frame)
@@ -82,13 +86,31 @@ async def central_line(
             lon, lat = fund_to_geo(elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i])
         except ValueError:
             continue  # axis misses the Earth at this instant
-        h, m, s = dec_to_hms(float(ti))
-        points.append(
-            {"t_hours": round(float(ti), 4), "offset": f"{h:+03d}:{m:02d}:{s:04.1f}",
-             "lon": round(lon, 5), "lat": round(lat, 5)}
+        pen_km, umb_km, is_total = shadow_radii(
+            elems["x"][i], elems["y"][i], elems["d"][i],
+            elems["l1"][i], elems["l2"][i], elems["tan_f1"][i], elems["tan_f2"][i],
         )
+        h, m, s = dec_to_hms(float(ti))
+        points.append({
+            "t_hours": round(float(ti), 4),
+            "offset": f"{h:+03d}:{m:02d}:{s:04.1f}",
+            "lon": round(lon, 5),
+            "lat": round(lat, 5),
+            "umbra_km": round(umb_km, 1),
+            "penumbra_km": round(pen_km, 1),
+            "is_total": is_total,
+        })
 
-    return {"t0_utc": epoch, "frame": frame, "count": len(points), "central_line": points}
+    # Sub-solar point at T0 drives the frontend's sunlight / day-night terminator.
+    ss_lon, ss_lat = sub_solar_point(utc_to_et(epoch), frame)
+
+    return {
+        "t0_utc": epoch,
+        "frame": frame,
+        "count": len(points),
+        "sun": {"lon": round(ss_lon, 4), "lat": round(ss_lat, 4)},
+        "central_line": points,
+    }
 
 
 # Serve the Three.js frontend at /ui (same origin as the API, so no CORS hop).

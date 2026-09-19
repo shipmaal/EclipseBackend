@@ -9,29 +9,33 @@ SPICE + JPL DE440 gives all of that from a single toolkit:
 
 * ``spkpos(..., abcorr="LT+S", ...)`` returns apparent positions (light-time +
   stellar aberration) -- exactly what the Besselian construction assumes.
-* Evaluating positions in the Earth body-fixed frame **ITRF93** (from the
-  high-precision binary Earth PCK) folds precession, nutation and Earth
-  rotation -- including UT1 -- into the frame itself.
 
-Frame choice removes two classic eclipse bugs
----------------------------------------------
-By working directly in the Earth-fixed frame we never form Greenwich sidereal
-time by hand, and we never apply a separate delta-T term:
+Three Earth-orientation frames are supported (``earth_frame``):
 
-* The fundamental-plane coordinates ``x, y, z`` (Explanatory Supplement to the
-  Astronomical Almanac, eq. 8.322-6) depend only on ``(alpha - a)`` and on the
-  declinations ``delta`` (Moon) and ``d`` (axis).  A change of frame that
-  rotates every right ascension by the same Greenwich sidereal angle leaves
-  ``(alpha - a)`` and both latitudes unchanged, so ``x, y, z`` are identical
-  whether computed in true-of-date or in the Earth-fixed frame.
-* The Besselian ``mu`` (Greenwich hour angle of the shadow axis) is, by
-  definition, ``GST - a_of_date``.  In the Earth-fixed frame the axis longitude
-  is ``a_ef = a_of_date - GST``, so ``mu = -a_ef`` -- read straight off the
-  rotated axis vector, with no sidereal-time or delta-T arithmetic.
+* ``"ITRF93"`` -- SPICE Earth body-fixed frame from the high-precision binary
+  Earth PCK; folds precession, nutation and true (UT1/EOP) rotation into the
+  frame.  Most accurate; needs ``earth_latest_high_prec.bpc``.
+* ``"TOD"``   -- true equator & equinox of date, built with pyerfa's IAU 2006/2000A
+  precession-nutation (``pnm06a``) and Greenwich apparent sidereal time
+  (``gst06a``).  High precision, needs no binary PCK (works with the mirror
+  kernel set); UT1 is approximated by UTC (sub-arcsecond for recent dates).
+* ``"IAU_EARTH"`` -- SPICE low-precision analytic rotation; coarse fallback.
 
-The input epoch is therefore taken as **UTC**; ``str2et`` converts it to
-TDB and the binary Earth PCK supplies the matching orientation, so delta-T is
-handled by construction rather than as an afterthought.
+How ``mu`` and the fundamental-plane coordinates stay consistent
+---------------------------------------------------------------
+* ``x, y, z`` (Explanatory Supplement to the Astronomical Almanac, eq. 8.322-6)
+  depend only on ``(alpha - a)`` and on the declinations ``delta`` (Moon) and
+  ``d`` (axis); a common Greenwich rotation of all right ascensions leaves them
+  unchanged, so they are identical in an Earth-fixed frame or in true-of-date.
+* ``mu`` (Greenwich hour angle of the axis) ``= GST - a_of_date``.  For a SPICE
+  body-fixed frame the axis longitude already equals ``a_of_date - GST`` so
+  ``mu = -a``; equivalently, using ``mu = GST - a`` with ``GST = 0`` for the
+  body-fixed vectors and ``GST = GAST`` for true-of-date unifies both cases.
+
+The input epoch is **UTC**; ``str2et`` converts it to TDB, so delta-T is handled
+by construction rather than as an afterthought.  (Note: the dominant historical
+error here was not the frame but the parametric->geodetic latitude conversion in
+``geography.py`` -- the frame contributes only a few km.)
 """
 
 from __future__ import annotations
@@ -42,8 +46,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+import erfa
 import numpy as np
 import spiceypy as spice
+
+# Julian date of J2000.0, for two-part TT/UT1 dates passed to ERFA.
+_J2000_JD = 2451545.0
 
 # Ratio of the mean lunar radius to Earth's equatorial radius.  This is the
 # value adopted for umbral *and* penumbral contacts in the standard eclipse
@@ -51,10 +59,11 @@ import spiceypy as spice
 # fixed constant rather than a body radius pulled from a kernel.
 K_MOON = 0.2725076
 
-# Default Earth body-fixed frame.  ITRF93 needs the high-precision binary Earth
-# PCK; IAU_EARTH (from a text PCK) is a lower-precision fallback usable when the
-# binary kernel is unavailable.  Override with $SPICE_EARTH_FRAME.
-DEFAULT_EARTH_FRAME = os.environ.get("SPICE_EARTH_FRAME", "ITRF93")
+# Default Earth-orientation frame.  "TOD" (pyerfa true-of-date) is high precision
+# and needs no binary PCK, so it works out of the box with the mirror kernels;
+# "ITRF93" is marginally better when the binary Earth PCK is available.
+# Override with $SPICE_EARTH_FRAME.
+DEFAULT_EARTH_FRAME = os.environ.get("SPICE_EARTH_FRAME", "TOD")
 
 _KERNELS_LOADED = False
 
@@ -121,23 +130,44 @@ class BesselianInstant:
     tan_f2: float
 
 
-def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> BesselianInstant:
-    """Compute the Besselian elements at ephemeris time ``et``.
+def _geocentric_vectors(et: float, earth_frame: str):
+    """Apparent geocentric Moon and Sun (Earth radii) plus the sidereal offset.
 
-    All quantities are geocentric and apparent (``LT+S``); the Sun and Moon are
-    evaluated in ``earth_frame`` (Earth body-fixed) so that ``mu`` and the
-    fundamental-plane coordinates are internally consistent -- see the module
-    docstring.
+    Returns ``(moon, sun, gast)`` where ``gast`` is 0 for a SPICE body-fixed
+    frame (longitudes are already Earth-fixed) and the Greenwich apparent
+    sidereal time (radians) for the ``"TOD"`` true-of-date frame; either way
+    ``mu = gast - a`` gives the axis' Greenwich hour angle.
     """
     a_e = earth_equatorial_radius_km()
 
-    moon_km, _ = spice.spkpos("MOON", et, earth_frame, "LT+S", "EARTH")
-    sun_km, _ = spice.spkpos("SUN", et, earth_frame, "LT+S", "EARTH")
+    if earth_frame == "TOD":
+        moon, _ = spice.spkpos("MOON", et, "J2000", "LT+S", "EARTH")
+        sun, _ = spice.spkpos("SUN", et, "J2000", "LT+S", "EARTH")
+        tt2 = et / 86400.0  # TT ~ TDB to < 2 ms
+        rbpn = erfa.pnm06a(_J2000_JD, tt2)  # GCRS -> true equator & equinox of date
+        moon = rbpn @ np.asarray(moon)
+        sun = rbpn @ np.asarray(sun)
+        utc_jd = _J2000_JD + (et - spice.deltet(et, "ET")) / 86400.0  # UT1 ~ UTC
+        gast = float(erfa.gst06a(utc_jd, 0.0, _J2000_JD, tt2))
+        return moon / a_e, sun / a_e, gast
 
-    moon = np.asarray(moon_km) / a_e  # Earth radii, Earth-fixed
-    sun = np.asarray(sun_km) / a_e
+    moon, _ = spice.spkpos("MOON", et, earth_frame, "LT+S", "EARTH")
+    sun, _ = spice.spkpos("SUN", et, earth_frame, "LT+S", "EARTH")
+    return np.asarray(moon) / a_e, np.asarray(sun) / a_e, 0.0
 
-    # Moon geocentric spherical coordinates (Earth-fixed).
+
+def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> BesselianInstant:
+    """Compute the Besselian elements at ephemeris time ``et``.
+
+    All quantities are geocentric and apparent (``LT+S``); ``earth_frame`` selects
+    the Earth-orientation model (``"ITRF93"``, ``"TOD"`` or ``"IAU_EARTH"``) -- see
+    the module docstring.
+    """
+    a_e = earth_equatorial_radius_km()
+
+    moon, sun, gast = _geocentric_vectors(et, earth_frame)
+
+    # Moon geocentric spherical coordinates.
     r_moon, alpha, delta = spice.reclat(moon)
 
     # Shadow-axis direction: from the Moon toward the Sun (S - M), matching the
@@ -147,7 +177,7 @@ def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> Bess
     axis = sun - moon
     g_dist, a, d = spice.reclat(axis)
 
-    mu = -a  # Greenwich hour angle of the axis (= GST - a_of_date)
+    mu = gast - a  # Greenwich hour angle of the axis
 
     # Fundamental-plane coordinates of the Moon (Explanatory Supplement 8.322-6).
     ha = alpha - a
@@ -178,3 +208,16 @@ def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> Bess
         tan_f1=tan_f1,
         tan_f2=tan_f2,
     )
+
+
+def sub_solar_point(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> tuple[float, float]:
+    """Geographic (lon, lat) in degrees of the point where the Sun is at zenith.
+
+    Latitude is the Sun's declination-of-date (which equals the geodetic latitude
+    of the sub-solar point); longitude is east-positive in (-180, 180].  Used to
+    place the frontend's sunlight and render the day/night terminator.
+    """
+    _moon, sun, gast = _geocentric_vectors(et, earth_frame)
+    _r, lon, lat = spice.reclat(sun)
+    lon_deg = (np.degrees(lon - gast) + 180.0) % 360.0 - 180.0
+    return float(lon_deg), float(np.degrees(lat))

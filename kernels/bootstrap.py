@@ -104,8 +104,9 @@ def main() -> None:
 
     if source == "mirror":
         print(
-            "\nNote: the mirror has no high-precision Earth PCK, so the ITRF93 "
-            "frame is unavailable. Set SPICE_EARTH_FRAME=IAU_EARTH."
+            "\nNote: the mirror has no binary Earth PCK, so the ITRF93 frame is "
+            "unavailable. The default 'TOD' frame (pyerfa) is high precision and "
+            "needs no binary PCK, so no change is required."
         )
     print("\nDone. The API and tests will find the kernels via kernels/eclipse.tm.")
 

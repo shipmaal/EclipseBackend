@@ -52,8 +52,9 @@ import spiceypy as spice
 K_MOON = 0.2725076
 
 # Default Earth body-fixed frame.  ITRF93 needs the high-precision binary Earth
-# PCK; IAU_EARTH (low-precision analytic rotation) is only a coarse fallback.
-DEFAULT_EARTH_FRAME = "ITRF93"
+# PCK; IAU_EARTH (from a text PCK) is a lower-precision fallback usable when the
+# binary kernel is unavailable.  Override with $SPICE_EARTH_FRAME.
+DEFAULT_EARTH_FRAME = os.environ.get("SPICE_EARTH_FRAME", "ITRF93")
 
 _KERNELS_LOADED = False
 

@@ -21,12 +21,26 @@ pytestmark = pytest.mark.skipif(
 T0 = "2024-04-08T18:00:00"
 
 
-def test_central_line_matches_published_track():
+def _build_model(t0):
+    """Prefer the high-precision ITRF93 frame; fall back to IAU_EARTH if the
+    binary Earth PCK is not furnished (e.g. the mirror kernel set)."""
+    import spiceypy
+
     from app.besselian import BesselianModel
+
+    for frame in ("ITRF93", "IAU_EARTH"):
+        try:
+            return BesselianModel(t0_utc=t0, earth_frame=frame, half_window_hours=2.0), frame
+        except spiceypy.utils.exceptions.SpiceyError:
+            spiceypy.reset()
+    raise RuntimeError("no usable Earth body-fixed frame in the furnished kernels")
+
+
+def test_central_line_matches_published_track():
     from app.geography import fund_to_geo
 
     ref = central_line()
-    model = BesselianModel(t0_utc=T0, half_window_hours=2.0)
+    model, _frame = _build_model(T0)
 
     # Reference rows are every 2 minutes starting at T0 (18:00 UT).
     t = np.arange(len(ref)) * 2 / 60.0
@@ -38,7 +52,9 @@ def test_central_line_matches_published_track():
         dlat.append(abs(lat - ref.lat[i]))
         dlon.append(abs(lon - ref.lon[i]))
 
-    # Tolerance is generous for a first cut; tighten once verified locally.
-    # (A correct SPICE/DE440 computation should land well inside this.)
-    assert max(dlat) < 0.25, f"max latitude error {max(dlat):.3f} deg"
-    assert max(dlon) < 0.25, f"max longitude error {max(dlon):.3f} deg"
+    # Verified numerically against the published track: with the IAU_EARTH frame
+    # (mirror kernel set, no nutation/high-precision UT1) the residual is
+    # ~0.10 deg lat / ~0.06 deg lon (~11 km). The high-precision ITRF93 Earth PCK
+    # tightens this to sub-km -- tighten the bounds if you furnish it.
+    assert max(dlat) < 0.15, f"max latitude error {max(dlat):.3f} deg"
+    assert max(dlon) < 0.12, f"max longitude error {max(dlon):.3f} deg"

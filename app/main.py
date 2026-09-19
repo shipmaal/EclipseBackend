@@ -1,97 +1,79 @@
-from fastapi import FastAPI
-import sys
-from pathlib import Path
-import inspect
+"""FastAPI surface for the eclipse backend.
+
+Endpoints are parameterized (no hard-coded eclipse) and do only computation --
+no plotting in the request path. Positions come from SPICE / JPL DE440 via
+:mod:`app.besselian`.
+"""
+
+from __future__ import annotations
+
 from dataclasses import asdict
 
 import numpy as np
-import pandas as pd
+from fastapi import FastAPI, HTTPException, Query
 
-import matplotlib.pyplot as plt
-from mpl_toolkits.basemap import Basemap
+from .besselian import BesselianModel
+from .ephemeris import DEFAULT_EARTH_FRAME
+from .geography import dec_to_hms, fund_to_geo
 
-from astropy.coordinates import Latitude, Longitude
-from astropy import units as u
-
-from utils import fund_to_geo, output_data_for_df
-from classes import BesselianElements, ModifiedTime
-import test
-
-import spice
-
-app = FastAPI()
-# ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-# ssl_context.load_cert_chain('./cert.pem', keyfile='./key.pem')
+app = FastAPI(title="EclipseBackend", version="0.1.0")
 
 
-@app.get("/")
-async def root():
-    # 18:00 UT April 8, 2024
-    # 2460409.25
-    # 2444239.5
-    T0 = ModifiedTime(2460409.25, format='jd')
-    for name, obj in inspect.getmembers(spice):
-        print(name)
+def _build_model(epoch: str, window_hours: float, frame: str) -> BesselianModel:
+    try:
+        return BesselianModel(
+            t0_utc=epoch, earth_frame=frame, half_window_hours=window_hours
+        )
+    except FileNotFoundError as exc:
+        # Kernels not downloaded yet.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # SPICE errors (bad time string, missing body, ...)
+        raise HTTPException(status_code=400, detail=f"SPICE error: {exc}") from exc
 
-    
-    # franks attributes
-    attributes = {
-        'x': [-0.318157, 0.5117105, 0.0000326, -0.0000085],
-        'y': [0.219747, 0.2709586, -0.0000594, -0.0000047],
-        'd': [7.58620, 0.014844, -0.000002],
-        'l1': [0.535813, 0.0000618, -0.0000128],
-        'l2': [-0.010274, 0.0000615, -0.0000127],
-        'μ': [89.59122, 15.004084],
-        'tan_f1': [0.0046683],
-        'tan_f2': [0.0046450]
-    }
-    tn = 1 + 52/60
-    t_array = np.linspace(0, tn, int(30*tn+1))
-    elements = BesselianElements(T0, 'sun', 'moon')
-    calced_elements = elements.compute_elements(t_array)
-    frank_elements = elements.compute_elements(t_array, attributes)
-    
-    lons = []
-    lats = []
-    frank_path = test.frank_path()
-    frank_lats = Latitude(np.array(frank_path[0]) * u.deg)
-    frank_lons = Longitude(np.array(frank_path[1]) * u.deg, wrap_angle=180 * u.deg)
-    df = pd.DataFrame(columns=['Time(TDT)', 'Longitude', 'Latitude', 'Frank Longitude', 'Frank Latitude', 'Lon diff', 'Lat diff'])
-    for i, t in enumerate(t_array):
-        calced_lon_i, calced_lat_i = fund_to_geo(calced_elements.x, calced_elements.y, calced_elements.d, calced_elements.μ, i)
-        frank_lon_i, frank_lat_i = fund_to_geo(frank_elements.x, frank_elements.y, frank_elements.d, frank_elements.μ, i)
-        df.loc[i] = output_data_for_df(t, frank_lon_i, frank_lat_i, frank_lons[i], frank_lats[i])
-        # df.loc[i] = output_data_for_df(t, calced_lon_i, calced_lat_i, frank_lon_i, frank_lat_i)
-        # lons.append(frank_lon_i.value)
-        # lats.append(frank_lat_i.value)
-    
-    # print(df)
-    # plt.plot(df['Lon diff'])
-    # plt.xlabel('Time')
-    # plt.ylabel('Longitude Difference')
-    # plt.savefig('lon_diff_plot.png')
-    mapQ = False
 
-    if mapQ:
-        m = Basemap(width=12000000,height=9000000,projection='lcc',
-                    resolution='c',lat_1=45.,lat_2=55,lat_0=50,lon_0=-107.)
-        m.drawcoastlines()
-        m.drawmapboundary(fill_color='aqua') 
-        m.fillcontinents(color='coral',lake_color='aqua')
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
 
-        parallels = np.arange(0.,81,10.)
-        # labels = [left,right,top,bottom]
-        m.drawparallels(parallels,labels=[False,True,True,False])
 
-        meridians = np.arange(10.,351.,20.)
-        m.drawmeridians(meridians,labels=[True,False,False,True])
-        m.scatter(lons, lats, latlon=True, s=0.5, c='green')
+@app.get("/besselian")
+async def besselian(
+    epoch: str = Query(..., description="Reference epoch T0, UTC ISO-8601, e.g. 2024-04-08T18:00:00"),
+    window_hours: float = Query(2.0, ge=0.5, le=6.0, description="Half-window sampled around T0"),
+    frame: str = Query(DEFAULT_EARTH_FRAME, description="Earth body-fixed frame (ITRF93 or IAU_EARTH)"),
+) -> dict:
+    """Besselian element polynomials (coefficients in powers of t = hours from T0)."""
+    model = _build_model(epoch, window_hours, frame)
+    return {"t0_utc": epoch, "frame": frame, "polynomials": asdict(model.polynomials)}
 
-        plt.savefig('map.png')
 
-    return {
-        "message": "Besselian Elements",
-        "elements": asdict(elements.elements),
-        "poly_table": asdict(elements.poly_table)
-    }
+@app.get("/central-line")
+async def central_line(
+    epoch: str = Query(..., description="Reference epoch T0, UTC ISO-8601"),
+    start_hours: float = Query(-2.0, description="Track start, hours from T0"),
+    end_hours: float = Query(2.0, description="Track end, hours from T0"),
+    step_minutes: float = Query(2.0, gt=0.0, description="Sample spacing in minutes"),
+    window_hours: float = Query(2.0, ge=0.5, le=6.0),
+    frame: str = Query(DEFAULT_EARTH_FRAME),
+) -> dict:
+    """Geographic track of the shadow axis (central line) over a time range."""
+    if end_hours <= start_hours:
+        raise HTTPException(status_code=400, detail="end_hours must exceed start_hours")
 
+    model = _build_model(epoch, window_hours, frame)
+    t = np.arange(start_hours, end_hours + 1e-9, step_minutes / 60.0)
+    elems = model.evaluate(t)
+
+    points = []
+    for i, ti in enumerate(t):
+        try:
+            lon, lat = fund_to_geo(elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i])
+        except ValueError:
+            continue  # axis misses the Earth at this instant
+        h, m, s = dec_to_hms(float(ti))
+        points.append(
+            {"t_hours": round(float(ti), 4), "offset": f"{h:+03d}:{m:02d}:{s:04.1f}",
+             "lon": round(lon, 5), "lat": round(lat, 5)}
+        )
+
+    return {"t0_utc": epoch, "frame": frame, "count": len(points), "central_line": points}

@@ -1,24 +1,45 @@
-# Ignore build artifacts
-/build/
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.o
+*.a
+build/
+dist/
+*.egg-info/
 
-# Ignore dependencies
-/node_modules/
+# Virtual envs
+.venv/
+venv/
 
-# Ignore IDE files
-/.vscode/
-/.idea/
+# Environment / secrets
+.env
 
-# Ignore compiled binaries
-/bin/
+# uv keeps uv.lock committed; nothing to ignore there
 
-/__pycache__/
+# SPICE kernels (downloaded via `python -m kernels.bootstrap`)
+kernels/*.bsp
+kernels/*.bpc
+kernels/*.tls
+kernels/*.tpc
+kernels/*.tm
 
-/venv/
-
-.pdf
-
+# Data / scratch output
 /data/
+*.pdf
+app/*.png
+app/*.csv
+app/*.pstats
+restats
 
+# Compiled example binary
+c_src/ElpMpp02/myprogram
+
+# Native SPICE toolkit (fetched separately)
 /c_src/spice/cspice
 /c_src/spice/cspice.tar
 /c_src/spice/importCSpice.csh
+
+# IDE
+/.vscode/
+/.idea/

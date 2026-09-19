@@ -8,15 +8,27 @@ no plotting in the request path. Positions come from SPICE / JPL DE440 via
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .besselian import BesselianModel
 from .ephemeris import DEFAULT_EARTH_FRAME
 from .geography import dec_to_hms, fund_to_geo
 
 app = FastAPI(title="EclipseBackend", version="0.1.0")
+
+# Allow the Three.js frontend (served from a file server or another port) to
+# call the API during development.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
 
 def _build_model(epoch: str, window_hours: float, frame: str) -> BesselianModel:
@@ -77,3 +89,9 @@ async def central_line(
         )
 
     return {"t0_utc": epoch, "frame": frame, "count": len(points), "central_line": points}
+
+
+# Serve the Three.js frontend at /ui (same origin as the API, so no CORS hop).
+_FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
+if _FRONTEND.is_dir():
+    app.mount("/ui", StaticFiles(directory=str(_FRONTEND), html=True), name="ui")

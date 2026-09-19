@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Eclipse Path Viewer</title>
+<style>
+  :root {
+    --bg: #05070d;
+    --panel: rgba(16, 21, 34, 0.82);
+    --border: #263149;
+    --text: #e6ebf5;
+    --muted: #8a97b3;
+    --accent: #ffb454;
+    --accent-dim: #6b4a1f;
+    --field: #0d1220;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+  body { font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); }
+  #scene { position: fixed; inset: 0; display: block; }
+
+  #panel {
+    position: fixed; top: 16px; left: 16px; width: 320px; max-width: calc(100vw - 32px);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px; backdrop-filter: blur(8px); z-index: 10;
+  }
+  #panel h1 { font-size: 15px; margin: 0 0 2px; letter-spacing: .3px; }
+  #panel .sub { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
+  label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+          color: var(--muted); margin: 10px 0 4px; }
+  input {
+    width: 100%; background: var(--field); border: 1px solid var(--border);
+    color: var(--text); border-radius: 7px; padding: 8px 9px; font: inherit;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; gap: 8px; }
+  .row > div { flex: 1; }
+  .btns { display: flex; gap: 8px; margin-top: 14px; }
+  button {
+    flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px;
+    font: inherit; font-weight: 600; cursor: pointer; color: var(--text); background: #17203a;
+  }
+  button.primary { background: var(--accent); color: #1b1206; border-color: var(--accent); }
+  button:hover { filter: brightness(1.12); }
+  button:disabled { opacity: .5; cursor: default; filter: none; }
+  #status { margin-top: 12px; font-size: 12px; color: var(--muted); min-height: 16px; }
+  #status.err { color: #ff8080; }
+  #readout { margin-top: 8px; font-size: 12px; color: var(--text); display: none; }
+  #readout table { width: 100%; border-collapse: collapse; }
+  #readout td { padding: 2px 0; }
+  #readout td:last-child { text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  #legend { position: fixed; bottom: 14px; left: 16px; font-size: 11px; color: var(--muted); z-index: 10; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="panel">
+  <h1>Eclipse Path Viewer</h1>
+  <p class="sub">Shadow-axis central line from the SPICE / DE440 backend.</p>
+
+  <label for="epoch">Reference epoch T0 (UTC)</label>
+  <input id="epoch" type="text" value="2024-04-08T18:00:00" />
+
+  <div class="row">
+    <div>
+      <label for="start">Start (h from T0)</label>
+      <input id="start" type="number" value="-0.2" step="0.1" />
+    </div>
+    <div>
+      <label for="end">End (h from T0)</label>
+      <input id="end" type="number" value="1.9" step="0.1" />
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label for="step">Step (min)</label>
+      <input id="step" type="number" value="2" step="1" min="0.5" />
+    </div>
+    <div>
+      <label for="window">Fit window (h)</label>
+      <input id="window" type="number" value="2" step="0.5" min="0.5" />
+    </div>
+  </div>
+
+  <div class="btns">
+    <button id="compute" class="primary">Compute path</button>
+    <button id="sample">Load sample</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="readout">
+    <table>
+      <tr><td>Points</td><td id="r-count">–</td></tr>
+      <tr><td>Frame</td><td id="r-frame">–</td></tr>
+      <tr><td>Start</td><td id="r-start">–</td></tr>
+      <tr><td>End</td><td id="r-end">–</td></tr>
+    </table>
+  </div>
+
+  <details>
+    <summary>Backend</summary>
+    <label for="api">API base URL</label>
+    <input id="api" type="text" placeholder="(same origin)" />
+    <p class="hint">Leave blank when this page is served by the backend at
+      <code>/ui</code>. Otherwise e.g. <code>http://localhost:8000</code>.</p>
+  </details>
+</div>
+
+<div id="legend">Drag to orbit · scroll to zoom · orange track = central line</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three.module.js"
+}}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "./vendor/OrbitControls.js";
+
+// Vendored Three.js has no textures; this optional photo texture loads from a
+// CDN when reachable and falls back to a clean shaded globe otherwise.
+const EARTH_TEX = "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/textures/planets/earth_atmos_2048.jpg";
+const R = 1;
+
+// --- scene ------------------------------------------------------------------
+const canvas = document.getElementById("scene");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+camera.position.set(2.2, 1.4, 2.2);
+
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.minDistance = 1.25;
+controls.maxDistance = 12;
+
+scene.add(new THREE.AmbientLight(0x8899bb, 0.55));
+const sun = new THREE.DirectionalLight(0xfff4e0, 1.5);
+sun.position.set(5, 3, 5);
+scene.add(sun);
+
+// starfield
+{
+  const n = 1500, pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const v = new THREE.Vector3().randomDirection().multiplyScalar(40 + Math.random() * 40);
+    pos.set([v.x, v.y, v.z], i * 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color: 0x9fb0d0, size: 0.08 })));
+}
+
+// Earth. UV mapping below is derived to match THREE.SphereGeometry so that a
+// standard equirectangular texture (lon -180..180) and the lat/lon path align
+// with no extra rotation.
+const earthMat = new THREE.MeshPhongMaterial({ color: 0x2b4a7a, shininess: 8 });
+const earth = new THREE.Mesh(new THREE.SphereGeometry(R, 96, 96), earthMat);
+scene.add(earth);
+new THREE.TextureLoader().load(
+  EARTH_TEX,
+  (tex) => { tex.colorSpace = THREE.SRGBColorSpace; earthMat.map = tex; earthMat.color.set(0xffffff); earthMat.needsUpdate = true; },
+  undefined,
+  () => setStatus("(using plain globe — texture blocked)", false)
+);
+
+// atmosphere halo
+{
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(R * 1.02, 64, 64),
+    new THREE.MeshBasicMaterial({ color: 0x3a6fb0, transparent: true, opacity: 0.12, side: THREE.BackSide })
+  );
+  scene.add(halo);
+}
+
+// graticule (every 30°)
+{
+  const grp = new THREE.Group();
+  const mat = new THREE.LineBasicMaterial({ color: 0x38506f, transparent: true, opacity: 0.5 });
+  for (let lon = -180; lon < 180; lon += 30) {
+    const pts = [];
+    for (let lat = -90; lat <= 90; lat += 3) pts.push(llToVec3(lat, lon, R * 1.001));
+    grp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+  }
+  for (let lat = -60; lat <= 60; lat += 30) {
+    const pts = [];
+    for (let lon = -180; lon <= 180; lon += 3) pts.push(llToVec3(lat, lon, R * 1.001));
+    grp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+  }
+  scene.add(grp);
+}
+
+// lat/lon -> world position (matches SphereGeometry default UVs)
+function llToVec3(latDeg, lonDeg, r = R) {
+  const theta = (90 - latDeg) * Math.PI / 180;     // colatitude
+  const phi = (lonDeg + 180) * Math.PI / 180;       // texture longitude
+  return new THREE.Vector3(
+    -r * Math.cos(phi) * Math.sin(theta),
+    r * Math.cos(theta),
+    r * Math.sin(phi) * Math.sin(theta)
+  );
+}
+
+// --- path drawing -----------------------------------------------------------
+let pathGroup = null;
+
+function clearPath() {
+  if (!pathGroup) return;
+  pathGroup.traverse((o) => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+  scene.remove(pathGroup);
+  pathGroup = null;
+}
+
+function drawPath(points) {
+  clearPath();
+  if (points.length < 2) { setStatus("No central line for this range (axis misses Earth).", true); return; }
+
+  pathGroup = new THREE.Group();
+  const curvePts = points.map((p) => llToVec3(p.lat, p.lon, R * 1.006));
+
+  const curve = new THREE.CatmullRomCurve3(curvePts);
+  const tube = new THREE.Mesh(
+    new THREE.TubeGeometry(curve, curvePts.length * 4, 0.006, 8, false),
+    new THREE.MeshBasicMaterial({ color: 0xffb454 })
+  );
+  pathGroup.add(tube);
+
+  const markerGeo = new THREE.SphereGeometry(0.018, 16, 16);
+  const start = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: 0x5ad16a }));
+  start.position.copy(curvePts[0]);
+  const end = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: 0xff5a5a }));
+  end.position.copy(curvePts[curvePts.length - 1]);
+  pathGroup.add(start, end);
+
+  scene.add(pathGroup);
+
+  // ease the camera to look at the middle of the track
+  const mid = curvePts[Math.floor(curvePts.length / 2)].clone();
+  controls.target.set(0, 0, 0);
+  camera.position.copy(mid.clone().multiplyScalar(2.6));
+}
+
+// --- data fetching ----------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+function setStatus(msg, isErr) { const s = $("status"); s.textContent = msg; s.className = isErr ? "err" : ""; }
+
+function showReadout(data) {
+  const cl = data.central_line;
+  $("r-count").textContent = data.count;
+  $("r-frame").textContent = data.frame;
+  const fmt = (p) => `${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`;
+  $("r-start").textContent = cl.length ? fmt(cl[0]) : "–";
+  $("r-end").textContent = cl.length ? fmt(cl[cl.length - 1]) : "–";
+  $("readout").style.display = "block";
+}
+
+function apiBase() { return $("api").value.trim().replace(/\/$/, ""); }
+
+async function compute() {
+  const params = new URLSearchParams({
+    epoch: $("epoch").value.trim(),
+    start_hours: $("start").value,
+    end_hours: $("end").value,
+    step_minutes: $("step").value,
+    window_hours: $("window").value,
+  });
+  const url = `${apiBase()}/central-line?${params}`;
+  setStatus("Computing…", false);
+  $("compute").disabled = true;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    drawPath(data.central_line);
+    showReadout(data);
+    setStatus(`Rendered ${data.count} points (${data.frame}).`, false);
+  } catch (e) {
+    setStatus(`Backend error: ${e.message}. Try “Load sample”.`, true);
+  } finally {
+    $("compute").disabled = false;
+  }
+}
+
+async function loadSample() {
+  setStatus("Loading bundled sample…", false);
+  try {
+    const data = await (await fetch("./sample.json")).json();
+    drawPath(data.central_line);
+    showReadout(data);
+    setStatus("Rendered bundled sample (2024-04-08).", false);
+  } catch (e) {
+    setStatus(`Could not load sample: ${e.message}`, true);
+  }
+}
+
+$("compute").addEventListener("click", compute);
+$("sample").addEventListener("click", loadSample);
+
+// --- render loop ------------------------------------------------------------
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize);
+resize();
+
+(function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+
+// Try the live backend first; if it is not reachable, fall back to the sample.
+compute().then(() => {
+  if ($("status").classList.contains("err")) loadSample();
+});
+</script>
+</body>
+</html>

@@ -8,8 +8,9 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
-# Application code and kernel tooling.
+# Application code, frontend and kernel tooling.
 COPY app ./app
+COPY frontend ./frontend
 COPY --chown=appuser:appuser kernels ./kernels
 
 ENV PATH="/app/.venv/bin:$PATH" \

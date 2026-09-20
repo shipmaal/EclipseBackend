@@ -3,8 +3,8 @@
 Given the Besselian ``x, y`` (shadow-axis position on the fundamental plane, in
 Earth equatorial radii) and the axis orientation ``d, mu``, find the geographic
 point where the axis pierces the Earth ellipsoid (the eclipse central line).
-Follows the Explanatory Supplement to the Astronomical Almanac (sec. 8.33) /
-Meeus, *Astronomical Algorithms* ch. 54.
+Follows the Explanatory Supplement to the Astronomical Almanac [ES92] sec. 8.33 /
+Meeus, *Astronomical Algorithms* [Meeus98] ch. 54.
 
 Two correctness fixes over the earlier astropy version:
 
@@ -86,6 +86,13 @@ def fund_to_geo(x: float, y: float, d_deg: float, mu_deg: float) -> tuple[float,
     declination and Greenwich hour angle in degrees.  Longitude is returned in
     (-180, 180], east positive.  Raises ``ValueError`` when the axis misses the
     Earth (``x**2 + y1**2 > 1``) -- i.e. no central line at this instant.
+
+    Ellipsoid reduction on the auxiliary sphere [ES92] eq. 8.331-8.334; the
+    resulting parametric (reduced) latitude is converted to geodetic latitude
+    with ``tan(phi) = tan(phi1)/(1 - f)`` [Meeus98] ch. 54.
+
+    Geometric only: no atmospheric refraction (matters for a very low Sun) and
+    the mean lunar limb is folded into the umbral radius k2 (item A3).
     """
     aux = _reduction_aux(np.radians(d_deg))
 
@@ -95,12 +102,13 @@ def fund_to_geo(x: float, y: float, d_deg: float, mu_deg: float) -> tuple[float,
         raise ValueError("shadow axis does not intersect the Earth at this instant")
     zeta1 = np.sqrt(disc)
 
-    # Fundamental-plane -> geocentric direction (auxiliary sphere, latitude d1).
+    # Fundamental-plane -> geocentric direction (auxiliary sphere, latitude d1)
+    # [ES92] eq. 8.333.
     sin_phi1 = eta1 * aux.cos_d1 + zeta1 * aux.sin_d1
     theta = np.arctan2(x, zeta1 * aux.cos_d1 - eta1 * aux.sin_d1)  # hour angle E of axis meridian
     phi1 = np.arcsin(sin_phi1)  # parametric (reduced) latitude
 
-    # Parametric -> geodetic latitude.
+    # Parametric -> geodetic latitude [Meeus98] ch. 54.
     phi = np.arctan(np.tan(phi1) / (1.0 - _F))
 
     lon = (np.degrees(theta) - mu_deg + 180.0) % 360.0 - 180.0
@@ -114,6 +122,10 @@ def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float):
     Inverse of :func:`fund_to_geo` for a point on the WGS-84 ellipsoid.  ``xi, eta``
     are the point's fundamental-plane coordinates (Earth radii) and ``zeta`` its
     distance along the shadow axis; used for shadow-edge / limit computations.
+
+    Uses the inverse ellipsoid reduction [ES92] eq. 8.331 (via
+    :func:`_reduction_aux`), with the geodetic->parametric latitude
+    ``tan(beta) = (1 - f) tan(phi)`` [Meeus98] ch. 54.
     """
     aux = _reduction_aux(np.radians(d_deg))
 
@@ -137,8 +149,9 @@ def shadow_radii(
     Returns ``(penumbra_km, umbra_km, is_total)``.  ``umbra_km`` is the absolute
     radius; ``is_total`` is True for a total eclipse (umbra reaches the ground)
     and False for annular.  Uses the shadow-cone radii reduced to the observer's
-    distance below the fundamental plane (Explanatory Supplement); adequate for
-    visualization, not for precise limit computation.
+    distance below the fundamental plane, ``L = l - zeta*tan f`` [ES92] eq. 8.353;
+    adequate for visualization, not for precise limit computation (use
+    :func:`shadow_edge_limits` for the true limits/width).
     """
     eta1 = y / _reduction_aux(np.radians(d_deg)).rho1
     disc = 1.0 - x**2 - eta1**2
@@ -154,6 +167,10 @@ def shadow_radii(
 _EARTH_MEAN_KM = EARTH_MEAN_RADIUS_KM  # mean radius for short great-circle offsets
 
 
+# Great-circle helpers (standard spherical trigonometry): destination point,
+# haversine distance and initial bearing on a sphere of radius _EARTH_MEAN_KM.
+# Used only for the short (<~600 km) perpendicular offsets when root-finding the
+# shadow-edge limits; the reduction itself is on the full WGS-84 ellipsoid.
 def _destination(lat_deg, lon_deg, bearing_deg, dist_km):
     """Great-circle destination from a point given bearing and distance."""
     ad = dist_km / _EARTH_MEAN_KM
@@ -190,6 +207,11 @@ def shadow_edge_limits(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km=6
     crosses the shadow-cone edge on the WGS-84 ellipsoid.  Returns
     ``(north_point, south_point, width_km)`` with points as (lat, lon), or
     ``(None, None, 0.0)`` if the central point is outside the shadow (no width).
+
+    The edge condition -- separation from the shadow axis equals the cone radius
+    ``|l - zeta*tan f|`` reduced to the ground -- is the umbral-limit definition
+    of [ES92] / [MeeusSE]; solving it by bisection here is a numerical method, not
+    a cited closed form.  Geometric only (no refraction; mean lunar limb), item A3.
     """
     lon0, lat0 = fund_to_geo(x, y, d_deg, mu_deg)
 

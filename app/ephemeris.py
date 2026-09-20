@@ -24,8 +24,8 @@ Four Earth-orientation frames are supported (``earth_frame``):
 
 How ``mu`` and the fundamental-plane coordinates stay consistent
 ---------------------------------------------------------------
-* ``x, y, z`` (Explanatory Supplement to the Astronomical Almanac, eq. 8.322-6)
-  depend only on ``(alpha - a)`` and on the declinations ``delta`` (Moon) and
+* ``x, y, z`` ([ES92] eq. 8.322-6, Explanatory Supplement to the Astronomical
+  Almanac) depend only on ``(alpha - a)`` and on the declinations ``delta`` (Moon) and
   ``d`` (axis); a common Greenwich rotation of all right ascensions leaves them
   unchanged, so they are identical in an Earth-fixed frame or in true-of-date.
 * ``mu`` (Greenwich hour angle of the axis) ``= GST - a_of_date``.  For a SPICE
@@ -156,18 +156,24 @@ def _geocentric_vectors(et: float, earth_frame: str):
     if earth_frame in ("ITRS", "TOD"):
         moon, _ = spice.spkpos("MOON", et, "J2000", "LT+S", "EARTH")
         sun, _ = spice.spkpos("SUN", et, "J2000", "LT+S", "EARTH")
+        # TDB is used where ERFA expects TT: they differ by <= 1.7 ms, i.e. sub-mas
+        # in Earth orientation, well below our accuracy ceiling (item A4).
         tt2 = et / 86400.0  # TT ~ TDB to < 2 ms
         utc_jd = _J2000_JD + (et - spice.deltet(et, "ET")) / 86400.0
 
         if earth_frame == "ITRS":
-            # Full IAU 2006/2000A celestial-to-terrestrial transform with IERS EOP
-            # (polar motion + UT1-UTC): most accurate Earth-fixed frame.
+            # ERFA c2t06a: the full IAU 2006/2000A celestial-to-terrestrial rotation
+            # matrix [SOFA] (Wallace & Capitaine 2006), driven by IERS polar motion
+            # (xp, yp) and UT1-UTC [IERS2010] from :mod:`app.eop`.  Most accurate
+            # Earth-fixed frame; needs no binary PCK.
             xp, yp, dut1 = eop(utc_jd - 2400000.5)
             ut1_frac = (utc_jd - _J2000_JD) + dut1 / 86400.0
             rc2t = erfa.c2t06a(_J2000_JD, tt2, _J2000_JD, ut1_frac, xp, yp)
             return (rc2t @ np.asarray(moon)) / a_e, (rc2t @ np.asarray(sun)) / a_e, 0.0
 
         # TOD: true equator & equinox of date, GAST with UT1 ~ UTC (no EOP).
+        # ERFA pnm06a = IAU 2006/2000A precession-nutation matrix; gst06a = Greenwich
+        # apparent sidereal time, both [SOFA] (Wallace & Capitaine 2006).
         rbpn = erfa.pnm06a(_J2000_JD, tt2)  # GCRS -> true-of-date
         moon = rbpn @ np.asarray(moon)
         sun = rbpn @ np.asarray(sun)
@@ -194,22 +200,22 @@ def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> Bess
     r_moon, alpha, delta = spice.reclat(moon)
 
     # Shadow-axis direction: from the Moon toward the Sun (S - M), matching the
-    # Explanatory Supplement sign convention.  Its longitude is ``a`` and its
-    # latitude is the axis declination ``d``; its length is the Sun-Moon
+    # Explanatory Supplement sign convention [ES92] ch. 8.  Its longitude is ``a``
+    # and its latitude is the axis declination ``d``; its length is the Sun-Moon
     # distance used by the shadow-cone geometry.
     axis = sun - moon
     g_dist, a, d = spice.reclat(axis)
 
-    mu = gast - a  # Greenwich hour angle of the axis
+    mu = gast - a  # Greenwich hour angle of the axis [ES92] ch. 8
 
-    # Fundamental-plane coordinates of the Moon (Explanatory Supplement 8.322-6).
+    # Fundamental-plane coordinates of the Moon [ES92] eq. 8.322-6.
     ha = alpha - a
     x = r_moon * np.cos(delta) * np.sin(ha)
     y = r_moon * (np.sin(delta) * np.cos(d) - np.cos(delta) * np.sin(d) * np.cos(ha))
     z = r_moon * (np.sin(delta) * np.sin(d) + np.cos(delta) * np.cos(d) * np.cos(ha))
 
-    # Penumbral (f1) and umbral (f2) shadow cones (Explanatory Supplement
-    # 8.323-1, 8.323-6, 8.323-7), with distinct penumbral/umbral lunar radii.
+    # Penumbral (f1) and umbral (f2) shadow cones [ES92] eq. 8.323-1, 8.323-6,
+    # 8.323-7, with distinct penumbral/umbral lunar radii k1/k2 [Espenak].
     d_s = sun_radius_km() / a_e  # solar radius in Earth radii
     sin_f1 = (d_s + K_PENUMBRA) / g_dist
     sin_f2 = (d_s - K_UMBRA) / g_dist

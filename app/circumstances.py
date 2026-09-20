@@ -6,12 +6,16 @@ contact times C1/C4, the total/annular contacts C2/C3 and their duration, the
 time and magnitude of maximum eclipse, the obscuration (covered fraction of the
 Sun's area) and the Sun's altitude/azimuth.
 
-Method (Explanatory Supplement to the Astronomical Almanac): the observer's
+Method ([ES92] eq. 8.353-8.354; [Meeus98] ch. 54): the observer's
 fundamental-plane position (xi, eta, zeta) gives the separation ``m`` from the
 shadow axis; the penumbral/umbral cone radii reduced to the observer are
 ``L1' = l1 - zeta*tan_f1`` and ``L2' = l2 - zeta*tan_f2``.  Contacts are where
 ``m`` equals ``L1'`` (partial) or ``|L2'|`` (central); the eclipse magnitude is
-``(L1' - m)/(L1' + L2')``.
+``(L1' - m)/(L1' + L2')`` [Espenak].
+
+Geometric only: contacts carry no atmospheric-refraction correction and use the
+mean lunar limb (folded into k2), so grazing/limb-profile effects are not
+modelled (item A3).
 """
 
 from __future__ import annotations
@@ -56,7 +60,10 @@ def _roots(t, f):
 
 
 def _overlap_area(r, R, d):
-    """Area of intersection of two circles (radii r<=R, centre distance d)."""
+    """Area of intersection of two circles (radii r<=R, centre distance d).
+
+    Standard circular-segment (lens) area; used for the obscuration below.
+    """
     if d >= r + R:
         return 0.0
     if d <= R - r:
@@ -68,7 +75,13 @@ def _overlap_area(r, R, d):
 
 
 def _obscuration(L1p, L2p, m):
-    """Fraction of the Sun's area covered, from the shadow radii + separation."""
+    """Fraction of the Sun's area covered, from the shadow radii + separation.
+
+    Obscuration is the covered fraction of the Sun's *area* [Espenak] (distinct
+    from magnitude, a diameter ratio): the Moon/Sun disks are two circles whose
+    overlap area (:func:`_overlap_area`) is divided by the Sun's area.  The disk
+    radius ratio and centre separation come from the reduced cone radii L1'/L2'.
+    """
     denom = L1p + L2p
     if denom <= 0:
         return 0.0

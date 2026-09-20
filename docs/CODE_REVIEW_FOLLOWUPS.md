@@ -33,18 +33,30 @@ item.
   previously clipped C4) now recovers the exact C1/C4/magnitude of the ±2.5 h
   reference for a partial observer (NYC, 2024-04-08). Reference-eclipse numbers
   unchanged (direct == polynomial inside the window).
-- **A3 — Documented approximations (low).** Geometric only: no atmospheric
-  refraction (contacts, low-Sun central line) and only the mean lunar limb
-  (in `K_UMBRA`). State per-docstring.
-- **A4 — TDB used as TT for ERFA (low).** ≤1.7 ms → sub-mas; note it.
+- **A3 — Documented approximations (low). DONE.** Geometric-only caveat (no
+  atmospheric refraction; mean lunar limb folded into `K_UMBRA`) now stated in the
+  docstrings of `geography.fund_to_geo`, `geography.shadow_edge_limits` and the
+  `circumstances` module.
+- **A4 — TDB used as TT for ERFA (low). DONE.** Noted inline in
+  `ephemeris._geocentric_vectors` (≤1.7 ms → sub-mas).
 - **A5 — WGS-84 `b` rounded (low). DONE.** Folded into A1: `b` is now derived
   from `a` and `f` in `app/constants.py`, no longer hard-coded.
 
-## 2. Citation coverage (core goal)
+## 2. Citation coverage (core goal) — DONE
 
-Citations exist but are inconsistent (edition not labelled; equation numbers
-missing in `geography.py`/`circumstances.py`; several formulas uncited). Apply
-the keyed references from `CLAUDE.md` with equation numbers:
+Applied the keyed references from `CLAUDE.md` with equation numbers across the
+math modules (all rows of the table below):
+- `ephemeris.py`: x,y,z [ES92] 8.322-6; cones [ES92] 8.323-1/6/7 + k1/k2 [Espenak];
+  `c2t06a` [SOFA]+[IERS2010], `pnm06a`/`gst06a` [SOFA].
+- `geography.py`: `_reduction_aux`/`fund_to_geo`/`geo_to_fund` [ES92] 8.331-8.334 +
+  parametric↔geodetic [Meeus98] 54; great-circle helpers noted standard spherical
+  trig; `shadow_edge_limits` noted numerical, limit defn [ES92]/[MeeusSE];
+  `shadow_radii` [ES92] 8.353.
+- `circumstances.py`: method [ES92] 8.353-8.354 / [Meeus98] 54; magnitude &
+  obscuration [Espenak]; circle overlap = standard geometry.
+- `eop.py`: EOP [IERS2010].
+
+Original table (all rows now cited):
 
 | Location | Formula | Citation |
 | --- | --- | --- |

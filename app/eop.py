@@ -5,6 +5,10 @@ PyPI package (updated weekly) and interpolates the Bulletin A values.  These
 feed ERFA's celestial-to-terrestrial transform for the high-precision ``ITRS``
 Earth-orientation frame, giving true (EOP-corrected) Earth rotation without the
 NAIF binary Earth PCK.
+
+Polar motion (xp, yp) and UT1-UTC are the Earth-orientation parameters defined by
+the IERS Conventions [IERS2010]; linear interpolation between daily tabulated
+values is the standard use of the Bulletin A series.
 """
 
 from __future__ import annotations

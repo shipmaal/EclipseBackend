@@ -26,11 +26,17 @@ from __future__ import annotations
 
 import numpy as np
 
-# WGS-84.
-_A_KM = 6378.137
-_B_KM = 6356.752
-_F = 1.0 - _B_KM / _A_KM          # flattening
-_E2 = 1.0 - (_B_KM / _A_KM) ** 2  # first eccentricity squared
+from .constants import (
+    EARTH_MEAN_RADIUS_KM,
+    WGS84_A_KM,
+    WGS84_E2,
+    WGS84_F,
+)
+
+# WGS-84 ellipsoid (cited + derived in app.constants; item A1/R2).
+_A_KM = WGS84_A_KM  # semi-major axis [km]
+_F = WGS84_F        # flattening
+_E2 = WGS84_E2      # first eccentricity squared
 
 
 def fund_to_geo(x: float, y: float, d_deg: float, mu_deg: float) -> tuple[float, float]:
@@ -117,7 +123,7 @@ def shadow_radii(
     return float(abs(L1) * _A_KM), float(abs(L2) * _A_KM), bool(L2 < 0.0)
 
 
-_EARTH_MEAN_KM = 6371.0088  # mean radius for short great-circle offsets
+_EARTH_MEAN_KM = EARTH_MEAN_RADIUS_KM  # mean radius for short great-circle offsets
 
 
 def _destination(lat_deg, lon_deg, bearing_deg, dist_km):

@@ -13,13 +13,14 @@ item.
 
 ## 1. Scientific accuracy
 
-- **A1 — Ellipsoid constants duplicated / slightly inconsistent (medium).** The
-  fundamental-plane unit is SPICE `a_e = 6378.1366 km` (`ephemeris.py`
-  `earth_equatorial_radius_km`), but the reduction uses WGS-84 `a = 6378.137`,
-  `b = 6356.752` (`geography.py:30-31`). Unit radius differs ~0.4 m, and `b` is
-  rounded (exact `b = 6356.7523142`; better: define `f = 1/298.257223563` [WGS84]
-  and derive `b, e²`). Fix: one cited ellipsoid used everywhere (scale by it in
-  `ephemeris.py` too).
+- **A1 — Ellipsoid constants duplicated / slightly inconsistent (medium). DONE.**
+  The fundamental-plane unit was SPICE `a_e = 6378.1366 km` (`ephemeris.py`
+  `earth_equatorial_radius_km`), but the reduction used WGS-84 `a = 6378.137`,
+  `b = 6356.752` (`geography.py:30-31`). Fixed: `app/constants.py` now defines the
+  WGS-84 ellipsoid from `a` + `f = 1/298.257223563` [WGS84] and derives `b, e²`;
+  the same `a` is the fundamental-plane unit radius, used to scale the Sun/Moon
+  vectors in `ephemeris.py` and as the reduction ellipsoid in `geography.py`.
+  Reference eclipses unchanged (width Δ < 0.3 m, times/magnitudes identical).
 - **A2 — Polynomial extrapolation / window-clipped contacts (medium; only
   accuracy-affecting item).** `BesselianModel` fits polynomials over ±`window`
   (`besselian.py:55-63`); `/central-line` can evaluate beyond it (`main.py:81`)
@@ -34,7 +35,8 @@ item.
   refraction (contacts, low-Sun central line) and only the mean lunar limb
   (in `K_UMBRA`). State per-docstring.
 - **A4 — TDB used as TT for ERFA (low).** ≤1.7 ms → sub-mas; note it.
-- **A5 — WGS-84 `b` rounded (low).** Folded into A1.
+- **A5 — WGS-84 `b` rounded (low). DONE.** Folded into A1: `b` is now derived
+  from `a` and `f` in `app/constants.py`, no longer hard-coded.
 
 ## 2. Citation coverage (core goal)
 
@@ -59,8 +61,10 @@ the keyed references from `CLAUDE.md` with equation numbers:
 - **R1** — `ρ1/ρ2/d1/d2` auxiliaries duplicated in `fund_to_geo`
   (`geography.py:46-48`), `geo_to_fund` (`:77-82`), `shadow_radii` (`:108-109`).
   Extract `_reduction_aux(d)`.
-- **R2** — Constants scattered (WGS-84 in `geography.py`, `K_*` + `a_e` in
-  `ephemeris.py`). Centralize in a cited `constants.py`/`ellipsoid.py` (fixes A1).
+- **R2 — DONE.** WGS-84 ellipsoid + fundamental-plane unit radius + mean radius
+  centralized in a cited `app/constants.py` and imported by `geography.py` and
+  `ephemeris.py` (fixes A1). The lunar-radius constants `K_PENUMBRA`/`K_UMBRA`
+  stay in `ephemeris.py`, which owns the shadow-cone geometry (per `CLAUDE.md`).
 - **R3** — "evaluate → central point + bearing per t" duplicated (`main.py:84-98`,
   tests). Add `central_track(model, t) -> arrays(lat, lon, bearing)`.
 - **R4** — Two time formatters: `dec_to_hms` (`geography.py:194`) and `_clock`

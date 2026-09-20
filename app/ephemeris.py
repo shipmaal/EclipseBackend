@@ -51,6 +51,7 @@ import erfa
 import numpy as np
 import spiceypy as spice
 
+from .constants import EARTH_EQUATORIAL_RADIUS_KM
 from .eop import eop
 
 # Julian date of J2000.0, for two-part TT/UT1 dates passed to ERFA.
@@ -102,9 +103,16 @@ def unload_kernels() -> None:
     _KERNELS_LOADED = False
 
 
-@lru_cache(maxsize=1)
 def earth_equatorial_radius_km() -> float:
-    return float(spice.bodvrd("EARTH", "RADII", 3)[1][0])
+    """Fundamental-plane unit radius [km]: the cited WGS-84 semi-major axis.
+
+    This is the single Earth radius that both scales the geocentric Sun/Moon
+    vectors here and defines the reduction ellipsoid in :mod:`app.geography`, so
+    the fundamental plane and the geographic reduction stay consistent (item A1).
+    Previously this returned the SPICE PCK value (``a_e = 6378.1366 km``), which
+    differed from the WGS-84 ``a = 6378.137 km`` used by the reduction by ~0.4 m.
+    """
+    return EARTH_EQUATORIAL_RADIUS_KM
 
 
 @lru_cache(maxsize=1)

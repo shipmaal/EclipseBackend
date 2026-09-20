@@ -115,8 +115,14 @@ as read-only thereafter.
 - Still-open pure-computation features: rise/set + maximum-eclipse curves,
   penumbral (partial-region) limits.
 
-## First task
+## Status: this is a plan to refine, not a build to start
 
-Phase 0 skeleton + Phase 1 (`besselian_instant`) parity, on a branch off `main`.
-Keep `uv run pytest` and `ruff` green; add a `parity` test module comparing the
+Path B is a **staged effort that must be specced and planned before any code is
+written**. This document is the starting draft, not a green light to compile.
+The first work is planning, not building: pin the toolchain and binding library
+(nanobind vs pybind11), the CSPICE-vs-pass-positions-in boundary, the licensing
+review, the CI/build matrix, and the parity harness design — and turn the phases
+below into a concrete, reviewed task breakdown. Only after that plan is agreed
+does Phase 0 (the buildable skeleton) begin, on a branch off `main`, keeping
+`uv run pytest` and `ruff` green with a `parity` test module comparing the
 extension to the Python oracle.

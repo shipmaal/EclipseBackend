@@ -11,6 +11,12 @@ Work them in the "Suggested order" below; validate against the reference eclipse
 (2017-08-21, 2024-04-08 total; 2023-10-14 annular) after each step and commit per
 item.
 
+**Status: all items closed** (A1–A5, R1–R5, M1–M5, and the §2 citation pass).
+Each was validated against the three reference eclipses with no regression
+(greatest-eclipse lat/lon, path width, contact times and magnitudes unchanged to
+< 1 km / < 1 s), the test suite grew from 17 to 26 (new pure-function tests), and
+`ruff check` is clean. Details per item below.
+
 ## 1. Scientific accuracy
 
 - **A1 — Ellipsoid constants duplicated / slightly inconsistent (medium). DONE.**
@@ -88,8 +94,9 @@ Original table (all rows now cited):
   (unchanged, tested), plus `format_offset(t)` (`±HH:MM:SS.s`, used by `main.py`)
   and `format_clock(t0_utc, t)` (absolute UTC `HH:MM:SS`, replaces
   `circumstances._clock`).
-- **R5** — Frame-fallback loop duplicated in tests (`_build_model`,
-  `_usable_frame`). Promote `build_model_best_frame()` into `app/`.
+- **R5 — DONE.** Promoted `build_model_best_frame(t0_utc, ...)` and
+  `best_earth_frame()` into `app/besselian.py`; the integration tests'
+  `_build_model`/`_usable_frame` are now thin wrappers over them.
 
 ## 4. Modern codebase
 

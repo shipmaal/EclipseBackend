@@ -25,6 +25,11 @@ from .ephemeris import (
 # d, l1, l2 quadratic; mu linear).  tan_f1 / tan_f2 are treated as constants.
 _DEGREES = {"x": 3, "y": 3, "d": 2, "l1": 2, "l2": 2, "mu": 1}
 
+# Earth-orientation frames in preference order: ITRS (ERFA + IERS EOP; needs no
+# binary PCK) first, then the binary-PCK ITRF93, the PCK-free TOD, and the coarse
+# IAU_EARTH fallback.  Which are usable depends on the furnished kernels.
+_FRAME_PREFERENCE = ("ITRS", "ITRF93", "TOD", "IAU_EARTH")
+
 
 @dataclass
 class BesselianPolynomials:
@@ -145,3 +150,51 @@ class BesselianModel:
             "tan_f1": np.array([bi.tan_f1 for bi in instants]),
             "tan_f2": np.array([bi.tan_f2 for bi in instants]),
         }
+
+
+def best_earth_frame(frames: tuple[str, ...] = _FRAME_PREFERENCE) -> str:
+    """Return the first Earth-orientation frame the furnished kernels support (item R5).
+
+    Probes :func:`~app.ephemeris.besselian_instant` at J2000 (covered by every DE
+    ephemeris used here) and returns the first frame in preference order that does
+    not raise a SPICE error (e.g. ITRF93 needs a binary Earth PCK the mirror omits).
+    Raises ``RuntimeError`` if none work.
+    """
+    import spiceypy
+
+    load_kernels()
+    for frame in frames:
+        try:
+            besselian_instant(0.0, frame)  # et = 0 -> J2000
+            return frame
+        except spiceypy.utils.exceptions.SpiceyError:
+            spiceypy.reset()
+    raise RuntimeError("no usable Earth-orientation frame in the furnished kernels")
+
+
+def build_model_best_frame(
+    t0_utc: str,
+    half_window_hours: float = 2.0,
+    step_hours: float = 1.0,
+    frames: tuple[str, ...] = _FRAME_PREFERENCE,
+) -> tuple[BesselianModel, str]:
+    """Build a :class:`BesselianModel` with the best available frame (item R5).
+
+    Tries each frame in preference order and returns ``(model, frame)`` for the
+    first that the furnished kernels support.  Factors the frame-fallback loop out
+    of the tests.  Raises ``RuntimeError`` if none work.
+    """
+    import spiceypy
+
+    for frame in frames:
+        try:
+            model = BesselianModel(
+                t0_utc=t0_utc,
+                earth_frame=frame,
+                half_window_hours=half_window_hours,
+                step_hours=step_hours,
+            )
+            return model, frame
+        except spiceypy.utils.exceptions.SpiceyError:
+            spiceypy.reset()
+    raise RuntimeError("no usable Earth-orientation frame in the furnished kernels")

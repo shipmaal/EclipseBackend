@@ -24,18 +24,11 @@ T0 = "2024-04-08T18:00:00"
 
 
 def _build_model(t0):
-    """Prefer ITRF93 (binary Earth PCK); fall back to the pyerfa TOD frame, which
-    needs no binary PCK, and finally to IAU_EARTH."""
-    import spiceypy
+    """Build a model with the best available Earth-orientation frame (ITRS first,
+    then ITRF93, TOD, IAU_EARTH). Thin wrapper over app.besselian for the tests."""
+    from app.besselian import build_model_best_frame
 
-    from app.besselian import BesselianModel
-
-    for frame in ("ITRS", "ITRF93", "TOD", "IAU_EARTH"):
-        try:
-            return BesselianModel(t0_utc=t0, earth_frame=frame, half_window_hours=2.0), frame
-        except spiceypy.utils.exceptions.SpiceyError:
-            spiceypy.reset()
-    raise RuntimeError("no usable Earth-orientation frame in the furnished kernels")
+    return build_model_best_frame(t0, half_window_hours=2.0)
 
 
 def test_central_line_matches_published_track():
@@ -70,19 +63,9 @@ _2017_GREATEST = {"utc": "2017-08-21T18:25:30", "lat": 37.0, "lon": -87.7, "widt
 
 
 def _usable_frame():
-    import spiceypy
+    from app.besselian import best_earth_frame
 
-    from app.ephemeris import besselian_instant, load_kernels, utc_to_et
-
-    load_kernels()
-    et = utc_to_et("2017-08-21T18:00:00")
-    for frame in ("ITRS", "ITRF93", "TOD", "IAU_EARTH"):
-        try:
-            besselian_instant(et, frame)
-            return frame
-        except spiceypy.utils.exceptions.SpiceyError:
-            spiceypy.reset()
-    raise RuntimeError("no usable Earth-orientation frame")
+    return best_earth_frame()
 
 
 def test_2017_elements_match_published():

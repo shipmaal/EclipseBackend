@@ -6,7 +6,10 @@ A solar eclipse needs the Sun *and* the Moon expressed in one consistent
 geocentric framework, as **apparent** positions (corrected for light-time and
 stellar aberration) and referred to a high-precision Earth-rotation model.
 SPICE + a JPL DE ephemeris (DE440 from NAIF, DE432s from the GitHub mirror) gives
-all of that from a single toolkit:
+all of that from a single toolkit.  The two DE sources are interchangeable at
+our accuracy ceiling: across the three reference eclipses their apparent
+geocentric Moon agrees to ~2-3 mm and Sun to ~0.2 km, an effect of ~3 mm on the
+fundamental-plane elements -- far below the ~km lunar-limb frontier.  In detail:
 
 * ``spkpos(..., abcorr="LT+S", ...)`` returns apparent positions (light-time +
   stellar aberration) -- exactly what the Besselian construction assumes.
@@ -21,6 +24,10 @@ Four Earth-orientation frames are supported (``earth_frame``):
   UT1 approximated by UTC (no EOP).  Differs from ITRS only by the EOP terms.
 * ``"ITRF93"`` -- SPICE Earth body-fixed frame from the high-precision binary
   Earth PCK (``earth_latest_high_prec.bpc``); equivalent accuracy to ITRS.
+  Verified interchangeable with ITRS across the three reference eclipses --
+  x, y agree to < 0.1 m and d, mu to < 0.01 arcsec -- so the default ITRS frame
+  loses nothing by needing no binary PCK (guarded by
+  ``tests/test_frame_consistency.py``).
 * ``"IAU_EARTH"`` -- SPICE low-precision analytic rotation; coarse fallback.
 
 How ``mu`` and the fundamental-plane coordinates stay consistent

@@ -58,6 +58,20 @@
   summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
   #legend { position: fixed; bottom: 14px; left: 16px; font-size: 11px; color: var(--muted); z-index: 10; }
+  #legend b { color: var(--accent); }
+  #local {
+    position: fixed; top: 16px; right: 16px; width: 260px; display: none;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 16px; backdrop-filter: blur(8px); z-index: 10;
+  }
+  #local h2 { font-size: 14px; margin: 0 0 2px; }
+  #local #l-sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  #local table { width: 100%; border-collapse: collapse; }
+  #local td { padding: 2px 0; font-size: 12px; }
+  #local td:first-child { color: var(--muted); }
+  #local td:last-child { text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+  #local-close { position: absolute; top: 8px; right: 10px; width: 22px; height: 22px; flex: none;
+                 padding: 0; line-height: 1; background: transparent; border: none; color: var(--muted); font-size: 18px; }
 </style>
 </head>
 <body>
@@ -127,7 +141,14 @@
   </details>
 </div>
 
-<div id="legend">Drag to orbit · scroll to zoom · orange = central line · shaded band = path of totality</div>
+<div id="legend">Drag to orbit · scroll to zoom · <b>click the globe</b> for local circumstances</div>
+
+<div id="local">
+  <button id="local-close" title="close">×</button>
+  <h2 id="l-title">Local circumstances</h2>
+  <div id="l-sub"></div>
+  <table id="l-table"></table>
+</div>
 
 <script type="importmap">
 { "imports": {
@@ -425,6 +446,76 @@ async function loadSample() {
 
 $("compute").addEventListener("click", compute);
 $("sample").addEventListener("click", loadSample);
+
+// --- click the globe -> local circumstances ---------------------------------
+const raycaster = new THREE.Raycaster();
+let clickMarker = null;
+let downXY = null;
+
+function vec3ToLL(v) {
+  const lat = Math.asin(THREE.MathUtils.clamp(v.y / v.length(), -1, 1)) * 180 / Math.PI;
+  let lon = Math.atan2(v.z, -v.x) * 180 / Math.PI - 180; // inverse of llToVec3
+  lon = ((lon + 540) % 360) - 180;
+  return [lat, lon];
+}
+
+function row(label, value) { return `<tr><td>${label}</td><td>${value}</td></tr>`; }
+
+async function inspect(lat, lon) {
+  $("local").style.display = "block";
+  $("l-title").textContent = "Local circumstances";
+  $("l-sub").textContent = `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
+  $("l-table").innerHTML = row("", "…computing");
+  try {
+    const url = `${apiBase()}/circumstances?epoch=${encodeURIComponent($("epoch").value.trim())}&lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
+    const c = await (await fetch(url)).json();
+    if (!c.eclipse) { $("l-table").innerHTML = row("", "No eclipse visible here"); return; }
+    let html = row("Type", `<b>${c.type}</b>`)
+      + row("Magnitude", c.magnitude.toFixed(3))
+      + row("Obscuration", (c.obscuration * 100).toFixed(1) + "%")
+      + row("Max eclipse", c.max_time + " UT")
+      + row("Sun alt / az", `${c.sun_alt}° / ${c.sun_az}°`)
+      + row("Partial begins", c.C1 + " UT")
+      + row("Partial ends", c.C4 + " UT");
+    if (c.central_duration_s) {
+      const mm = Math.floor(c.central_duration_s / 60), ss = Math.round(c.central_duration_s % 60);
+      html += row(c.type === "total" ? "Totality" : "Annularity",
+        `${c.C2}–${c.C3} UT (${mm}m${String(ss).padStart(2, "0")}s)`);
+    }
+    $("l-table").innerHTML = html;
+  } catch (e) {
+    $("l-table").innerHTML = row("", `error: ${e.message}`);
+  }
+}
+
+canvas.addEventListener("pointerdown", (e) => { downXY = [e.clientX, e.clientY]; });
+canvas.addEventListener("pointerup", (e) => {
+  if (!downXY) return;
+  const moved = Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]);
+  downXY = null;
+  if (moved > 5) return; // was a drag/orbit, not a click
+  const ndc = new THREE.Vector2(
+    (e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1
+  );
+  raycaster.setFromCamera(ndc, camera);
+  const hit = raycaster.intersectObject(earth)[0];
+  if (!hit) return;
+  const [lat, lon] = vec3ToLL(hit.point);
+  if (!clickMarker) {
+    clickMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.02, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0x5ad1ff })
+    );
+    scene.add(clickMarker);
+  }
+  clickMarker.position.copy(hit.point.clone().setLength(R * 1.01));
+  clickMarker.visible = true;
+  inspect(lat, lon);
+});
+$("local-close").addEventListener("click", () => {
+  $("local").style.display = "none";
+  if (clickMarker) clickMarker.visible = false;
+});
 
 // --- render loop ------------------------------------------------------------
 function resize() {

@@ -66,7 +66,7 @@ def test_central_line_matches_published_track():
 # greatest-eclipse circumstances (18:25:30 UT). Source: F. Espenak, elements as
 # distributed in andrmoel/astronomy-bundle-php (VSOP87/ELP2000).
 _2017_PUBLISHED = {"x": -0.1295710, "y": 0.4854160, "d": 11.8669596}
-_2017_GREATEST = {"utc": "2017-08-21T18:25:30", "lat": 37.0, "lon": -87.7, "width_km": 114.7}
+_2017_GREATEST = {"utc": "2017-08-21T18:25:30", "lat": 37.0, "lon": -87.7, "width_km": 114.7, "is_total": True, "duration_s": 160, "magnitude": 1.0306}
 
 
 def _usable_frame():
@@ -105,11 +105,11 @@ def test_2017_elements_match_published():
 
 # 2024-04-08, independent Espenak elements + greatest-eclipse circumstances.
 _2024_PUBLISHED = {"x": -0.3182440, "y": 0.2197640, "d": 7.5862002}
-_2024_GREATEST = {"utc": "2024-04-08T18:17:15", "lat": 25.3, "lon": -104.1, "width_km": 197.5}
+_2024_GREATEST = {"utc": "2024-04-08T18:17:15", "lat": 25.3, "lon": -104.1, "width_km": 197.5, "is_total": True, "duration_s": 268, "magnitude": 1.0566}
 
 
 def _check_greatest(g):
-    from app.geography import bearing, fund_to_geo, shadow_edge_limits
+    from app.geography import bearing, fund_to_geo, shadow_edge_limits, shadow_radii
 
     model, _frame = _build_model(g["utc"])
     dt = 0.02
@@ -121,11 +121,15 @@ def _check_greatest(g):
     north, south, width = shadow_edge_limits(
         e["x"][1], e["y"][1], e["d"][1], e["mu"][1], e["l2"][1], e["tan_f2"][1], brg
     )
+    _pen, _umb, is_total = shadow_radii(
+        e["x"][1], e["y"][1], e["d"][1], e["l1"][1], e["l2"][1], e["tan_f1"][1], e["tan_f2"][1]
+    )
     # Published lat/lon are rounded to 0.1 deg; width matches to ~1 km.
     assert lat == pytest.approx(g["lat"], abs=0.12)
     assert lon == pytest.approx(g["lon"], abs=0.12)
     assert north is not None and north[0] > south[0]
     assert width == pytest.approx(g["width_km"], abs=2.0)
+    assert is_total is g["is_total"]
 
 
 def test_2017_greatest_eclipse_point():
@@ -146,3 +150,66 @@ def test_2024_elements_match_published():
 
 def test_2024_greatest_eclipse_point():
     _check_greatest(_2024_GREATEST)
+
+
+# 2023-10-14 ANNULAR eclipse: exercises is_total=False and the antumbral (l2 > 0)
+# width path. Independent Espenak elements + greatest-eclipse circumstances.
+_2023_PUBLISHED = {"x": 0.1696580, "y": 0.3348590, "d": -8.2441902}
+_2023_GREATEST = {"utc": "2023-10-14T17:59:27", "lat": 11.4, "lon": -83.1, "width_km": 187.4, "is_total": False, "duration_s": 317, "magnitude": 0.9520}
+
+
+def test_2023_annular_elements_match_published():
+    import spiceypy
+
+    from app.ephemeris import besselian_instant
+
+    frame = _usable_frame()
+    et = spiceypy.str2et("2023-10-14 18:00:00 TDT")
+    bi = besselian_instant(et, frame)
+    for key, pub in _2023_PUBLISHED.items():
+        assert getattr(bi, key) == pytest.approx(pub, abs=1e-3), key
+
+
+def test_2023_annular_greatest_eclipse_point():
+    _check_greatest(_2023_GREATEST)
+
+
+# --- Local circumstances at the greatest-eclipse point ----------------------
+def _check_circumstances(g):
+    from app.circumstances import local_circumstances
+    from app.geography import fund_to_geo
+
+    model, _frame = _build_model(g["utc"])
+    e = model.evaluate(np.array([0.0]))  # central point at maximum
+    lon, lat = fund_to_geo(e["x"][0], e["y"][0], e["d"][0], e["mu"][0])
+    c = local_circumstances(model, lat, lon)
+
+    assert c["eclipse"] is True
+    assert c["type"] == ("total" if g["is_total"] else "annular")
+    assert c["central_duration_s"] == pytest.approx(g["duration_s"], abs=3.0)
+    assert c["magnitude"] == pytest.approx(g["magnitude"], abs=0.003)
+
+
+def test_circumstances_2017():
+    _check_circumstances(_2017_GREATEST)
+
+
+def test_circumstances_2024():
+    _check_circumstances(_2024_GREATEST)
+
+
+def test_circumstances_2023_annular():
+    _check_circumstances(_2023_GREATEST)
+
+
+def test_circumstances_partial_observer():
+    """A location off the central path sees a partial eclipse (no central phase)."""
+    from app.circumstances import local_circumstances
+    from app.besselian import BesselianModel
+
+    model = BesselianModel(t0_utc="2024-04-08T18:17:15", half_window_hours=2.5)
+    c = local_circumstances(model, 40.71, -74.01)  # New York City
+    assert c["eclipse"] is True
+    assert c["type"] == "partial"
+    assert "central_duration_s" not in c
+    assert 0.85 < c["magnitude"] < 0.95  # NYC saw ~90% of the Sun's diameter covered

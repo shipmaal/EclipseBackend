@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .besselian import BesselianModel
+from .circumstances import local_circumstances
 from .ephemeris import DEFAULT_EARTH_FRAME, sub_solar_point, utc_to_et
 from .geography import bearing, dec_to_hms, fund_to_geo, shadow_edge_limits, shadow_radii
 
@@ -130,6 +131,25 @@ async def central_line(
         "sun": {"lon": round(ss_lon, 4), "lat": round(ss_lat, 4)},
         "central_line": points,
     }
+
+
+@app.get("/circumstances")
+async def circumstances(
+    epoch: str = Query(..., description="Reference epoch T0 (UTC), near maximum eclipse"),
+    lat: float = Query(..., ge=-90.0, le=90.0, description="Observer latitude (deg)"),
+    lon: float = Query(..., ge=-180.0, le=180.0, description="Observer longitude (deg, east +)"),
+    window_hours: float = Query(2.5, ge=1.0, le=6.0, description="Half-window sampled around T0"),
+    frame: str = Query(DEFAULT_EARTH_FRAME),
+) -> dict:
+    """Local eclipse circumstances at an observer: contacts, duration, magnitude.
+
+    Returns C1-C4 contact clock times (UTC), maximum-eclipse time, magnitude,
+    obscuration, Sun altitude/azimuth, and the central-phase duration when the
+    observer is inside the umbra/antumbra.  ``epoch`` should be near the
+    observer's maximum (e.g. the greatest-eclipse time).
+    """
+    model = _build_model(epoch, window_hours, frame)
+    return local_circumstances(model, lat, lon)
 
 
 # Serve the Three.js frontend at /ui (same origin as the API, so no CORS hop).

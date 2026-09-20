@@ -3,7 +3,8 @@
 The elements are sampled at a few epochs bracketing a reference time ``T0`` and
 each is fit with a low-order polynomial in ``t`` = hours from ``T0`` (the usual
 tabular form, e.g. Fred Espenak's eclipse bulletins).  Sampling and geometry
-come from :mod:`app.ephemeris` (SPICE / JPL DE440).
+come from :mod:`app.ephemeris` (SPICE / a JPL DE ephemeris; the GitHub mirror
+ships DE432s, the NAIF source DE440).
 """
 
 from __future__ import annotations

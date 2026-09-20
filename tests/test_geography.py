@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.geography import dec_to_hms, fund_to_geo
+from app.geography import dec_to_hms, format_clock, format_offset, fund_to_geo, geo_to_fund
 from app.reference import central_line
 
 # Besselian polynomials for the 2024-04-08 eclipse (coeffs in powers of
@@ -66,3 +66,32 @@ def test_longitude_wrapped():
     lon, lat = fund_to_geo(x, y, d, mu)
     assert -180.0 < lon <= 180.0
     assert -90.0 <= lat <= 90.0
+
+
+def test_geo_to_fund_round_trip():
+    """geo_to_fund and fund_to_geo are exact inverses on the near (shadow-facing)
+    side of the ellipsoid (item M5)."""
+    d_deg, mu_deg = 7.5862, 89.6
+    checked = 0
+    for lat in (-40.0, -10.0, 0.0, 20.0, 45.0):
+        for lon in (-160.0, -104.0, -40.0, 0.0, 80.0):
+            xi, eta, zeta = geo_to_fund(lat, lon, d_deg, mu_deg)
+            if zeta <= 0.0:
+                continue  # far side: fund_to_geo returns the near-side solution
+            lon2, lat2 = fund_to_geo(xi, eta, d_deg, mu_deg)
+            assert lat2 == pytest.approx(lat, abs=1e-6), (lat, lon)
+            assert lon2 == pytest.approx(lon, abs=1e-6), (lat, lon)
+            checked += 1
+    assert checked >= 3  # the round-trip was actually exercised
+
+
+def test_format_offset_signed():
+    assert format_offset(0.0) == "+00:00:00.0"
+    assert format_offset(1.5) == "+01:30:00.0"
+    assert format_offset(-0.25) == "-00:15:00.0"
+
+
+def test_format_clock_rolls_over_midnight():
+    # 23:30 UTC + 1 h -> 00:30 the next day (date rollover handled by datetime).
+    assert format_clock("2024-04-08T23:30:00", 1.0) == "00:30:00"
+    assert format_clock("2024-04-08T18:00:00", 0.5) == "18:30:00"

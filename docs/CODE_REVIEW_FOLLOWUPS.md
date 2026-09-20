@@ -98,17 +98,19 @@ Original table (all rows now cited):
   `.github/workflows/ci.yml` with two jobs: (1) ruff + pure-function tests
   (kernels auto-skip), (2) `kernels.bootstrap --source mirror` + full
   reference-eclipse validation.
-- **M2** — Over-broad `except Exception` in `main.py:47` masks non-SPICE bugs;
-  narrow to `(spiceypy.utils.exceptions.SpiceyError, ValueError)`.
-- **M3** — Stale docstrings: "JPL DE440" in `besselian.py:6`, `ephemeris.py:8`,
-  `main.py:4` (mirror ships DE432s → say "JPL DE"); `besselian_instant` frame list
-  omits `ITRS` (`ephemeris.py:178`); `/besselian` `frame` description omits `ITRS`
-  (`main.py:60`).
-- **M4** — Typed results: `local_circumstances` returns a variable-key `dict`
-  (C2/C3 only sometimes); use a `TypedDict`/dataclass. Same for `/central-line`
-  point shape.
-- **M5** — Missing pure-function tests (run without kernels): `geo_to_fund`
-  round-trip and `_obscuration`/`_overlap_area` (analytic cases).
+- **M2 — DONE.** `_build_model` (`main.py`) now catches
+  `(spiceypy.utils.exceptions.SpiceyError, ValueError)` instead of
+  `Exception`, so genuine bugs are no longer masked as HTTP 400.
+- **M3 — DONE.** "JPL DE440" → "a JPL DE ephemeris (DE440 NAIF / DE432s mirror)"
+  in `besselian.py`, `ephemeris.py`, `main.py`; `besselian_instant` and the
+  `/besselian` `frame` description now list `ITRS` (and the full frame set).
+- **M4 — DONE.** `local_circumstances` returns a `LocalCircumstances` TypedDict
+  (`total=False`; documents the optional C2/C3/duration keys); `/central-line`
+  points use a `CentralLinePoint`/`LimitPoint` TypedDict.
+- **M5 — DONE.** Added pure-function tests (no kernels): `geo_to_fund`↔`fund_to_geo`
+  round-trip (`tests/test_geography.py`) and `_overlap_area`/`_obscuration`
+  analytic cases (`tests/test_circumstances_pure.py`), plus `format_offset`/
+  `format_clock`. Suite is now 26 tests (17 → 26).
 
 ## Suggested order
 

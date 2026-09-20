@@ -5,7 +5,8 @@ Why SPICE (and not astropy / a lunar theory)
 A solar eclipse needs the Sun *and* the Moon expressed in one consistent
 geocentric framework, as **apparent** positions (corrected for light-time and
 stellar aberration) and referred to a high-precision Earth-rotation model.
-SPICE + JPL DE440 gives all of that from a single toolkit:
+SPICE + a JPL DE ephemeris (DE440 from NAIF, DE432s from the GitHub mirror) gives
+all of that from a single toolkit:
 
 * ``spkpos(..., abcorr="LT+S", ...)`` returns apparent positions (light-time +
   stellar aberration) -- exactly what the Besselian construction assumes.
@@ -188,8 +189,8 @@ def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> Bess
     """Compute the Besselian elements at ephemeris time ``et``.
 
     All quantities are geocentric and apparent (``LT+S``); ``earth_frame`` selects
-    the Earth-orientation model (``"ITRF93"``, ``"TOD"`` or ``"IAU_EARTH"``) -- see
-    the module docstring.
+    the Earth-orientation model (``"ITRS"`` (default), ``"TOD"``, ``"ITRF93"`` or
+    ``"IAU_EARTH"``) -- see the module docstring.
     """
     a_e = earth_equatorial_radius_km()
 

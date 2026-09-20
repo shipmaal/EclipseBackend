@@ -1,16 +1,18 @@
 """FastAPI surface for the eclipse backend.
 
 Endpoints are parameterized (no hard-coded eclipse) and do only computation --
-no plotting in the request path. Positions come from SPICE / JPL DE440 via
-:mod:`app.besselian`.
+no plotting in the request path. Positions come from SPICE / a JPL DE ephemeris
+via :mod:`app.besselian`.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+from typing import TypedDict
 
 import numpy as np
+import spiceypy
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +23,31 @@ from .ephemeris import DEFAULT_EARTH_FRAME, sub_solar_point, utc_to_et
 from .geography import central_track, format_offset, shadow_edge_limits, shadow_radii
 
 _FRAMES = ("ITRS", "TOD", "ITRF93", "IAU_EARTH")
+
+
+class LimitPoint(TypedDict):
+    """A northern/southern shadow-limit point (item M4)."""
+
+    lat: float
+    lon: float
+
+
+class CentralLinePoint(TypedDict, total=False):
+    """One central-line sample (item M4).
+
+    ``north_limit``/``south_limit`` are present only when the shadow edge is found
+    at that instant (central point inside the shadow).
+    """
+
+    t_hours: float
+    offset: str          # signed +/-HH:MM:SS.s from T0
+    lon: float
+    lat: float
+    penumbra_km: float
+    is_total: bool
+    width_km: float
+    north_limit: LimitPoint
+    south_limit: LimitPoint
 
 app = FastAPI(title="EclipseBackend", version="0.1.0")
 
@@ -44,7 +71,9 @@ def _build_model(epoch: str, window_hours: float, frame: str) -> BesselianModel:
     except FileNotFoundError as exc:
         # Kernels not downloaded yet.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception as exc:  # SPICE errors (bad time string, missing body, ...)
+    except (spiceypy.utils.exceptions.SpiceyError, ValueError) as exc:
+        # Bad time string / missing body (SPICE) or invalid input (ValueError);
+        # narrowed from a blanket `except Exception` so genuine bugs surface (M2).
         raise HTTPException(status_code=400, detail=f"SPICE error: {exc}") from exc
 
 
@@ -101,7 +130,7 @@ async def central_line(
             elems["x"][i], elems["y"][i], elems["d"][i],
             elems["l1"][i], elems["l2"][i], elems["tan_f1"][i], elems["tan_f2"][i],
         )
-        pt = {
+        pt: CentralLinePoint = {
             "t_hours": round(tp.t_hours, 4),
             "offset": format_offset(tp.t_hours),
             "lon": round(tp.lon, 5),

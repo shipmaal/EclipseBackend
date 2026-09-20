@@ -20,10 +20,37 @@ modelled (item A3).
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import numpy as np
 
 from .ephemeris import sub_solar_point, utc_to_et
 from .geography import bearing, format_clock, geo_to_fund
+
+
+class LocalCircumstances(TypedDict, total=False):
+    """Local eclipse circumstances for one observer (item M4).
+
+    ``total=False`` because the shape varies: an observer who sees no eclipse gets
+    only ``lat``/``lon``/``eclipse``; the central-phase keys ``C2``/``C3``/
+    ``central_duration_s`` are present only when the observer enters the
+    umbra/antumbra.  Times are UTC ``HH:MM:SS`` strings.
+    """
+
+    lat: float
+    lon: float
+    eclipse: bool
+    type: str            # "partial", "total" or "annular"
+    magnitude: float
+    obscuration: float   # covered fraction of the Sun's area
+    max_time: str
+    sun_alt: float
+    sun_az: float
+    C1: str              # first partial contact
+    C4: str              # last partial contact
+    C2: str              # second contact (central phase only)
+    C3: str              # third contact (central phase only)
+    central_duration_s: float  # totality/annularity duration (central phase only)
 
 
 def _series(model, lat, lon, t):
@@ -129,7 +156,7 @@ def _bracketed_series(model, lat, lon):
         hw = min(hw * 1.5, _MAX_HALF_WINDOW_HOURS)
 
 
-def local_circumstances(model, lat: float, lon: float) -> dict:
+def local_circumstances(model, lat: float, lon: float) -> LocalCircumstances:
     """Compute the eclipse circumstances at (lat, lon).
 
     T0 should be near the observer's maximum eclipse (e.g. the greatest-eclipse
@@ -141,7 +168,8 @@ def local_circumstances(model, lat: float, lon: float) -> dict:
 
     partial = _roots(t, m - L1p)
     if len(partial) < 2 or mag.max() <= 0:
-        return {"lat": lat, "lon": lon, "eclipse": False}
+        no_eclipse: LocalCircumstances = {"lat": lat, "lon": lon, "eclipse": False}
+        return no_eclipse
 
     c1 = min(tc for tc, rising in partial if not rising)
     c4 = max(tc for tc, rising in partial if rising)
@@ -160,7 +188,7 @@ def local_circumstances(model, lat: float, lon: float) -> dict:
     else:
         magnitude = (L1p[imax] - m[imax]) / (L1p[imax] + L2p[imax])
 
-    result = {
+    result: LocalCircumstances = {
         "lat": lat,
         "lon": lon,
         "eclipse": True,

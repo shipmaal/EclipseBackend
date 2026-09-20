@@ -22,15 +22,17 @@ item.
   vectors in `ephemeris.py` and as the reduction ellipsoid in `geography.py`.
   Reference eclipses unchanged (width Δ < 0.3 m, times/magnitudes identical).
 - **A2 — Polynomial extrapolation / window-clipped contacts (medium; only
-  accuracy-affecting item).** `BesselianModel` fits polynomials over ±`window`
-  (`besselian.py:55-63`); `/central-line` can evaluate beyond it (`main.py:81`)
-  and `local_circumstances` samples exactly the window (`circumstances.py:104`),
-  so an observer whose partial phase exceeds ±window gets C1/C4 clipped/missed
-  (→ falsely `eclipse: False`). Direct `besselian_instant` evaluation equals the
-  polynomial inside the window and is correct outside it. Fix: evaluate elements
-  directly per instant for `/central-line` and contacts (keep the polynomial fit
-  for the `/besselian` tabular product), and/or bracket contacts by expanding the
-  window until C1/C4 are found.
+  accuracy-affecting item). DONE.** Added
+  `BesselianModel.evaluate_direct(t)`, which recomputes elements per instant with
+  `besselian_instant` (exact everywhere, no polynomial extrapolation). `/central-line`
+  (`main.py`) and `local_circumstances` (`circumstances.py`) now use it; the
+  polynomial `evaluate()` stays as the `/besselian` tabular product. Contacts are
+  additionally bracketed: `_bracketed_series` widens the 30-second sampling grid
+  (up to ±6 h) until the observer is outside the penumbra at both ends, so C1/C4
+  are never clipped. Verified: a deliberately narrow ±1 h fit window (which
+  previously clipped C4) now recovers the exact C1/C4/magnitude of the ±2.5 h
+  reference for a partial observer (NYC, 2024-04-08). Reference-eclipse numbers
+  unchanged (direct == polynomial inside the window).
 - **A3 — Documented approximations (low).** Geometric only: no atmospheric
   refraction (contacts, low-Sun central line) and only the mean lunar limb
   (in `K_UMBRA`). State per-docstring.

@@ -79,7 +79,9 @@ async def central_line(
 
     model = _build_model(epoch, window_hours, frame)
     t = np.arange(start_hours, end_hours + 1e-9, step_minutes / 60.0)
-    elems = model.evaluate(t)
+    # Direct per-instant evaluation: exact along the whole track, including
+    # start/end hours beyond the polynomial fit window (item A2).
+    elems = model.evaluate_direct(t)
 
     # Pass 1: central-line geographic points (skip instants where the axis misses).
     valid = []  # (i, ti, lat, lon)

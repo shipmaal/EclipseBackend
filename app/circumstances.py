@@ -25,8 +25,13 @@ from .geography import _EARTH_MEAN_KM, bearing, geo_to_fund
 
 
 def _series(model, lat, lon, t):
-    """Return arrays (m, L1', L2', magnitude) over offsets ``t`` (hours from T0)."""
-    e = model.evaluate(t)
+    """Return arrays (m, L1', L2', magnitude) over offsets ``t`` (hours from T0).
+
+    Uses direct per-instant evaluation (:meth:`~app.besselian.BesselianModel.
+    evaluate_direct`) so contacts are correct even when ``t`` runs beyond the
+    model's polynomial fit window (item A2).
+    """
+    e = model.evaluate_direct(t)
     n = len(t)
     m = np.empty(n)
     L1p = np.empty(n)
@@ -94,15 +99,41 @@ def _clock(model, t_hours):
     ).strftime("%H:%M:%S")
 
 
+# Contact bracketing: the sampling half-window is expanded (up to this cap) until
+# the observer is outside the penumbra at both ends, so C1/C4 are bracketed even
+# when the partial phase runs past the model's fit window (item A2).  A partial
+# eclipse lasts at most a few hours at any one site, so 6 h is a safe ceiling.
+_MAX_HALF_WINDOW_HOURS = 6.0
+_GRID_STEP_HOURS = 0.5 / 60.0  # 30-second grid
+
+
+def _bracketed_series(model, lat, lon):
+    """Sample (t, m, L1', L2', mag) on a 30-second grid wide enough to contain C1..C4.
+
+    Starts at the model's fit half-window and widens (direct evaluation stays
+    exact outside the fit window) until the observer is outside the penumbra at
+    both ends, or the cap is reached.  Returns ``(t, m, L1p, L2p, mag)``.
+    """
+    hw = model.half_window_hours
+    while True:
+        t = np.arange(-hw, hw + 1e-9, _GRID_STEP_HOURS)
+        m, L1p, L2p, mag = _series(model, lat, lon, t)
+        outside = m - L1p  # > 0 when the observer is outside the penumbra
+        edges_clear = outside[0] > 0 and outside[-1] > 0
+        if edges_clear or hw >= _MAX_HALF_WINDOW_HOURS:
+            return t, m, L1p, L2p, mag
+        hw = min(hw * 1.5, _MAX_HALF_WINDOW_HOURS)
+
+
 def local_circumstances(model, lat: float, lon: float) -> dict:
     """Compute the eclipse circumstances at (lat, lon).
 
-    The sampled window is the model's fit window around T0, so T0 should be near
-    the observer's maximum eclipse (e.g. the greatest-eclipse time).
+    T0 should be near the observer's maximum eclipse (e.g. the greatest-eclipse
+    time).  The sampling window starts at the model's fit window and is expanded
+    as needed so the partial contacts C1/C4 are always bracketed, even for an
+    observer whose partial phase extends beyond it (item A2).
     """
-    tw = model.half_window_hours
-    t = np.arange(-tw, tw + 1e-9, 0.5 / 60.0)  # 30-second grid
-    m, L1p, L2p, mag = _series(model, lat, lon, t)
+    t, m, L1p, L2p, mag = _bracketed_series(model, lat, lon)
 
     partial = _roots(t, m - L1p)
     if len(partial) < 2 or mag.max() <= 0:

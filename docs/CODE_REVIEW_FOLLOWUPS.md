@@ -1,0 +1,129 @@
+# Code review follow-ups
+
+Scientific code review of the eclipse backend, tracked for follow-up work. Goals:
+**scientific accuracy** and a **modern scientific codebase** — every non-trivial
+equation cited (see `CLAUDE.md` References + conventions) and shared math factored
+into reusable functions. The math is validated correct today (width ~1 km,
+duration <1 s vs Espenak); these items are about traceability, consistency, and
+structure, not wrong results.
+
+Work them in the "Suggested order" below; validate against the reference eclipses
+(2017-08-21, 2024-04-08 total; 2023-10-14 annular) after each step and commit per
+item.
+
+**Status: all items closed** (A1–A5, R1–R5, M1–M5, and the §2 citation pass).
+Each was validated against the three reference eclipses with no regression
+(greatest-eclipse lat/lon, path width, contact times and magnitudes unchanged to
+< 1 km / < 1 s), the test suite grew from 17 to 26 (new pure-function tests), and
+`ruff check` is clean. Details per item below.
+
+## 1. Scientific accuracy
+
+- **A1 — Ellipsoid constants duplicated / slightly inconsistent (medium). DONE.**
+  The fundamental-plane unit was SPICE `a_e = 6378.1366 km` (`ephemeris.py`
+  `earth_equatorial_radius_km`), but the reduction used WGS-84 `a = 6378.137`,
+  `b = 6356.752` (`geography.py:30-31`). Fixed: `app/constants.py` now defines the
+  WGS-84 ellipsoid from `a` + `f = 1/298.257223563` [WGS84] and derives `b, e²`;
+  the same `a` is the fundamental-plane unit radius, used to scale the Sun/Moon
+  vectors in `ephemeris.py` and as the reduction ellipsoid in `geography.py`.
+  Reference eclipses unchanged (width Δ < 0.3 m, times/magnitudes identical).
+- **A2 — Polynomial extrapolation / window-clipped contacts (medium; only
+  accuracy-affecting item). DONE.** Added
+  `BesselianModel.evaluate_direct(t)`, which recomputes elements per instant with
+  `besselian_instant` (exact everywhere, no polynomial extrapolation). `/central-line`
+  (`main.py`) and `local_circumstances` (`circumstances.py`) now use it; the
+  polynomial `evaluate()` stays as the `/besselian` tabular product. Contacts are
+  additionally bracketed: `_bracketed_series` widens the 30-second sampling grid
+  (up to ±6 h) until the observer is outside the penumbra at both ends, so C1/C4
+  are never clipped. Verified: a deliberately narrow ±1 h fit window (which
+  previously clipped C4) now recovers the exact C1/C4/magnitude of the ±2.5 h
+  reference for a partial observer (NYC, 2024-04-08). Reference-eclipse numbers
+  unchanged (direct == polynomial inside the window).
+- **A3 — Documented approximations (low). DONE.** Geometric-only caveat (no
+  atmospheric refraction; mean lunar limb folded into `K_UMBRA`) now stated in the
+  docstrings of `geography.fund_to_geo`, `geography.shadow_edge_limits` and the
+  `circumstances` module.
+- **A4 — TDB used as TT for ERFA (low). DONE.** Noted inline in
+  `ephemeris._geocentric_vectors` (≤1.7 ms → sub-mas).
+- **A5 — WGS-84 `b` rounded (low). DONE.** Folded into A1: `b` is now derived
+  from `a` and `f` in `app/constants.py`, no longer hard-coded.
+
+## 2. Citation coverage (core goal) — DONE
+
+Applied the keyed references from `CLAUDE.md` with equation numbers across the
+math modules (all rows of the table below):
+- `ephemeris.py`: x,y,z [ES92] 8.322-6; cones [ES92] 8.323-1/6/7 + k1/k2 [Espenak];
+  `c2t06a` [SOFA]+[IERS2010], `pnm06a`/`gst06a` [SOFA].
+- `geography.py`: `_reduction_aux`/`fund_to_geo`/`geo_to_fund` [ES92] 8.331-8.334 +
+  parametric↔geodetic [Meeus98] 54; great-circle helpers noted standard spherical
+  trig; `shadow_edge_limits` noted numerical, limit defn [ES92]/[MeeusSE];
+  `shadow_radii` [ES92] 8.353.
+- `circumstances.py`: method [ES92] 8.353-8.354 / [Meeus98] 54; magnitude &
+  obscuration [Espenak]; circle overlap = standard geometry.
+- `eop.py`: EOP [IERS2010].
+
+Original table (all rows now cited):
+
+| Location | Formula | Citation |
+| --- | --- | --- |
+| `ephemeris.py` x,y,z | fundamental coords | [ES92] 8.322-6 |
+| `ephemeris.py` cones | l1,l2,f1,f2 | [ES92] 8.323-x; k [Espenak] |
+| `ephemeris.py` c2t06a/pnm06a/gst06a | Earth orientation | [SOFA], [IERS2010] |
+| `geography.py` `fund_to_geo` | reduction + parametric→geodetic | [ES92] 8.33x / [Meeus98] 54 |
+| `geography.py` `geo_to_fund` | inverse reduction (uncited) | [ES92] 8.331 |
+| `geography.py` great-circle helpers | destination/haversine/bearing (uncited) | standard spherical trig |
+| `geography.py` `shadow_edge_limits` | limit/width root-find | note numerical; limit defn [ES92]/[MeeusSE] |
+| `circumstances.py` | magnitude/obscuration/contacts (uncited) | [Meeus98] 54; magnitude [Espenak]; circle overlap = geometry |
+| `eop.py` | EOP interpolation | [IERS2010] |
+
+## 3. Reusable functions (second north star)
+
+- **R1 — DONE.** `ρ1/ρ2/d1/d2` auxiliaries were duplicated in `fund_to_geo`,
+  `geo_to_fund`, `shadow_radii`. Extracted `_reduction_aux(d)` (a `_ReductionAux`
+  NamedTuple) in `geography.py`, cited [ES92] 8.331; all three call it.
+- **R2 — DONE.** WGS-84 ellipsoid + fundamental-plane unit radius + mean radius
+  centralized in a cited `app/constants.py` and imported by `geography.py` and
+  `ephemeris.py` (fixes A1). The lunar-radius constants `K_PENUMBRA`/`K_UMBRA`
+  stay in `ephemeris.py`, which owns the shadow-cone geometry (per `CLAUDE.md`).
+- **R3 — DONE.** Added `central_track(model, t) -> (elems, [TrackPoint(i, t, lat,
+  lon, bearing)])` in `geography.py`; it evaluates directly (item A2), reduces to
+  the central line, skips off-Earth instants, and tags each point with its
+  along-track bearing. `/central-line` (`main.py`) and the integration-test
+  greatest-eclipse helper both use it.
+- **R4 — DONE.** Time formatting now lives only in `geography.py`: `dec_to_hms`
+  (unchanged, tested), plus `format_offset(t)` (`±HH:MM:SS.s`, used by `main.py`)
+  and `format_clock(t0_utc, t)` (absolute UTC `HH:MM:SS`, replaces
+  `circumstances._clock`).
+- **R5 — DONE.** Promoted `build_model_best_frame(t0_utc, ...)` and
+  `best_earth_frame()` into `app/besselian.py`; the integration tests'
+  `_build_model`/`_usable_frame` are now thin wrappers over them.
+
+## 4. Modern codebase
+
+- **M1 — DONE.** Added **ruff** (config in `pyproject.toml`; `c_src`/`f_src`
+  vendored trees excluded) and fixed all findings in `app/` + `tests/`. Added
+  `.github/workflows/ci.yml` with two jobs: (1) ruff + pure-function tests
+  (kernels auto-skip), (2) `kernels.bootstrap --source mirror` + full
+  reference-eclipse validation.
+- **M2 — DONE.** `_build_model` (`main.py`) now catches
+  `(spiceypy.utils.exceptions.SpiceyError, ValueError)` instead of
+  `Exception`, so genuine bugs are no longer masked as HTTP 400.
+- **M3 — DONE.** "JPL DE440" → "a JPL DE ephemeris (DE440 NAIF / DE432s mirror)"
+  in `besselian.py`, `ephemeris.py`, `main.py`; `besselian_instant` and the
+  `/besselian` `frame` description now list `ITRS` (and the full frame set).
+- **M4 — DONE.** `local_circumstances` returns a `LocalCircumstances` TypedDict
+  (`total=False`; documents the optional C2/C3/duration keys); `/central-line`
+  points use a `CentralLinePoint`/`LimitPoint` TypedDict.
+- **M5 — DONE.** Added pure-function tests (no kernels): `geo_to_fund`↔`fund_to_geo`
+  round-trip (`tests/test_geography.py`) and `_overlap_area`/`_obscuration`
+  analytic cases (`tests/test_circumstances_pure.py`), plus `format_offset`/
+  `format_clock`. Suite is now 26 tests (17 → 26).
+
+## Suggested order
+
+1. `constants.py` (cited WGS-84 + unit radius; fixes A1, R2).
+2. Direct-evaluation + contact bracketing (A2) — the only accuracy-affecting item.
+3. Extract `_reduction_aux` and `central_track` (R1, R3); unify time format (R4).
+4. Citation pass — apply §2 with equation numbers, per `CLAUDE.md`.
+5. Tooling: ruff + CI + the two pure-function tests (M1, M5); doc/exception fixes
+   (M2, M3, M4).

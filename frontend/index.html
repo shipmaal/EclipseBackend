@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Eclipse Path Viewer</title>
+<style>
+  :root {
+    --bg: #05070d;
+    --panel: rgba(16, 21, 34, 0.82);
+    --border: #263149;
+    --text: #e6ebf5;
+    --muted: #8a97b3;
+    --accent: #ffb454;
+    --accent-dim: #6b4a1f;
+    --field: #0d1220;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+  body { font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); }
+  #scene { position: fixed; inset: 0; display: block; }
+
+  #panel {
+    position: fixed; top: 16px; left: 16px; width: 320px; max-width: calc(100vw - 32px);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px; backdrop-filter: blur(8px); z-index: 10;
+  }
+  #panel h1 { font-size: 15px; margin: 0 0 2px; letter-spacing: .3px; }
+  #panel .sub { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
+  label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+          color: var(--muted); margin: 10px 0 4px; }
+  input {
+    width: 100%; background: var(--field); border: 1px solid var(--border);
+    color: var(--text); border-radius: 7px; padding: 8px 9px; font: inherit;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; gap: 8px; }
+  .row > div { flex: 1; }
+  .btns { display: flex; gap: 8px; margin-top: 14px; }
+  button {
+    flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px;
+    font: inherit; font-weight: 600; cursor: pointer; color: var(--text); background: #17203a;
+  }
+  button.primary { background: var(--accent); color: #1b1206; border-color: var(--accent); }
+  button:hover { filter: brightness(1.12); }
+  button:disabled { opacity: .5; cursor: default; filter: none; }
+  #status { margin-top: 12px; font-size: 12px; color: var(--muted); min-height: 16px; }
+  #status.err { color: #ff8080; }
+  #readout { margin-top: 8px; font-size: 12px; color: var(--text); display: none; }
+  #readout table, #player table { width: 100%; border-collapse: collapse; }
+  #readout td, #player td { padding: 2px 0; font-size: 12px; }
+  #readout td:last-child, #player td:last-child { text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+  #player { display: none; margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+  .playrow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .playrow button { flex: 0 0 38px; padding: 6px 0; }
+  .playrow input[type=range] { flex: 1; accent-color: var(--accent); }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  #legend { position: fixed; bottom: 14px; left: 16px; font-size: 11px; color: var(--muted); z-index: 10; }
+  #legend b { color: var(--accent); }
+  #local {
+    position: fixed; top: 16px; right: 16px; width: 260px; display: none;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 16px; backdrop-filter: blur(8px); z-index: 10;
+  }
+  #local h2 { font-size: 14px; margin: 0 0 2px; }
+  #local #l-sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  #local table { width: 100%; border-collapse: collapse; }
+  #local td { padding: 2px 0; font-size: 12px; }
+  #local td:first-child { color: var(--muted); }
+  #local td:last-child { text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+  #local-close { position: absolute; top: 8px; right: 10px; width: 22px; height: 22px; flex: none;
+                 padding: 0; line-height: 1; background: transparent; border: none; color: var(--muted); font-size: 18px; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="panel">
+  <h1>Eclipse Path Viewer</h1>
+  <p class="sub">Shadow-axis central line from the SPICE / DE440 backend.</p>
+
+  <label for="epoch">Reference epoch T0 (UTC)</label>
+  <input id="epoch" type="text" value="2024-04-08T18:00:00" />
+
+  <div class="row">
+    <div>
+      <label for="start">Start (h from T0)</label>
+      <input id="start" type="number" value="-0.2" step="0.1" />
+    </div>
+    <div>
+      <label for="end">End (h from T0)</label>
+      <input id="end" type="number" value="1.9" step="0.1" />
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label for="step">Step (min)</label>
+      <input id="step" type="number" value="2" step="1" min="0.5" />
+    </div>
+    <div>
+      <label for="window">Fit window (h)</label>
+      <input id="window" type="number" value="2" step="0.5" min="0.5" />
+    </div>
+  </div>
+
+  <div class="btns">
+    <button id="compute" class="primary">Compute path</button>
+    <button id="sample">Load sample</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="readout">
+    <table>
+      <tr><td>Points</td><td id="r-count">–</td></tr>
+      <tr><td>Frame</td><td id="r-frame">–</td></tr>
+      <tr><td>Start</td><td id="r-start">–</td></tr>
+      <tr><td>End</td><td id="r-end">–</td></tr>
+    </table>
+  </div>
+
+  <div id="player">
+    <div class="playrow">
+      <button id="play" title="Play/pause">▶</button>
+      <input id="scrub" type="range" min="0" max="0" value="0" step="1" />
+    </div>
+    <table>
+      <tr><td>Time (from T0)</td><td id="p-time">–</td></tr>
+      <tr><td>Position</td><td id="p-pos">–</td></tr>
+      <tr><td>Umbra width</td><td id="p-umbra">–</td></tr>
+    </table>
+  </div>
+
+  <details>
+    <summary>Backend</summary>
+    <label for="api">API base URL</label>
+    <input id="api" type="text" placeholder="(same origin)" />
+    <p class="hint">Leave blank when this page is served by the backend at
+      <code>/ui</code>. Otherwise e.g. <code>http://localhost:8000</code>.</p>
+  </details>
+</div>
+
+<div id="legend">Drag to orbit · scroll to zoom · <b>click the globe</b> for local circumstances</div>
+
+<div id="local">
+  <button id="local-close" title="close">×</button>
+  <h2 id="l-title">Local circumstances</h2>
+  <div id="l-sub"></div>
+  <table id="l-table"></table>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three.module.js"
+}}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "./vendor/OrbitControls.js";
+
+// Vendored Three.js has no textures; this optional photo texture loads from a
+// CDN when reachable and falls back to a clean shaded globe otherwise.
+const EARTH_TEX = "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/textures/planets/earth_atmos_2048.jpg";
+const R = 1;
+
+// --- scene ------------------------------------------------------------------
+const canvas = document.getElementById("scene");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+camera.position.set(2.2, 1.4, 2.2);
+
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.minDistance = 1.25;
+controls.maxDistance = 12;
+
+// Low ambient so the night side is dark and the sunlight creates a terminator.
+scene.add(new THREE.AmbientLight(0x9fb0d0, 0.16));
+const sunLight = new THREE.DirectionalLight(0xfff4e0, 2.4);
+sunLight.position.set(5, 2, 3);   // repositioned to the sub-solar point when data loads
+scene.add(sunLight);
+
+// starfield
+{
+  const n = 1500, pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const v = new THREE.Vector3().randomDirection().multiplyScalar(40 + Math.random() * 40);
+    pos.set([v.x, v.y, v.z], i * 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color: 0x9fb0d0, size: 0.08 })));
+}
+
+// Earth. UV mapping below is derived to match THREE.SphereGeometry so that a
+// standard equirectangular texture (lon -180..180) and the lat/lon path align
+// with no extra rotation.
+const earthMat = new THREE.MeshPhongMaterial({ color: 0x2b4a7a, shininess: 8 });
+const earth = new THREE.Mesh(new THREE.SphereGeometry(R, 96, 96), earthMat);
+scene.add(earth);
+new THREE.TextureLoader().load(
+  EARTH_TEX,
+  (tex) => { tex.colorSpace = THREE.SRGBColorSpace; earthMat.map = tex; earthMat.color.set(0xffffff); earthMat.needsUpdate = true; },
+  undefined,
+  () => setStatus("(using plain globe — texture blocked)", false)
+);
+
+// atmosphere halo
+{
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(R * 1.02, 64, 64),
+    new THREE.MeshBasicMaterial({ color: 0x3a6fb0, transparent: true, opacity: 0.12, side: THREE.BackSide })
+  );
+  scene.add(halo);
+}
+
+// graticule (every 30°)
+{
+  const grp = new THREE.Group();
+  const mat = new THREE.LineBasicMaterial({ color: 0x38506f, transparent: true, opacity: 0.5 });
+  for (let lon = -180; lon < 180; lon += 30) {
+    const pts = [];
+    for (let lat = -90; lat <= 90; lat += 3) pts.push(llToVec3(lat, lon, R * 1.001));
+    grp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+  }
+  for (let lat = -60; lat <= 60; lat += 30) {
+    const pts = [];
+    for (let lon = -180; lon <= 180; lon += 3) pts.push(llToVec3(lat, lon, R * 1.001));
+    grp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+  }
+  scene.add(grp);
+}
+
+// lat/lon -> world position (matches SphereGeometry default UVs)
+function llToVec3(latDeg, lonDeg, r = R) {
+  const theta = (90 - latDeg) * Math.PI / 180;     // colatitude
+  const phi = (lonDeg + 180) * Math.PI / 180;       // texture longitude
+  return new THREE.Vector3(
+    -r * Math.cos(phi) * Math.sin(theta),
+    r * Math.cos(theta),
+    r * Math.sin(phi) * Math.sin(theta)
+  );
+}
+
+const EARTH_KM = 6378.137;
+
+// --- soft shadow sprite -----------------------------------------------------
+function softShadowTexture(coreAlpha) {
+  const s = 128, cv = document.createElement("canvas");
+  cv.width = cv.height = s;
+  const ctx = cv.getContext("2d");
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0.0, `rgba(0,0,0,${coreAlpha})`);
+  g.addColorStop(0.55, `rgba(0,0,0,${coreAlpha * 0.55})`);
+  g.addColorStop(1.0, "rgba(0,0,0,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  return new THREE.CanvasTexture(cv);
+}
+
+// Penumbra (large, faint) and umbra (small, dark) shadow blobs on the surface.
+const penumbra = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: softShadowTexture(0.5), transparent: true, depthWrite: false, opacity: 0.7,
+}));
+const umbra = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: softShadowTexture(0.95), transparent: true, depthWrite: false, color: 0x110d06,
+}));
+penumbra.visible = umbra.visible = false;
+scene.add(penumbra, umbra);
+
+function placeShadow(pt) {
+  const pos = llToVec3(pt.lat, pt.lon, R * 1.01);
+  // Penumbra at true scale (diameter). Umbra sized by the true path width, with
+  // a small floor so it stays visible at globe scale.
+  const penD = 2 * (pt.penumbra_km / EARTH_KM) * R;
+  penumbra.position.copy(pos); penumbra.scale.set(penD, penD, 1); penumbra.visible = true;
+  const w = pt.width_km || 0;
+  umbra.visible = w > 0;
+  if (w > 0) {
+    const umbD = Math.max((w / EARTH_KM) * R, 0.03);
+    umbra.position.copy(pos); umbra.scale.set(umbD, umbD, 1);
+    umbra.material.color.set(pt.is_total ? 0x120d06 : 0x3a2a12); // annular a touch lighter
+  }
+}
+
+// --- path drawing -----------------------------------------------------------
+let pathGroup = null;
+let currentPoints = [];
+
+function clearPath() {
+  if (!pathGroup) return;
+  pathGroup.traverse((o) => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+  scene.remove(pathGroup);
+  pathGroup = null;
+}
+
+function drawPath(points) {
+  clearPath();
+  currentPoints = points;
+  if (points.length < 2) { setStatus("No central line for this range (axis misses Earth).", true); return; }
+
+  pathGroup = new THREE.Group();
+  const curvePts = points.map((p) => llToVec3(p.lat, p.lon, R * 1.006));
+
+  const curve = new THREE.CatmullRomCurve3(curvePts);
+  const tube = new THREE.Mesh(
+    new THREE.TubeGeometry(curve, curvePts.length * 4, 0.005, 8, false),
+    new THREE.MeshBasicMaterial({ color: 0xffb454 })
+  );
+  pathGroup.add(tube);
+
+  const markerGeo = new THREE.SphereGeometry(0.016, 16, 16);
+  const start = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: 0x5ad16a }));
+  start.position.copy(curvePts[0]);
+  const end = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: 0xff5a5a }));
+  end.position.copy(curvePts[curvePts.length - 1]);
+  pathGroup.add(start, end);
+
+  // Totality band: northern/southern limit curves + a shaded strip between them.
+  const withLimits = points.filter((p) => p.north_limit && p.south_limit);
+  if (withLimits.length >= 2) {
+    const north = withLimits.map((p) => llToVec3(p.north_limit.lat, p.north_limit.lon, R * 1.004));
+    const south = withLimits.map((p) => llToVec3(p.south_limit.lat, p.south_limit.lon, R * 1.004));
+    const limitMat = new THREE.LineBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.7 });
+    pathGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(north), limitMat));
+    pathGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(south), limitMat));
+
+    const verts = [], idx = [];
+    for (let i = 0; i < withLimits.length; i++) {
+      north[i].toArray(verts, verts.length); // even index = north[i]
+      south[i].toArray(verts, verts.length); // odd index  = south[i]
+    }
+    for (let i = 0; i < withLimits.length - 1; i++) {
+      const n0 = 2 * i, s0 = 2 * i + 1, n1 = 2 * i + 2, s1 = 2 * i + 3;
+      idx.push(n0, s0, s1, n0, s1, n1);
+    }
+    const bandGeo = new THREE.BufferGeometry();
+    bandGeo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+    bandGeo.setIndex(idx);
+    const band = new THREE.Mesh(bandGeo, new THREE.MeshBasicMaterial({
+      color: 0xffb454, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false,
+    }));
+    pathGroup.add(band);
+  }
+
+  scene.add(pathGroup);
+
+  // Frame the camera on the middle of the track.
+  const mid = curvePts[Math.floor(curvePts.length / 2)].clone();
+  controls.target.set(0, 0, 0);
+  camera.position.copy(mid.clone().multiplyScalar(2.6));
+}
+
+function setSunLight(sun) {
+  if (!sun) return;
+  sunLight.position.copy(llToVec3(sun.lat, sun.lon, 6));
+}
+
+// --- scrubber / playback ----------------------------------------------------
+const $ = (id) => document.getElementById(id);
+let frame = 0, playing = false, lastStep = 0;
+
+function updateFrame(i) {
+  if (!currentPoints.length) return;
+  frame = Math.max(0, Math.min(i, currentPoints.length - 1));
+  const p = currentPoints[frame];
+  placeShadow(p);
+  $("scrub").value = frame;
+  $("p-time").textContent = p.offset;
+  $("p-pos").textContent = `${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`;
+  $("p-umbra").textContent = p.width_km > 0
+    ? `${p.width_km.toFixed(0)} km ${p.is_total ? "(total)" : "(annular)"}`
+    : "— (partial)";
+}
+
+$("scrub").addEventListener("input", (e) => { playing = false; $("play").textContent = "▶"; updateFrame(+e.target.value); });
+$("play").addEventListener("click", () => {
+  if (!currentPoints.length) return;
+  playing = !playing;
+  if (playing && frame >= currentPoints.length - 1) frame = 0;
+  $("play").textContent = playing ? "❚❚" : "▶";
+});
+
+// --- data handling ----------------------------------------------------------
+function setStatus(msg, isErr) { const s = $("status"); s.textContent = msg; s.className = isErr ? "err" : ""; }
+
+function onData(data, note) {
+  drawPath(data.central_line);
+  setSunLight(data.sun);
+  const cl = data.central_line;
+  $("r-count").textContent = data.count;
+  $("r-frame").textContent = data.frame;
+  const fmt = (p) => `${p.lat.toFixed(2)}°, ${p.lon.toFixed(2)}°`;
+  $("r-start").textContent = cl.length ? fmt(cl[0]) : "–";
+  $("r-end").textContent = cl.length ? fmt(cl[cl.length - 1]) : "–";
+  $("readout").style.display = "block";
+  if (cl.length >= 2) {
+    $("scrub").max = cl.length - 1;
+    $("player").style.display = "block";
+    playing = false; $("play").textContent = "▶";
+    updateFrame(0);
+  } else {
+    $("player").style.display = "none";
+  }
+  setStatus(note, false);
+}
+
+function apiBase() { return $("api").value.trim().replace(/\/$/, ""); }
+
+async function compute() {
+  const params = new URLSearchParams({
+    epoch: $("epoch").value.trim(),
+    start_hours: $("start").value,
+    end_hours: $("end").value,
+    step_minutes: $("step").value,
+    window_hours: $("window").value,
+  });
+  setStatus("Computing…", false);
+  $("compute").disabled = true;
+  try {
+    const res = await fetch(`${apiBase()}/central-line?${params}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    onData(data, `Rendered ${data.count} points (${data.frame}).`);
+  } catch (e) {
+    setStatus(`Backend error: ${e.message}. Try “Load sample”.`, true);
+  } finally {
+    $("compute").disabled = false;
+  }
+}
+
+async function loadSample() {
+  setStatus("Loading bundled sample…", false);
+  try {
+    const data = await (await fetch("./sample.json")).json();
+    onData(data, "Rendered bundled sample (2024-04-08).");
+  } catch (e) {
+    setStatus(`Could not load sample: ${e.message}`, true);
+  }
+}
+
+$("compute").addEventListener("click", compute);
+$("sample").addEventListener("click", loadSample);
+
+// --- click the globe -> local circumstances ---------------------------------
+const raycaster = new THREE.Raycaster();
+let clickMarker = null;
+let downXY = null;
+
+function vec3ToLL(v) {
+  const lat = Math.asin(THREE.MathUtils.clamp(v.y / v.length(), -1, 1)) * 180 / Math.PI;
+  let lon = Math.atan2(v.z, -v.x) * 180 / Math.PI - 180; // inverse of llToVec3
+  lon = ((lon + 540) % 360) - 180;
+  return [lat, lon];
+}
+
+function row(label, value) { return `<tr><td>${label}</td><td>${value}</td></tr>`; }
+
+async function inspect(lat, lon) {
+  $("local").style.display = "block";
+  $("l-title").textContent = "Local circumstances";
+  $("l-sub").textContent = `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
+  $("l-table").innerHTML = row("", "…computing");
+  try {
+    const url = `${apiBase()}/circumstances?epoch=${encodeURIComponent($("epoch").value.trim())}&lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
+    const c = await (await fetch(url)).json();
+    if (!c.eclipse) { $("l-table").innerHTML = row("", "No eclipse visible here"); return; }
+    let html = row("Type", `<b>${c.type}</b>`)
+      + row("Magnitude", c.magnitude.toFixed(3))
+      + row("Obscuration", (c.obscuration * 100).toFixed(1) + "%")
+      + row("Max eclipse", c.max_time + " UT")
+      + row("Sun alt / az", `${c.sun_alt}° / ${c.sun_az}°`)
+      + row("Partial begins", c.C1 + " UT")
+      + row("Partial ends", c.C4 + " UT");
+    if (c.central_duration_s) {
+      const mm = Math.floor(c.central_duration_s / 60), ss = Math.round(c.central_duration_s % 60);
+      html += row(c.type === "total" ? "Totality" : "Annularity",
+        `${c.C2}–${c.C3} UT (${mm}m${String(ss).padStart(2, "0")}s)`);
+    }
+    $("l-table").innerHTML = html;
+  } catch (e) {
+    $("l-table").innerHTML = row("", `error: ${e.message}`);
+  }
+}
+
+canvas.addEventListener("pointerdown", (e) => { downXY = [e.clientX, e.clientY]; });
+canvas.addEventListener("pointerup", (e) => {
+  if (!downXY) return;
+  const moved = Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]);
+  downXY = null;
+  if (moved > 5) return; // was a drag/orbit, not a click
+  const ndc = new THREE.Vector2(
+    (e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1
+  );
+  raycaster.setFromCamera(ndc, camera);
+  const hit = raycaster.intersectObject(earth)[0];
+  if (!hit) return;
+  const [lat, lon] = vec3ToLL(hit.point);
+  if (!clickMarker) {
+    clickMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.02, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0x5ad1ff })
+    );
+    scene.add(clickMarker);
+  }
+  clickMarker.position.copy(hit.point.clone().setLength(R * 1.01));
+  clickMarker.visible = true;
+  inspect(lat, lon);
+});
+$("local-close").addEventListener("click", () => {
+  $("local").style.display = "none";
+  if (clickMarker) clickMarker.visible = false;
+});
+
+// --- render loop ------------------------------------------------------------
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize);
+resize();
+
+(function animate(now) {
+  requestAnimationFrame(animate);
+  if (playing && now - lastStep > 90) {           // ~11 fps shadow stepping
+    lastStep = now;
+    if (frame >= currentPoints.length - 1) { playing = false; $("play").textContent = "▶"; }
+    else updateFrame(frame + 1);
+  }
+  controls.update();
+  renderer.render(scene, camera);
+})(0);
+
+// Try the live backend first; if it is not reachable, fall back to the sample.
+compute().then(() => {
+  if ($("status").classList.contains("err")) loadSample();
+});
+</script>
+</body>
+</html>

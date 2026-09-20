@@ -1,4 +1,3 @@
-version: '3'
 services:
   web:
     build: .
@@ -6,6 +5,8 @@ services:
     ports:
       - "${HOST_PORT}:${CONTAINER_PORT}"
     volumes:
-      - ${CONTAINER_NAME}-bsp-data:/app/data/bsp
+      # Persist downloaded SPICE kernels across restarts so they are fetched once.
+      - spice-kernels:/app/kernels
+
 volumes:
-  bsp-data:
+  spice-kernels:

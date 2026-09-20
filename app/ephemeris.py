@@ -45,7 +45,6 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
 import erfa
 import numpy as np
@@ -78,7 +77,7 @@ def default_metakernel() -> Path:
     return Path(__file__).resolve().parent.parent / "kernels" / "eclipse.tm"
 
 
-def load_kernels(metakernel: Optional[str | os.PathLike] = None) -> None:
+def load_kernels(metakernel: str | os.PathLike | None = None) -> None:
     """Furnish the SPICE kernel pool (idempotent).
 
     Resolution order: explicit argument, then ``$SPICE_METAKERNEL``, then the

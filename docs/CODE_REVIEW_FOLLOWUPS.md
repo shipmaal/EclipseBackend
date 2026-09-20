@@ -93,9 +93,11 @@ Original table (all rows now cited):
 
 ## 4. Modern codebase
 
-- **M1** — No linter/formatter or CI. Add **ruff** (config in `pyproject.toml`) +
-  a GitHub Actions workflow running pure-function tests (kernels auto-skip), ideally
-  a second job with `kernels.bootstrap --source mirror` for full validation.
+- **M1 — DONE.** Added **ruff** (config in `pyproject.toml`; `c_src`/`f_src`
+  vendored trees excluded) and fixed all findings in `app/` + `tests/`. Added
+  `.github/workflows/ci.yml` with two jobs: (1) ruff + pure-function tests
+  (kernels auto-skip), (2) `kernels.bootstrap --source mirror` + full
+  reference-eclipse validation.
 - **M2** — Over-broad `except Exception` in `main.py:47` masks non-SPICE bugs;
   narrow to `(spiceypy.utils.exceptions.SpiceyError, ValueError)`.
 - **M3** — Stale docstrings: "JPL DE440" in `besselian.py:6`, `ephemeris.py:8`,

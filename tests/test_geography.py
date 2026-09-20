@@ -7,7 +7,6 @@ central line in ``app/data.txt``.
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from app.geography import dec_to_hms, fund_to_geo
@@ -62,6 +61,8 @@ def test_fund_to_geo_raises_when_axis_misses_earth():
 
 
 def test_longitude_wrapped():
-    lon, lat = fund_to_geo(_ev(POLY["x"], 0), _ev(POLY["y"], 0), _ev(POLY["d"], 0), _ev(POLY["mu"], 0))
+    x, y = _ev(POLY["x"], 0), _ev(POLY["y"], 0)
+    d, mu = _ev(POLY["d"], 0), _ev(POLY["mu"], 0)
+    lon, lat = fund_to_geo(x, y, d, mu)
     assert -180.0 < lon <= 180.0
     assert -90.0 <= lat <= 90.0

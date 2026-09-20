@@ -72,7 +72,7 @@ _2017_GREATEST = {"utc": "2017-08-21T18:25:30", "lat": 37.0, "lon": -87.7, "widt
 def _usable_frame():
     import spiceypy
 
-    from app.ephemeris import besselian_instant, utc_to_et, load_kernels
+    from app.ephemeris import besselian_instant, load_kernels, utc_to_et
 
     load_kernels()
     et = utc_to_et("2017-08-21T18:00:00")
@@ -206,8 +206,8 @@ def test_circumstances_2023_annular():
 
 def test_circumstances_partial_observer():
     """A location off the central path sees a partial eclipse (no central phase)."""
-    from app.circumstances import local_circumstances
     from app.besselian import BesselianModel
+    from app.circumstances import local_circumstances
 
     model = BesselianModel(t0_utc="2024-04-08T18:17:15", half_window_hours=2.5)
     c = local_circumstances(model, 40.71, -74.01)  # New York City

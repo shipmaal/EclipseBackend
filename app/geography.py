@@ -258,7 +258,7 @@ class TrackPoint(NamedTuple):
 
 
 def central_track(
-    model: "BesselianModel", t_hours: np.ndarray
+    model: BesselianModel, t_hours: np.ndarray
 ) -> tuple[dict[str, np.ndarray], list[TrackPoint]]:
     """Central-line geographic track over ``t_hours`` (hours from T0).
 

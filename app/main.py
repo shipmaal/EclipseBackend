@@ -55,9 +55,14 @@ async def health() -> dict:
 
 @app.get("/besselian")
 async def besselian(
-    epoch: str = Query(..., description="Reference epoch T0, UTC ISO-8601, e.g. 2024-04-08T18:00:00"),
+    epoch: str = Query(
+        ..., description="Reference epoch T0, UTC ISO-8601, e.g. 2024-04-08T18:00:00"
+    ),
     window_hours: float = Query(2.0, ge=0.5, le=6.0, description="Half-window sampled around T0"),
-    frame: str = Query(DEFAULT_EARTH_FRAME, description="Earth-orientation frame: ITRF93, TOD or IAU_EARTH"),
+    frame: str = Query(
+        DEFAULT_EARTH_FRAME,
+        description="Earth-orientation frame: ITRS, TOD, ITRF93 or IAU_EARTH",
+    ),
 ) -> dict:
     """Besselian element polynomials (coefficients in powers of t = hours from T0)."""
     model = _build_model(epoch, window_hours, frame)

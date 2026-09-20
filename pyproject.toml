@@ -26,10 +26,28 @@ dependencies = [
 viz = ["matplotlib>=3.8"]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [tool.uv]
 package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# Vendored / non-project sources (C SPICE stubs, Fortran ELP2000 helpers).
+extend-exclude = ["c_src", "f_src"]
+
+[tool.ruff.lint]
+# pyflakes (F), pycodestyle errors/warnings (E, W), import sort (I),
+# pyupgrade (UP) and a few bugbear (B) checks.
+select = ["E", "F", "W", "I", "UP", "B"]
+# 'l', 'l1', 'l2' are the standard Besselian symbols for the shadow-cone radii,
+# so keep the ambiguous-name rule off for this scientific notation.
+ignore = ["E741"]
+
+[tool.ruff.lint.per-file-ignores]
+# Reference-eclipse data dicts are kept as single readable lines.
+"tests/test_besselian_integration.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

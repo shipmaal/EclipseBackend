@@ -16,12 +16,10 @@ shadow axis; the penumbral/umbral cone radii reduced to the observer are
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import numpy as np
 
 from .ephemeris import sub_solar_point, utc_to_et
-from .geography import _EARTH_MEAN_KM, bearing, geo_to_fund
+from .geography import bearing, format_clock, geo_to_fund
 
 
 def _series(model, lat, lon, t):
@@ -92,13 +90,6 @@ def _sun_altaz(model, lat, lon, t_hours):
     return float(alt), float(az)
 
 
-def _clock(model, t_hours):
-    return (
-        datetime.fromisoformat(model.t0_utc).replace(tzinfo=timezone.utc)
-        + timedelta(hours=t_hours)
-    ).strftime("%H:%M:%S")
-
-
 # Contact bracketing: the sampling half-window is expanded (up to this cap) until
 # the observer is outside the penumbra at both ends, so C1/C4 are bracketed even
 # when the partial phase runs past the model's fit window (item A2).  A partial
@@ -163,11 +154,11 @@ def local_circumstances(model, lat: float, lon: float) -> dict:
         "type": "partial",  # upgraded to total/annular below if the observer enters the umbra
         "magnitude": round(float(magnitude), 4),
         "obscuration": round(_obscuration(L1p[imax], L2p[imax], m[imax]), 4),
-        "max_time": _clock(model, tmax),
+        "max_time": format_clock(model.t0_utc, tmax),
         "sun_alt": round(alt, 1),
         "sun_az": round(az, 1),
-        "C1": _clock(model, c1),
-        "C4": _clock(model, c4),
+        "C1": format_clock(model.t0_utc, c1),
+        "C4": format_clock(model.t0_utc, c4),
     }
 
     if central_phase:
@@ -177,8 +168,8 @@ def local_circumstances(model, lat: float, lon: float) -> dict:
         if enters and exits:
             c2, c3 = max(enters), min(exits)
             result["type"] = "total" if L2p[imax] < 0 else "annular"
-            result["C2"] = _clock(model, c2)
-            result["C3"] = _clock(model, c3)
+            result["C2"] = format_clock(model.t0_utc, c2)
+            result["C3"] = format_clock(model.t0_utc, c3)
             result["central_duration_s"] = round((c3 - c2) * 3600.0, 1)
 
     return result

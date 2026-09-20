@@ -109,24 +109,26 @@ _2024_GREATEST = {"utc": "2024-04-08T18:17:15", "lat": 25.3, "lon": -104.1, "wid
 
 
 def _check_greatest(g):
-    from app.geography import bearing, fund_to_geo, shadow_edge_limits, shadow_radii
+    from app.geography import central_track, shadow_edge_limits, shadow_radii
 
     model, _frame = _build_model(g["utc"])
     dt = 0.02
-    e = model.evaluate(np.array([-dt, 0.0, dt]))
-    lon, lat = fund_to_geo(e["x"][1], e["y"][1], e["d"][1], e["mu"][1])
-    lon_a, lat_a = fund_to_geo(e["x"][0], e["y"][0], e["d"][0], e["mu"][0])
-    lon_b, lat_b = fund_to_geo(e["x"][2], e["y"][2], e["d"][2], e["mu"][2])
-    brg = bearing(lat_a, lon_a, lat_b, lon_b)
+    # central_track reduces each instant to (lat, lon) with the along-track
+    # bearing from its neighbours -- the same path /central-line uses (item R3).
+    elems, track = central_track(model, np.array([-dt, 0.0, dt]))
+    tp = next(p for p in track if abs(p.t_hours) < 1e-9)  # central instant t=0
+    i = tp.i
     north, south, width = shadow_edge_limits(
-        e["x"][1], e["y"][1], e["d"][1], e["mu"][1], e["l2"][1], e["tan_f2"][1], brg
+        elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i],
+        elems["l2"][i], elems["tan_f2"][i], tp.bearing,
     )
     _pen, _umb, is_total = shadow_radii(
-        e["x"][1], e["y"][1], e["d"][1], e["l1"][1], e["l2"][1], e["tan_f1"][1], e["tan_f2"][1]
+        elems["x"][i], elems["y"][i], elems["d"][i],
+        elems["l1"][i], elems["l2"][i], elems["tan_f1"][i], elems["tan_f2"][i],
     )
     # Published lat/lon are rounded to 0.1 deg; width matches to ~1 km.
-    assert lat == pytest.approx(g["lat"], abs=0.12)
-    assert lon == pytest.approx(g["lon"], abs=0.12)
+    assert tp.lat == pytest.approx(g["lat"], abs=0.12)
+    assert tp.lon == pytest.approx(g["lon"], abs=0.12)
     assert north is not None and north[0] > south[0]
     assert width == pytest.approx(g["width_km"], abs=2.0)
     assert is_total is g["is_total"]

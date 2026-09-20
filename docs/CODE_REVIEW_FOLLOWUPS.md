@@ -60,17 +60,22 @@ the keyed references from `CLAUDE.md` with equation numbers:
 
 ## 3. Reusable functions (second north star)
 
-- **R1** — `ρ1/ρ2/d1/d2` auxiliaries duplicated in `fund_to_geo`
-  (`geography.py:46-48`), `geo_to_fund` (`:77-82`), `shadow_radii` (`:108-109`).
-  Extract `_reduction_aux(d)`.
+- **R1 — DONE.** `ρ1/ρ2/d1/d2` auxiliaries were duplicated in `fund_to_geo`,
+  `geo_to_fund`, `shadow_radii`. Extracted `_reduction_aux(d)` (a `_ReductionAux`
+  NamedTuple) in `geography.py`, cited [ES92] 8.331; all three call it.
 - **R2 — DONE.** WGS-84 ellipsoid + fundamental-plane unit radius + mean radius
   centralized in a cited `app/constants.py` and imported by `geography.py` and
   `ephemeris.py` (fixes A1). The lunar-radius constants `K_PENUMBRA`/`K_UMBRA`
   stay in `ephemeris.py`, which owns the shadow-cone geometry (per `CLAUDE.md`).
-- **R3** — "evaluate → central point + bearing per t" duplicated (`main.py:84-98`,
-  tests). Add `central_track(model, t) -> arrays(lat, lon, bearing)`.
-- **R4** — Two time formatters: `dec_to_hms` (`geography.py:194`) and `_clock`
-  (`circumstances.py:90`). Unify.
+- **R3 — DONE.** Added `central_track(model, t) -> (elems, [TrackPoint(i, t, lat,
+  lon, bearing)])` in `geography.py`; it evaluates directly (item A2), reduces to
+  the central line, skips off-Earth instants, and tags each point with its
+  along-track bearing. `/central-line` (`main.py`) and the integration-test
+  greatest-eclipse helper both use it.
+- **R4 — DONE.** Time formatting now lives only in `geography.py`: `dec_to_hms`
+  (unchanged, tested), plus `format_offset(t)` (`±HH:MM:SS.s`, used by `main.py`)
+  and `format_clock(t0_utc, t)` (absolute UTC `HH:MM:SS`, replaces
+  `circumstances._clock`).
 - **R5** — Frame-fallback loop duplicated in tests (`_build_model`,
   `_usable_frame`). Promote `build_model_best_frame()` into `app/`.
 

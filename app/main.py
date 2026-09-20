@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from .besselian import BesselianModel
 from .circumstances import local_circumstances
 from .ephemeris import DEFAULT_EARTH_FRAME, sub_solar_point, utc_to_et
-from .geography import bearing, dec_to_hms, fund_to_geo, shadow_edge_limits, shadow_radii
+from .geography import central_track, format_offset, shadow_edge_limits, shadow_radii
 
 _FRAMES = ("ITRS", "TOD", "ITRF93", "IAU_EARTH")
 
@@ -79,41 +79,28 @@ async def central_line(
 
     model = _build_model(epoch, window_hours, frame)
     t = np.arange(start_hours, end_hours + 1e-9, step_minutes / 60.0)
-    # Direct per-instant evaluation: exact along the whole track, including
-    # start/end hours beyond the polynomial fit window (item A2).
-    elems = model.evaluate_direct(t)
+    # Central-line reduction with along-track bearing, from direct per-instant
+    # evaluation (exact beyond the polynomial fit window; items A2/R3).
+    elems, track = central_track(model, t)
 
-    # Pass 1: central-line geographic points (skip instants where the axis misses).
-    valid = []  # (i, ti, lat, lon)
-    for i, ti in enumerate(t):
-        try:
-            lon, lat = fund_to_geo(elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i])
-        except ValueError:
-            continue
-        valid.append((i, float(ti), lat, lon))
-
-    # Pass 2: per-point shadow limits + accurate width (bearing from neighbours).
+    # Per-point shadow limits + accurate width (perpendicular to the along-track
+    # bearing carried by each TrackPoint).
     points = []
-    for k, (i, ti, lat, lon) in enumerate(valid):
-        prev = valid[max(0, k - 1)]
-        nxt = valid[min(len(valid) - 1, k + 1)]
-        brg = bearing(prev[2], prev[3], nxt[2], nxt[3]) if len(valid) > 1 else 0.0
-
+    for tp in track:
+        i = tp.i
         north, south, width = shadow_edge_limits(
             elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i],
-            elems["l2"][i], elems["tan_f2"][i], brg,
+            elems["l2"][i], elems["tan_f2"][i], tp.bearing,
         )
         pen_km, _umb_km, is_total = shadow_radii(
             elems["x"][i], elems["y"][i], elems["d"][i],
             elems["l1"][i], elems["l2"][i], elems["tan_f1"][i], elems["tan_f2"][i],
         )
-        sign = "-" if ti < 0 else "+"
-        h, m, s = dec_to_hms(abs(ti))
         pt = {
-            "t_hours": round(ti, 4),
-            "offset": f"{sign}{h:02d}:{m:02d}:{s:04.1f}",
-            "lon": round(lon, 5),
-            "lat": round(lat, 5),
+            "t_hours": round(tp.t_hours, 4),
+            "offset": format_offset(tp.t_hours),
+            "lon": round(tp.lon, 5),
+            "lat": round(tp.lat, 5),
             "penumbra_km": round(pen_km, 1),
             "is_total": is_total,
             "width_km": round(width, 2),

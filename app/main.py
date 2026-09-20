@@ -17,9 +17,9 @@ from fastapi.staticfiles import StaticFiles
 
 from .besselian import BesselianModel
 from .ephemeris import DEFAULT_EARTH_FRAME, sub_solar_point, utc_to_et
-from .geography import dec_to_hms, fund_to_geo, shadow_radii
+from .geography import bearing, dec_to_hms, fund_to_geo, shadow_edge_limits, shadow_radii
 
-_FRAMES = ("ITRF93", "TOD", "IAU_EARTH")
+_FRAMES = ("ITRS", "TOD", "ITRF93", "IAU_EARTH")
 
 app = FastAPI(title="EclipseBackend", version="0.1.0")
 
@@ -80,27 +80,45 @@ async def central_line(
     t = np.arange(start_hours, end_hours + 1e-9, step_minutes / 60.0)
     elems = model.evaluate(t)
 
-    points = []
+    # Pass 1: central-line geographic points (skip instants where the axis misses).
+    valid = []  # (i, ti, lat, lon)
     for i, ti in enumerate(t):
         try:
             lon, lat = fund_to_geo(elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i])
         except ValueError:
-            continue  # axis misses the Earth at this instant
-        pen_km, umb_km, is_total = shadow_radii(
+            continue
+        valid.append((i, float(ti), lat, lon))
+
+    # Pass 2: per-point shadow limits + accurate width (bearing from neighbours).
+    points = []
+    for k, (i, ti, lat, lon) in enumerate(valid):
+        prev = valid[max(0, k - 1)]
+        nxt = valid[min(len(valid) - 1, k + 1)]
+        brg = bearing(prev[2], prev[3], nxt[2], nxt[3]) if len(valid) > 1 else 0.0
+
+        north, south, width = shadow_edge_limits(
+            elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i],
+            elems["l2"][i], elems["tan_f2"][i], brg,
+        )
+        pen_km, _umb_km, is_total = shadow_radii(
             elems["x"][i], elems["y"][i], elems["d"][i],
             elems["l1"][i], elems["l2"][i], elems["tan_f1"][i], elems["tan_f2"][i],
         )
         sign = "-" if ti < 0 else "+"
-        h, m, s = dec_to_hms(abs(float(ti)))
-        points.append({
-            "t_hours": round(float(ti), 4),
+        h, m, s = dec_to_hms(abs(ti))
+        pt = {
+            "t_hours": round(ti, 4),
             "offset": f"{sign}{h:02d}:{m:02d}:{s:04.1f}",
             "lon": round(lon, 5),
             "lat": round(lat, 5),
-            "umbra_km": round(umb_km, 1),
             "penumbra_km": round(pen_km, 1),
             "is_total": is_total,
-        })
+            "width_km": round(width, 2),
+        }
+        if north is not None:
+            pt["north_limit"] = {"lat": round(north[0], 5), "lon": round(north[1], 5)}
+            pt["south_limit"] = {"lat": round(south[0], 5), "lon": round(south[1], 5)}
+        points.append(pt)
 
     # Sub-solar point at T0 drives the frontend's sunlight / day-night terminator.
     ss_lon, ss_lat = sub_solar_point(utc_to_et(epoch), frame)

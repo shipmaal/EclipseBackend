@@ -11,6 +11,7 @@ readme = "README.md"
 dependencies = [
     "spiceypy>=6.0.0",
     "pyerfa>=2.0.0",
+    "astropy-iers-data>=0.2024.1.1.0.0.0",
     "numpy>=1.26,<2.1",
     "pandas>=2.2",
     "fastapi>=0.110",

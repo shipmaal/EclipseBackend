@@ -42,11 +42,12 @@ Earth PCK), set `SPICE_EARTH_FRAME=IAU_EARTH`.
 `frontend/` is a dependency-free Three.js globe (Three.js is vendored under
 `frontend/vendor/`, so it works offline). It calls `/central-line` and:
 
-* draws the shadow-axis central line on the Earth;
+* draws the shadow-axis central line and the **northern/southern limit curves**,
+  shading the **path of totality** between them;
 * lights the globe from the **sub-solar point** (`sun` in the response), giving a
   real day/night terminator;
-* casts the Moon's **umbra + penumbra** as shadow blobs sized from each point's
-  `umbra_km` / `penumbra_km`, animated along the track with a play/scrub control.
+* casts the Moon's **umbra + penumbra** as shadow blobs (umbra sized by the true
+  `width_km`), animated along the track with a play/scrub control.
 
 Served by the backend at `/ui`, or standalone with any static server
 (`python -m http.server` in `frontend/`, then set the API base URL in the panel).
@@ -61,7 +62,22 @@ It ships a bundled `sample.json` so it renders even without a running backend
 | `GET /besselian?epoch=…` | Besselian element polynomials for the eclipse. |
 | `GET /central-line?epoch=…&start_hours=…&end_hours=…&step_minutes=…` | Geographic shadow-axis track. |
 
-`epoch` is a UTC ISO-8601 time, e.g. `2024-04-08T18:00:00`.
+`epoch` is a UTC ISO-8601 time, e.g. `2024-04-08T18:00:00`. `/central-line`
+points include the central `lat/lon`, the umbral `north_limit`/`south_limit`,
+the true `width_km`, and `is_total`.
+
+## Accuracy
+
+Positions are apparent (light-time + stellar aberration); Earth orientation is
+the full IAU 2006/2000A transform with IERS EOP (default `ITRS` frame); the
+penumbral/umbral lunar radii use the standard `k1`/`k2` split; latitudes use the
+parametric→geodetic conversion; and limits/widths are found by root-finding the
+shadow-cone edge on the WGS-84 ellipsoid. Validated against independent Espenak
+elements and greatest-eclipse points for 2017-08-21 and 2024-04-08: Besselian
+`x,y` to ~1e-5, positions within the published rounding, and **path width to
+~1 km** (114.7 km and 197.4 km). Remaining approximations: DE432s rather than
+DE440 (sub-km for Sun/Moon), and no per-position lunar-limb profile (the mean
+limb is folded into `k2`).
 
 ## Tests
 

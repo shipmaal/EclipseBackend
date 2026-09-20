@@ -10,15 +10,16 @@ SPICE + JPL DE440 gives all of that from a single toolkit:
 * ``spkpos(..., abcorr="LT+S", ...)`` returns apparent positions (light-time +
   stellar aberration) -- exactly what the Besselian construction assumes.
 
-Three Earth-orientation frames are supported (``earth_frame``):
+Four Earth-orientation frames are supported (``earth_frame``):
 
+* ``"ITRS"`` (default) -- full IAU 2006/2000A celestial-to-terrestrial transform
+  (ERFA ``c2t06a``) with IERS Earth-orientation parameters (polar motion +
+  UT1-UTC from :mod:`app.eop`).  Most accurate, and needs only PyPI data (no
+  binary PCK).
+* ``"TOD"``   -- true equator & equinox of date (ERFA ``pnm06a`` + ``gst06a``),
+  UT1 approximated by UTC (no EOP).  Differs from ITRS only by the EOP terms.
 * ``"ITRF93"`` -- SPICE Earth body-fixed frame from the high-precision binary
-  Earth PCK; folds precession, nutation and true (UT1/EOP) rotation into the
-  frame.  Most accurate; needs ``earth_latest_high_prec.bpc``.
-* ``"TOD"``   -- true equator & equinox of date, built with pyerfa's IAU 2006/2000A
-  precession-nutation (``pnm06a``) and Greenwich apparent sidereal time
-  (``gst06a``).  High precision, needs no binary PCK (works with the mirror
-  kernel set); UT1 is approximated by UTC (sub-arcsecond for recent dates).
+  Earth PCK (``earth_latest_high_prec.bpc``); equivalent accuracy to ITRS.
 * ``"IAU_EARTH"`` -- SPICE low-precision analytic rotation; coarse fallback.
 
 How ``mu`` and the fundamental-plane coordinates stay consistent
@@ -50,20 +51,24 @@ import erfa
 import numpy as np
 import spiceypy as spice
 
+from .eop import eop
+
 # Julian date of J2000.0, for two-part TT/UT1 dates passed to ERFA.
 _J2000_JD = 2451545.0
 
-# Ratio of the mean lunar radius to Earth's equatorial radius.  This is the
-# value adopted for umbral *and* penumbral contacts in the standard eclipse
-# predictions (Fred Espenak; Explanatory Supplement).  It is deliberately a
-# fixed constant rather than a body radius pulled from a kernel.
-K_MOON = 0.2725076
+# Ratio of the lunar radius to Earth's equatorial radius.  The standard eclipse
+# predictions (Fred Espenak; Explanatory Supplement) use TWO values: a larger
+# constant for the penumbra and a smaller one for the umbra/antumbra (the umbral
+# value is reduced to allow for the mean effect of the lunar limb profile /
+# valleys).  Using a single value biases the umbral width.
+K_PENUMBRA = 0.2725076  # penumbral contacts (IAU mean lunar radius)
+K_UMBRA = 0.2722810     # umbral / antumbral contacts (Espenak)
 
-# Default Earth-orientation frame.  "TOD" (pyerfa true-of-date) is high precision
-# and needs no binary PCK, so it works out of the box with the mirror kernels;
-# "ITRF93" is marginally better when the binary Earth PCK is available.
-# Override with $SPICE_EARTH_FRAME.
-DEFAULT_EARTH_FRAME = os.environ.get("SPICE_EARTH_FRAME", "TOD")
+# Default Earth-orientation frame.  "ITRS" (ERFA IAU 2006/2000A + IERS EOP) is the
+# most accurate and needs no binary PCK -- only PyPI data -- so it is the default.
+# "TOD" drops the EOP correction; "ITRF93" uses the SPICE binary Earth PCK;
+# "IAU_EARTH" is a coarse fallback.  Override with $SPICE_EARTH_FRAME.
+DEFAULT_EARTH_FRAME = os.environ.get("SPICE_EARTH_FRAME", "ITRS")
 
 _KERNELS_LOADED = False
 
@@ -140,14 +145,24 @@ def _geocentric_vectors(et: float, earth_frame: str):
     """
     a_e = earth_equatorial_radius_km()
 
-    if earth_frame == "TOD":
+    if earth_frame in ("ITRS", "TOD"):
         moon, _ = spice.spkpos("MOON", et, "J2000", "LT+S", "EARTH")
         sun, _ = spice.spkpos("SUN", et, "J2000", "LT+S", "EARTH")
         tt2 = et / 86400.0  # TT ~ TDB to < 2 ms
-        rbpn = erfa.pnm06a(_J2000_JD, tt2)  # GCRS -> true equator & equinox of date
+        utc_jd = _J2000_JD + (et - spice.deltet(et, "ET")) / 86400.0
+
+        if earth_frame == "ITRS":
+            # Full IAU 2006/2000A celestial-to-terrestrial transform with IERS EOP
+            # (polar motion + UT1-UTC): most accurate Earth-fixed frame.
+            xp, yp, dut1 = eop(utc_jd - 2400000.5)
+            ut1_frac = (utc_jd - _J2000_JD) + dut1 / 86400.0
+            rc2t = erfa.c2t06a(_J2000_JD, tt2, _J2000_JD, ut1_frac, xp, yp)
+            return (rc2t @ np.asarray(moon)) / a_e, (rc2t @ np.asarray(sun)) / a_e, 0.0
+
+        # TOD: true equator & equinox of date, GAST with UT1 ~ UTC (no EOP).
+        rbpn = erfa.pnm06a(_J2000_JD, tt2)  # GCRS -> true-of-date
         moon = rbpn @ np.asarray(moon)
         sun = rbpn @ np.asarray(sun)
-        utc_jd = _J2000_JD + (et - spice.deltet(et, "ET")) / 86400.0  # UT1 ~ UTC
         gast = float(erfa.gst06a(utc_jd, 0.0, _J2000_JD, tt2))
         return moon / a_e, sun / a_e, gast
 
@@ -186,15 +201,15 @@ def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> Bess
     z = r_moon * (np.sin(delta) * np.sin(d) + np.cos(delta) * np.cos(d) * np.cos(ha))
 
     # Penumbral (f1) and umbral (f2) shadow cones (Explanatory Supplement
-    # 8.323-1, 8.323-6, 8.323-7).
+    # 8.323-1, 8.323-6, 8.323-7), with distinct penumbral/umbral lunar radii.
     d_s = sun_radius_km() / a_e  # solar radius in Earth radii
-    sin_f1 = (d_s + K_MOON) / g_dist
-    sin_f2 = (d_s - K_MOON) / g_dist
+    sin_f1 = (d_s + K_PENUMBRA) / g_dist
+    sin_f2 = (d_s - K_UMBRA) / g_dist
     tan_f1 = float(np.tan(np.arcsin(sin_f1)))
     tan_f2 = float(np.tan(np.arcsin(sin_f2)))
 
-    c1 = z + K_MOON / sin_f1
-    c2 = z - K_MOON / sin_f2
+    c1 = z + K_PENUMBRA / sin_f1
+    c2 = z - K_UMBRA / sin_f2
     l1 = c1 * tan_f1
     l2 = c2 * tan_f2
 

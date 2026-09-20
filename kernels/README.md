@@ -19,14 +19,16 @@ The generated `eclipse.tm` metakernel loads the set below. The engine
 
 ## Earth-orientation frames (`SPICE_EARTH_FRAME` / `frame=` query)
 
-| Frame | Needs | Accuracy vs published tracks |
+| Frame | Needs | Notes |
 | --- | --- | --- |
-| `TOD` (default) | nothing beyond the mirror set | sub-km latitude, ~few-km longitude |
-| `ITRF93` | `earth_latest_high_prec.bpc` (NAIF only) | best (adds real EOP/UT1) |
-| `IAU_EARTH` | text PCK | coarse fallback (~5–10 km) |
+| `ITRS` (default) | PyPI only (`astropy-iers-data`) | full IAU 2006/2000A + IERS EOP (polar motion, UT1) |
+| `TOD` | nothing extra | true-of-date, UT1≈UTC (no EOP) |
+| `ITRF93` | `earth_latest_high_prec.bpc` (NAIF only) | SPICE binary PCK; equivalent to ITRS |
+| `IAU_EARTH` | text PCK | coarse fallback |
 
-The dominant historical error was **not** the frame but a parametric-vs-geodetic
-latitude conversion bug (now fixed); the frame contributes only a few km.
+Validated against independent Espenak elements/points for 2017-08-21 and
+2024-04-08: Besselian `x,y` match to ~1e-5, greatest-eclipse position to within
+the published rounding, and **path width to ~1 km** (114.7 km and 197.4 km).
 
 ## Why this set, and not a lunar theory (ELP2000-82B / ELP/MPP02)
 

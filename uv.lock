@@ -44,6 +44,15 @@ wheels = [
 ]
 
 [[package]]
+name = "astropy-iers-data"
+version = "0.2026.9.14.0.56.43"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/79/8e5b2b8b850a140511237a937c2d1ea95dc0466eb0cb4c2a1579d2501120/astropy_iers_data-0.2026.9.14.0.56.43.tar.gz", hash = "sha256:6d4eca0b906052ce02e47988e736b36e7720cc61784fdc0cb718f66fd88f5b72", size = 1947284, upload-time = "2026-09-14T00:57:20.5Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/87/7eff764f87cf24899e78fa7070699ba52704681017f16f51f900aca08ab8/astropy_iers_data-0.2026.9.14.0.56.43-py3-none-any.whl", hash = "sha256:43786a0a9b60c7a55a85e12307c0050d75ea0679710378141255ded9d1bd8ebc", size = 2002748, upload-time = "2026-09-14T00:57:19.085Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -277,6 +286,7 @@ name = "eclipsebackend"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "astropy-iers-data" },
     { name = "fastapi" },
     { name = "gunicorn" },
     { name = "numpy" },
@@ -302,6 +312,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "astropy-iers-data", specifier = ">=0.2024.1.1.0.0.0" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "gunicorn", specifier = ">=22.0" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.8" },

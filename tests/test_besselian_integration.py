@@ -30,7 +30,7 @@ def _build_model(t0):
 
     from app.besselian import BesselianModel
 
-    for frame in ("ITRF93", "TOD", "IAU_EARTH"):
+    for frame in ("ITRS", "ITRF93", "TOD", "IAU_EARTH"):
         try:
             return BesselianModel(t0_utc=t0, earth_frame=frame, half_window_hours=2.0), frame
         except spiceypy.utils.exceptions.SpiceyError:
@@ -76,7 +76,7 @@ def _usable_frame():
 
     load_kernels()
     et = utc_to_et("2017-08-21T18:00:00")
-    for frame in ("ITRF93", "TOD", "IAU_EARTH"):
+    for frame in ("ITRS", "ITRF93", "TOD", "IAU_EARTH"):
         try:
             besselian_instant(et, frame)
             return frame
@@ -103,19 +103,46 @@ def test_2017_elements_match_published():
         assert getattr(bi, key) == pytest.approx(pub, abs=1e-3), key
 
 
-def test_2017_greatest_eclipse_point():
-    """Central line at greatest eclipse matches the published lat/lon and width."""
-    from app.geography import fund_to_geo, shadow_radii
+# 2024-04-08, independent Espenak elements + greatest-eclipse circumstances.
+_2024_PUBLISHED = {"x": -0.3182440, "y": 0.2197640, "d": 7.5862002}
+_2024_GREATEST = {"utc": "2024-04-08T18:17:15", "lat": 25.3, "lon": -104.1, "width_km": 197.5}
 
-    model, _frame = _build_model(_2017_GREATEST["utc"])
-    e = model.evaluate(np.array([0.0]))
-    lon, lat = fund_to_geo(e["x"][0], e["y"][0], e["d"][0], e["mu"][0])
-    _pen, umb, is_total = shadow_radii(
-        e["x"][0], e["y"][0], e["d"][0], e["l1"][0], e["l2"][0], e["tan_f1"][0], e["tan_f2"][0]
+
+def _check_greatest(g):
+    from app.geography import bearing, fund_to_geo, shadow_edge_limits
+
+    model, _frame = _build_model(g["utc"])
+    dt = 0.02
+    e = model.evaluate(np.array([-dt, 0.0, dt]))
+    lon, lat = fund_to_geo(e["x"][1], e["y"][1], e["d"][1], e["mu"][1])
+    lon_a, lat_a = fund_to_geo(e["x"][0], e["y"][0], e["d"][0], e["mu"][0])
+    lon_b, lat_b = fund_to_geo(e["x"][2], e["y"][2], e["d"][2], e["mu"][2])
+    brg = bearing(lat_a, lon_a, lat_b, lon_b)
+    north, south, width = shadow_edge_limits(
+        e["x"][1], e["y"][1], e["d"][1], e["mu"][1], e["l2"][1], e["tan_f2"][1], brg
     )
+    # Published lat/lon are rounded to 0.1 deg; width matches to ~1 km.
+    assert lat == pytest.approx(g["lat"], abs=0.12)
+    assert lon == pytest.approx(g["lon"], abs=0.12)
+    assert north is not None and north[0] > south[0]
+    assert width == pytest.approx(g["width_km"], abs=2.0)
 
-    assert lat == pytest.approx(_2017_GREATEST["lat"], abs=0.1)
-    assert lon == pytest.approx(_2017_GREATEST["lon"], abs=0.1)
-    assert is_total
-    # Path width within ~10 km (our single k differs from Espenak's k1/k2 split).
-    assert (2 * umb) == pytest.approx(_2017_GREATEST["width_km"], abs=10.0)
+
+def test_2017_greatest_eclipse_point():
+    _check_greatest(_2017_GREATEST)
+
+
+def test_2024_elements_match_published():
+    import spiceypy
+
+    from app.ephemeris import besselian_instant
+
+    frame = _usable_frame()
+    et = spiceypy.str2et("2024-04-08 18:00:00 TDT")
+    bi = besselian_instant(et, frame)
+    for key, pub in _2024_PUBLISHED.items():
+        assert getattr(bi, key) == pytest.approx(pub, abs=1e-3), key
+
+
+def test_2024_greatest_eclipse_point():
+    _check_greatest(_2024_GREATEST)

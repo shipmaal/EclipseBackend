@@ -6,17 +6,25 @@
 // Everything else in the library is pure math and must not include this
 // header's implementation details (roadmap §2, §7).
 //
-// Units: times are ``et`` = TDB seconds past J2000 as CSPICE defines them
-// [SPICE]; positions in km; angles in degrees at the API boundary.
+// This is the port of app/ephemeris.py; that module's docstring is the
+// scientific reference for what follows (frames, ``mu`` convention, time
+// scales and delta-T). Units: ``et`` = TDB seconds past J2000 [SPICE];
+// positions in km at the SPICE boundary and in Earth equatorial radii in the
+// fundamental plane; angles in **degrees** at this API's boundary.
 #pragma once
 
 #include <array>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "eclipse/elements.hpp"
 #include "eclipse/spice_error.hpp"
 
 namespace eclipse::ephem {
+
+// ------------------------------------------------------------ toolkit / pool
 
 /// ``tkvrsn_c("TOOLKIT")`` — e.g. ``"CSPICE_N0067"``. Pinned by a test so the
 /// vendored toolkit cannot silently diverge from the spiceypy oracle.
@@ -39,12 +47,19 @@ void kclear();
 /// Number of loaded kernels of ``kind`` (``ktotal_c``; default "ALL").
 int kernel_count(std::string_view kind = "ALL");
 
-/// UTC (or any ``str2et_c`` string, e.g. ``"2024-04-08T18:00:00"`` or
-/// ``"... TDT"``) -> ``et`` seconds [SPICE str2et_c].
+/// Solar radius [km] from the PCK (``bodvrd_c("SUN", "RADII")``, 696 000 km,
+/// IAU 1976) — the radius the [Espenak] k1/k2 are paired with
+/// (``app/ephemeris.sun_radius_km``).
+double sun_radius_km();
+
+// --------------------------------------------------------------- raw SPICE
+
+/// Any ``str2et_c`` string (e.g. ``"2024-04-08T18:00:00"`` or ``"... TDT"``)
+/// -> ``et`` seconds [SPICE str2et_c]. No era logic: see ``utc_to_et``.
 double str_to_et(std::string_view time_string);
 
 /// ``et`` -> ISO calendar UTC string with ``precision`` fractional-second
-/// digits (``et2utc_c`` with format "ISOC").
+/// digits (``et2utc_c`` with format "ISOC"). No era logic: see ``et_to_utc``.
 std::string et_to_utc_iso(double et, int precision = 6);
 
 /// Result of ``spkpos_c``: position of ``target`` relative to ``observer`` in
@@ -56,8 +71,45 @@ struct Position {
 
 /// Apparent position via ``spkpos_c`` [SPICE]. ``abcorr`` "LT+S" gives the
 /// light-time + stellar-aberration corrected direction used for the Besselian
-/// elements (``app/ephemeris._geocentric_vectors``).
+/// elements.
 Position body_position(std::string_view target, double et, std::string_view frame,
                        std::string_view abcorr, std::string_view observer);
+
+// ------------------------------------------------------------- time scales
+// The IERS-era rule of app/ephemeris.py: inside the Bulletin A table
+// (``eclipse::eop``, which must be set) the epoch string is UTC and the
+// leap-second kernel applies; outside it the string is read as UT1 and
+// TT = UT1 + delta-T from the [Espenak] model (``eclipse::deltat``).
+
+/// ``app.ephemeris.utc_to_et``: epoch string -> TDB seconds past J2000.
+double utc_to_et(std::string_view utc);
+
+/// ``app.ephemeris.et_to_utc``: inverse, ISO ``YYYY-MM-DDTHH:MM:SS`` (whole s).
+std::string et_to_utc(double et);
+
+/// ``app.ephemeris.earth_rotation_times``: per instant, TT and UT1 as
+/// fractional days past J2000 (second halves of two-part JDs whose first half
+/// is ``constants::J2000_JD``) and polar motion in radians (0 outside the
+/// IERS era). TDB is used for TT (<= 1.7 ms, sub-mas; review item A4).
+struct EarthRotation {
+    std::vector<double> tt2, ut1, xp, yp;
+};
+EarthRotation earth_rotation_times(std::span<const double> et);
+
+/// Delta-T = TT - UT1 [s] as actually used at ``et`` (measured or modelled).
+std::vector<double> tt_minus_ut1(std::span<const double> et);
+
+// ---------------------------------------------------------------- geometry
+
+/// ``app.ephemeris.besselian_instants``: the eight elements plus ``z`` at each
+/// ``et`` [ES92] eq. 8.322-6, 8.323-1/6/7 with k1/k2 [Espenak].
+Elements besselian_instants(std::span<const double> et, Frame frame = Frame::ITRS);
+
+/// ``app.ephemeris.sub_solar_points``: geographic (lon, lat) [deg] of the
+/// sub-solar point at each ``et``; lon east-positive in (-180, 180].
+struct SubSolar {
+    std::vector<double> lon_deg, lat_deg;
+};
+SubSolar sub_solar_points(std::span<const double> et, Frame frame = Frame::ITRS);
 
 }  // namespace eclipse::ephem

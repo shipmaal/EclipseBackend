@@ -176,11 +176,13 @@ means a bug.
 | `catalog.find_eclipses` | `catalog` | identical rows (times to 1e-6 s) | 2019–2024 canon |
 | `besselian.BesselianModel` (polynomial fit) | **stay in Python** | — | it is a tabular product, not compute |
 
-Parity harness: `tests/cpp/fixtures/*.json` are dumped by a small
-`tools/dump_oracle.py` from the Python at the three reference eclipses (plus
-the 1919 epoch when DE440s is present); the Catch2 tests load them. That
-keeps C++ tests runnable without Python in the loop and pins the oracle
-values in the repo.
+Parity harness: `tests/cpp/fixtures/*.txt` (whitespace records, no JSON
+library needed) are dumped by `tools/dump_oracle.py` from the Python at the
+three reference eclipses plus the 1919 epoch, with the IERS rows they need;
+the Catch2 tests load them and skip when the pinned DE440s is not on disk.
+That keeps C++ tests runnable without Python in the loop and pins the oracle
+values in the repo. The stronger gate is `tests/test_native.py`, which
+compares the live Python and native results over dense windows.
 
 ## 5. Phases and exit criteria
 
@@ -193,9 +195,23 @@ values in the repo.
    bit-identical to spiceypy at the three reference instants; cold build
    ~55 s on 4 cores, ~10 s warm with ccache. Actual vendored size is 45 MB
    for CSPICE source (not the 25 MB estimated above) + 2.5 MB ERFA.
-1. **Time + elements.** `deltat`, `earth_rotation_times`, `besselian_instants`,
-   `sub_solar_points`. Exit: elements parity 1e-13 on the three eclipses;
-   `test_besselian_integration.py` passes with `ECLIPSE_BACKEND=native`.
+1. **Time + elements — DONE.** `constants`, `deltat`, `eop` (injected table),
+   `elements`, and in `ephem`: `utc_to_et`/`et_to_utc` (IERS-era rule),
+   `earth_rotation_times`, `besselian_instants`, `sub_solar_points`.
+   `app/native.py` is the `ECLIPSE_BACKEND=python|native` switch; the five
+   `app/ephemeris.py` functions dispatch at the top, the Python bodies stay
+   as the oracle. Exit met: the whole suite passes with
+   `ECLIPSE_BACKEND=native`. Measured parity (`tests/test_native.py`, 241
+   instants × 4 eclipses × 4 frames): delta-T, EOP, time scales and
+   `earth_rotation_times` bit-identical; elements x ≤ 5.5e-14, y ≤ 7e-15,
+   d ≤ 4e-15 deg, mu ≤ 1.2e-13 deg, l1/l2 ≤ 2e-16 — the residual is NumPy's
+   SIMD `arctan2`/`hypot`/`tan`/`arcsin` differing from libm by 1 ulp on
+   AVX-512 hosts (verified directly), amplified by the Moon's 60-R⊕ distance.
+   The oracle's `einsum` rotation was replaced by an order-defined
+   multiply-and-sum (`app.ephemeris._rotate`) that is bit-identical to
+   `eraRxp`; before that the vectors differed by 1 ulp (6e-11 km) and the
+   oracle itself was CPU-dependent. Fixtures: `tools/dump_oracle.py` →
+   `tests/cpp/fixtures/*.txt` (plain text, not JSON — no parser dependency).
 2. **Ellipsoid + limits + contacts.** Exit: widths and P1–P4 through native;
    `/central-line` unchanged to the last digit.
 3. **Circumstances.** Exit: durations/magnitudes/horizon flags identical;

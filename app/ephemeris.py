@@ -59,6 +59,15 @@ rotation evaluated as if TT were UT); ours is the true Greenwich hour angle, so
 ``mu_published = mu_ours + delta-T * 1.002738 * 15"/s`` [ES92] sec. 8.36 (see
 ``tests/test_besselian_integration.py``).
 
+Native backend
+--------------
+With ``ECLIPSE_BACKEND=native`` (:mod:`app.native`) the public functions below
+that compute -- :func:`utc_to_et`, :func:`et_to_utc`,
+:func:`earth_rotation_times`, :func:`besselian_instants`,
+:func:`sub_solar_points` -- dispatch to the C++ port in ``core/`` (roadmap
+phase 1).  The Python bodies stay as the oracle; ``tests/test_native.py``
+holds the two to the roadmap's parity tolerances.
+
 Thread safety
 -------------
 CSPICE keeps one global kernel pool and is **not** thread-safe.  Every function
@@ -79,6 +88,7 @@ import erfa
 import numpy as np
 import spiceypy as spice
 
+from . import native
 from .constants import EARTH_EQUATORIAL_RADIUS_KM
 from .deltat import decimal_year_from_jd, delta_t_seconds
 from .eop import eop, iers_mjd_range
@@ -130,6 +140,8 @@ def load_kernels(metakernel: str | os.PathLike | None = None) -> None:
                 "to download the required kernels (needs network access to NAIF)."
             )
         spice.furnsh(str(mk))
+        if native.is_native():
+            native.furnish(str(mk))  # the extension has its own kernel pool
         _KERNELS_LOADED = True
 
 
@@ -137,6 +149,8 @@ def unload_kernels() -> None:
     global _KERNELS_LOADED
     with SPICE_LOCK:
         spice.kclear()
+        if native.is_native():
+            native.kclear()
         _KERNELS_LOADED = False
 
 
@@ -182,6 +196,8 @@ def utc_to_et(utc: str) -> float:
     the [Espenak] polynomial (module docstring, "Time scales and delta-T");
     TDB - TT (< 1.7 ms) is neglected there.
     """
+    if native.is_native():
+        return native.module().utc_to_et(utc)
     with SPICE_LOCK:
         formal = spice.tparse(utc)[0]  # seconds past J2000 on the leap-second-free calendar
         mjd = _J2000_JD - _MJD_OFFSET + formal / 86400.0
@@ -198,6 +214,8 @@ def et_to_utc(et: float) -> str:
     round trip through :func:`utc_to_et` is consistent to the rounding.
     """
     et = float(et)
+    if native.is_native():
+        return native.module().et_to_utc(et)
     with SPICE_LOCK:
         if _in_iers_era(_J2000_JD - _MJD_OFFSET + et / 86400.0):
             return spice.et2utc(et, "ISOC", 0)
@@ -215,6 +233,8 @@ def earth_rotation_times(et):
     polynomial) and xp = yp = 0.  TDB is used for TT (<= 1.7 ms, sub-mas; A4).
     """
     et = np.atleast_1d(np.asarray(et, dtype=float))
+    if native.is_native():
+        return native.module().earth_rotation_times(et)
     tt2 = et / 86400.0
     with SPICE_LOCK:
         delta_et = np.array([spice.deltet(e, "ET") for e in et])  # ET - UTC [s]
@@ -239,6 +259,20 @@ def tt_minus_ut1(et) -> np.ndarray:
 
 
 # --- Geometry -------------------------------------------------------------------
+
+def _rotate(r: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Apply per-row 3x3 matrices ``r`` (n, 3, 3) to vectors ``v`` (n, 3).
+
+    Written as an elementwise product summed over the last axis rather than
+    ``np.einsum``/``np.matmul`` so the three-term accumulation order is fixed
+    (``(r0 v0 + r1 v1) + r2 v2``, no FMA) -- the same order as ERFA's ``eraRxp``
+    and the C++ core, giving bit-identical vectors.  ``einsum`` dispatches to
+    SIMD/FMA kernels that vary by CPU and differ from this by ~1 ulp
+    (~6e-11 km at the Moon), which is numerically irrelevant but would make
+    the oracle machine-dependent.
+    """
+    return (r * v[:, None, :]).sum(axis=-1)
+
 
 def _reclat(v: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Vectorized ``spice.reclat``: (radius, longitude, latitude) of (..., 3) vectors."""
@@ -290,16 +324,16 @@ def _geocentric_vectors(et: np.ndarray, earth_frame: str):
             # (xp, yp) and UT1-UTC [IERS2010] from :mod:`app.eop`.  Most accurate
             # Earth-fixed frame; needs no binary PCK.
             rc2t = erfa.c2t06a(_J2000_JD, tt2, _J2000_JD, ut1_frac, xp, yp)  # (n, 3, 3)
-            moon = np.einsum("nij,nj->ni", rc2t, moon)
-            sun = np.einsum("nij,nj->ni", rc2t, sun)
+            moon = _rotate(rc2t, moon)
+            sun = _rotate(rc2t, sun)
             return moon / a_e, sun / a_e, np.zeros(n)
 
         # TOD: true equator & equinox of date, GAST from UT1 (no polar motion).
         # ERFA pnm06a = IAU 2006/2000A precession-nutation matrix; gst06a = Greenwich
         # apparent sidereal time, both [SOFA] (Wallace & Capitaine 2006).
         rbpn = erfa.pnm06a(_J2000_JD, tt2)  # GCRS -> true-of-date, (n, 3, 3)
-        moon = np.einsum("nij,nj->ni", rbpn, moon)
-        sun = np.einsum("nij,nj->ni", rbpn, sun)
+        moon = _rotate(rbpn, moon)
+        sun = _rotate(rbpn, sun)
         gast = np.asarray(erfa.gst06a(_J2000_JD, ut1_frac, _J2000_JD, tt2), dtype=float)
         return moon / a_e, sun / a_e, gast.reshape(n)
 
@@ -325,6 +359,8 @@ def besselian_instants(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> dict[str, 
     should ``np.unwrap``.
     """
     et = np.atleast_1d(np.asarray(et, dtype=float))
+    if native.is_native():
+        return native.module().besselian_instants(et, earth_frame)
     a_e = earth_equatorial_radius_km()
 
     moon, sun, gast = _geocentric_vectors(et, earth_frame)
@@ -390,6 +426,8 @@ def sub_solar_points(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> tuple[np.nda
     the ellipsoid normal); longitude is east-positive in (-180, 180].
     """
     et = np.atleast_1d(np.asarray(et, dtype=float))
+    if native.is_native():
+        return native.module().sub_solar_points(et, earth_frame)
     _moon, sun, gast = _geocentric_vectors(et, earth_frame)
     _r, lon, lat = _reclat(sun)
     lon_deg = (np.degrees(lon - gast) + 180.0) % 360.0 - 180.0

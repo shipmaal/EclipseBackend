@@ -39,6 +39,8 @@ include(cmake/erfa.cmake)
 
 # ---------------------------------------------------------------- libeclipse
 add_library(eclipse STATIC
+  core/src/deltat.cpp
+  core/src/eop.cpp
   core/src/ephem.cpp
 )
 target_include_directories(eclipse PUBLIC core/include)

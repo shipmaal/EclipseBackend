@@ -67,9 +67,9 @@ Thirteen entry points. Two consequences:
 
 ### Vendored SPICE sources — keep, and treat as mandatory
 
-- **NAIF is unreachable from restricted networks** (this session's proxy
-  returns 403 for `naif.jpl.nasa.gov`; `kernels/bootstrap.py` exists for the
-  same reason). A `FetchContent`/`ExternalProject` that downloads the
+- **NAIF is unreachable from restricted networks** (some sandboxes return 403
+  for `naif.jpl.nasa.gov`; `kernels/bootstrap.py` exists for the same
+  reason). A `FetchContent`/`ExternalProject` that downloads the
   toolkit at configure time would make the build unreproducible exactly where
   the Python build already had to add a mirror. Vendor the source.
 - Vendor the **source tree**, not `lib/cspice.a`: NAIF's prebuilt archive is
@@ -184,11 +184,15 @@ values in the repo.
 
 ## 5. Phases and exit criteria
 
-0. **Skeleton (this is where the slice is).** CMake + presets + vendored
-   CSPICE/ERFA build as static libs; nanobind `_eclipse` importable via `uv
-   run python -c "import _eclipse"`; `furnish` + `tkvrsn` + the *error-handling
-   test* (§2) pass; CI builds on ubuntu + macos with ccache. Exit: the wheel
-   builds from a clean clone with no network beyond PyPI.
+0. **Skeleton — DONE.** CMake + presets + vendored CSPICE/ERFA build as
+   static libs; nanobind `_eclipse` importable via `uv run python -c "import
+   _eclipse"`; `furnish` + `tkvrsn` + the *error-handling test* (§2) pass
+   (`tests/cpp/test_ephem.cpp`, `tests/test_native.py`); CI builds on ubuntu +
+   macos with ccache. Exit met: the wheel builds from a clean clone with no
+   network beyond PyPI (`uv sync`). Measured: `str2et`/`et2utc`/`spkpos`
+   bit-identical to spiceypy at the three reference instants; cold build
+   ~55 s on 4 cores, ~10 s warm with ccache. Actual vendored size is 45 MB
+   for CSPICE source (not the 25 MB estimated above) + 2.5 MB ERFA.
 1. **Time + elements.** `deltat`, `earth_rotation_times`, `besselian_instants`,
    `sub_solar_points`. Exit: elements parity 1e-13 on the three eclipses;
    `test_besselian_integration.py` passes with `ECLIPSE_BACKEND=native`.

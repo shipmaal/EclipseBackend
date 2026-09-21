@@ -6,6 +6,8 @@ __pycache__/
 *.a
 build/
 dist/
+.ccache/
+compile_commands.json
 *.egg-info/
 
 # Virtual envs

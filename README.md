@@ -19,7 +19,8 @@ primary engine.)
 ## Setup (uv)
 
 ```bash
-# install deps into a local venv
+# install deps into a local venv; also builds the native core (`_eclipse`:
+# vendored CSPICE + ERFA via CMake — needs a C/C++ compiler, ~1 min cold)
 uv sync
 
 # download the SPICE kernels
@@ -37,6 +38,20 @@ Kernels are written to `kernels/` and loaded through the metakernel
 each is needed. The mirror set has no high-precision Earth PCK, so the `ITRF93`
 frame is unavailable there; the default `ITRS` frame (ERFA + IERS EOP from
 PyPI) needs none and is verified equivalent.
+
+### Native core (`libeclipse`)
+
+The C++20 core under `core/` + `bindings/` links the **vendored** NAIF CSPICE
+N0067 and liberfa 2.0.1 (`third_party/`, unmodified; see
+`THIRD_PARTY_NOTICES.md`) and is exposed to Python as `_eclipse`. It is at
+roadmap phase 0 (`docs/CPP_ROADMAP.md`): kernel management, time scales and
+positions through a checked SPICE wrapper, bit-identical to spiceypy. The API
+does not route through it yet.
+
+```bash
+cmake --preset release && cmake --build --preset release   # standalone build
+ctest --preset release                                     # Catch2 tests
+```
 
 ## Frontend
 
@@ -116,4 +131,5 @@ model (a few seconds in the 20th century, minutes by the 16th).
 uv run pytest            # pure-function tests always run;
                          # the end-to-end path validation is skipped
                          # automatically unless the SPICE kernels are present.
+ctest --preset release   # C++ unit/parity tests (after `cmake --preset release`)
 ```

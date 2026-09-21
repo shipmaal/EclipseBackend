@@ -1,4 +1,7 @@
-# uv-based image; SPICE comes from the `spiceypy` wheel (no native build).
+# uv-based image; SPICE comes from the `spiceypy` wheel. The native core
+# (`_eclipse`, built from CMakeLists.txt) is not built here: the API is still
+# pure Python (roadmap phase 0), and the slim image has no C++ toolchain.
+# `--no-install-project` skips the scikit-build-core build of this project.
 FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 
 RUN adduser --disabled-password --gecos '' appuser
@@ -6,7 +9,7 @@ WORKDIR /app
 
 # Install dependencies first for layer caching.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Application code, frontend and kernel tooling.
 COPY app ./app

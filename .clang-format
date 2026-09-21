@@ -1,0 +1,5 @@
+# core/ and bindings/ only; third_party/ is excluded (vendored, unmodified).
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+AllowShortFunctionsOnASingleLine: Inline

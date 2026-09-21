@@ -48,6 +48,7 @@ ignore = ["E741"]
 [tool.ruff.lint.per-file-ignores]
 # Reference-eclipse data dicts are kept as single readable lines.
 "tests/test_besselian_integration.py" = ["E501"]
+"tests/test_catalog.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

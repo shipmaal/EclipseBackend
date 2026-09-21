@@ -34,6 +34,7 @@ import numpy as np
 
 from .ephemeris import sub_solar_points
 from .geography import bearing, format_clock, geo_to_fund
+from .numerics import bisect, sign_changes
 
 # Sun rise/set altitude: refraction 34' + solar semidiameter 16' [Meeus98] ch. 15.
 HORIZON_ALT_DEG = -0.8333
@@ -91,12 +92,12 @@ def _series(model, lat, lon, t):
 def _roots(t, f):
     """Linear-interpolated zero crossings: list of (t_cross, rising?, i)."""
     out = []
-    for i in range(len(t) - 1):
+    for i, rising in sign_changes(t, f):
         if f[i] == 0.0:
-            out.append((float(t[i]), f[i + 1] > 0, i))
-        elif f[i] * f[i + 1] < 0:
+            out.append((float(t[i]), rising, i))
+        else:
             tc = t[i] - f[i] * (t[i + 1] - t[i]) / (f[i + 1] - f[i])
-            out.append((float(tc), f[i + 1] > f[i], i))
+            out.append((float(tc), rising, i))
     return out
 
 
@@ -161,7 +162,6 @@ def _sun_altaz(model, lat, lon, t_hours):
 # eclipse lasts at most a few hours at any one site, so 6 h is a safe ceiling.
 _MAX_HALF_WINDOW_HOURS = 6.0
 _GRID_STEP_HOURS = 0.5 / 60.0  # 30-second grid
-_REFINE_ITERATIONS = 30        # bisection: 30 s / 2^30 -> sub-microsecond
 
 
 def _bracketed_series(model, lat, lon):
@@ -189,23 +189,13 @@ def _refine_contacts(model, lat, lon, t_lo, t_hi, central):
     array selecting ``m - |L2'|`` (C2/C3) over ``m - L1'`` (C1/C4).  All
     contacts are refined together, one vectorized :func:`_series` per iteration.
     """
-    t_lo = np.array(t_lo, dtype=float)
-    t_hi = np.array(t_hi, dtype=float)
     central = np.asarray(central, dtype=bool)
 
     def f(t):
         m, L1p, L2p, _ = _series(model, lat, lon, t)
         return np.where(central, m - np.abs(L2p), m - L1p)
 
-    f_lo = f(t_lo)
-    for _ in range(_REFINE_ITERATIONS):
-        t_mid = 0.5 * (t_lo + t_hi)
-        f_mid = f(t_mid)
-        same = np.sign(f_mid) == np.sign(f_lo)
-        t_lo = np.where(same, t_mid, t_lo)
-        f_lo = np.where(same, f_mid, f_lo)
-        t_hi = np.where(same, t_hi, t_mid)
-    return 0.5 * (t_lo + t_hi)
+    return bisect(f, t_lo, t_hi)
 
 
 def _refine_maximum(model, lat, lon, t, mag, imax):

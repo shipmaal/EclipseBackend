@@ -69,3 +69,22 @@ def test_map_cell_cap(client):
     r = client.get("/map",
                    params={"epoch": "2024-04-08T18:17:15", "lat_step": 0.1, "lon_step": 0.1})
     assert r.status_code == 400
+
+
+def test_central_line_carries_contacts_and_penumbral_limits(client):
+    r = client.get("/central-line", params={"epoch": "2024-04-08T18:17:15", "start_hours": -0.1,
+                                            "end_hours": 0.1, "step_minutes": 6})
+    body = r.json()
+    assert set(body["contacts"]) == {"P1", "U1", "U2", "U3", "U4", "P4"}
+    mid = min(body["central_line"], key=lambda p: abs(p["t_hours"]))
+    assert mid["penumbra_north_limit"]["lat"] > mid["north_limit"]["lat"]
+    assert mid["penumbra_south_limit"]["lat"] < mid["south_limit"]["lat"]
+
+
+def test_eclipses_endpoint_and_range_cap(client):
+    r = client.get("/eclipses",
+                   params={"start": "2024-01-01", "end": "2024-12-31", "detail": False})
+    assert r.status_code == 200
+    assert [e["type"] for e in r.json()["eclipses"]] == ["total", "annular"]
+    r = client.get("/eclipses", params={"start": "2000-01-01", "end": "2024-12-31"})
+    assert r.status_code == 400 and "exceeds" in r.json()["detail"]

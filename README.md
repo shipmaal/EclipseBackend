@@ -64,10 +64,14 @@ It ships a bundled `sample.json` so it renders even without a running backend
 | `GET /central-line?epoch=…&start_hours=…&end_hours=…&step_minutes=…` | Geographic shadow-axis track. |
 | `GET /circumstances?epoch=…&lat=…&lon=…` | Local circumstances for an observer. |
 | `GET /map?epoch=…&lat_step=…&lon_step=…` | Global maximum-eclipse grid: magnitude, obscuration, visibility. |
+| `GET /eclipses?start=…&end=…` | Catalog of every solar eclipse in a range: type, gamma, magnitude, greatest-eclipse point, duration, width, global contacts. |
 
 `epoch` is a UTC ISO-8601 time, e.g. `2024-04-08T18:00:00`. `/central-line`
 points include the central `lat/lon`, the umbral `north_limit`/`south_limit`,
-the true `width_km`, and `is_total`. `/circumstances` returns the observer's
+the true `width_km`, `is_total`, and the `penumbra_north/south_limit` (the edge of
+the partial-eclipse region, clipped to the terminator); the response also carries
+the global `contacts` P1/U1/U2/U3/U4/P4 (when the penumbra and umbra first/last
+touch the Earth). `/circumstances` returns the observer's
 C1–C4 contact times, maximum-eclipse time, `magnitude`, `obscuration`,
 `central_duration_s` (when total/annular), the Sun's altitude at each contact and
 `below_horizon` (the events the observer cannot see; `eclipse` is `false` when
@@ -75,6 +79,11 @@ that is all of them) — click anywhere on the globe in the frontend to see it.
 `/map` evaluates the same geometry for a whole lat/lon grid at once (vectorized:
 measured 0.6 s for a 2° global grid, 1.4 s at 1°, 5 s at 0.5°, with 2-minute time
 sampling).
+
+`/eclipses` scans a date range for eclipses (one vectorized element evaluation
+per 2 h, refined to greatest eclipse) and classifies them partial / annular /
+total / hybrid; 2019–2024 reproduces the NASA canon exactly, with gamma to 1e-4
+and greatest-eclipse instants within ~5 s.
 
 `epoch` must be ISO-8601 (`YYYY-MM-DDTHH:MM:SS[.fff][Z|±HH:MM]`); anything else is
 a 400.

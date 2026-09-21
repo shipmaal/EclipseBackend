@@ -190,6 +190,21 @@ def utc_to_et(utc: str) -> float:
     return float(formal + delta_t_seconds(decimal_year_from_jd(formal / 86400.0 + _J2000_JD)))
 
 
+def et_to_utc(et: float) -> str:
+    """Inverse of :func:`utc_to_et`: ISO ``YYYY-MM-DDTHH:MM:SS`` (whole seconds).
+
+    Inside the IERS era this is UTC via ``et2utc``; outside it the string is
+    UT1 = TT - delta-T(model), formatted on the leap-second-free calendar, so a
+    round trip through :func:`utc_to_et` is consistent to the rounding.
+    """
+    et = float(et)
+    with SPICE_LOCK:
+        if _in_iers_era(_J2000_JD - _MJD_OFFSET + et / 86400.0):
+            return spice.et2utc(et, "ISOC", 0)
+        ut1 = et - float(delta_t_seconds(decimal_year_from_jd(_J2000_JD + et / 86400.0)))
+        return spice.timout(ut1, "YYYY-MM-DDTHR:MN:SC ::TDB ::RND")
+
+
 def earth_rotation_times(et):
     """Time arguments for Earth orientation at TDB ``et`` (scalar or 1-D array).
 
@@ -299,10 +314,13 @@ def besselian_instants(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> dict[str, 
     """Besselian elements at each TDB ``et`` of a 1-D array, as arrays.
 
     Returns a dict with keys ``x, y, d, mu, l1, l2, tan_f1, tan_f2`` (same units
-    as :class:`BesselianInstant`: ``d, mu`` in degrees, lengths in Earth radii),
-    each an array of ``len(et)``.  This is the vectorized core; the whole
-    computation is a few array-valued SPICE/ERFA calls, so evaluating a
-    thousand instants costs about the same as evaluating one in a loop did.
+    as :class:`BesselianInstant`: ``d, mu`` in degrees, lengths in Earth radii)
+    plus ``z``, the Moon's distance along the axis toward the Sun [ES92] eq.
+    8.322-6 (positive at a solar eclipse; negative at full moon, when the Moon
+    sits on the far side of the Earth on the same line -- the catalog uses it
+    to reject lunar-eclipse geometry), each an array of ``len(et)``.  This is
+    the vectorized core; the whole computation is a few array-valued SPICE/ERFA
+    calls, so evaluating a thousand instants costs about the same as one did.
     ``mu`` is returned wrapped to (-180, 180]; callers that fit or difference it
     should ``np.unwrap``.
     """
@@ -342,6 +360,7 @@ def besselian_instants(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> dict[str, 
     return {
         "x": x,
         "y": y,
+        "z": z,
         "d": np.degrees(d),
         "mu": (np.degrees(mu) + 180.0) % 360.0 - 180.0,
         "l1": l1,
@@ -360,7 +379,7 @@ def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> Bess
     :func:`besselian_instants`.
     """
     e = besselian_instants(np.array([float(et)]), earth_frame)
-    return BesselianInstant(**{k: float(v[0]) for k, v in e.items()})
+    return BesselianInstant(**{k: float(v[0]) for k, v in e.items() if k != "z"})
 
 
 def sub_solar_points(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> tuple[np.ndarray, np.ndarray]:

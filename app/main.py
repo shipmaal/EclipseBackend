@@ -24,16 +24,25 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .besselian import BesselianModel
+from .besselian import BesselianModel, normalize_utc
+from .catalog import find_eclipses
 from .circumstances import circumstances_grid, local_circumstances
-from .ephemeris import DEFAULT_EARTH_FRAME, EARTH_FRAMES, sub_solar_point
-from .geography import central_track, format_offset, shadow_edge_limits_v, shadow_radii
+from .ephemeris import DEFAULT_EARTH_FRAME, EARTH_FRAMES, sub_solar_point, utc_to_et
+from .geography import (
+    central_track,
+    format_clock,
+    format_offset,
+    global_contacts,
+    shadow_edge_limits_v,
+    shadow_radii,
+)
 
 # Request-size guards: the work per point is small since the geometry is
 # vectorized, but the parameters are user-controlled and unbounded otherwise.
 MAX_TRACK_POINTS = 5000
 MAX_MAP_CELLS = 150_000
 MAX_ABS_HOURS = 12.0
+MAX_CATALOG_YEARS = {True: 10.0, False: 100.0}  # by `detail`
 
 
 class LimitPoint(TypedDict):
@@ -57,8 +66,10 @@ class CentralLinePoint(TypedDict, total=False):
     penumbra_km: float
     is_total: bool
     width_km: float
-    north_limit: LimitPoint
+    north_limit: LimitPoint            # umbral / antumbral limits
     south_limit: LimitPoint
+    penumbra_north_limit: LimitPoint   # partial-eclipse region edge (clipped to the terminator)
+    penumbra_south_limit: LimitPoint
 
 app = FastAPI(title="EclipseBackend", version="0.1.0")
 
@@ -141,11 +152,18 @@ def central_line(
     elems, track = central_track(model, t)
 
     # Per-point umbral limits + accurate width (perpendicular to the along-track
-    # bearing carried by each TrackPoint), all points bisected at once.
+    # bearing carried by each TrackPoint), all points bisected at once; then the
+    # penumbral limits the same way (the partial-eclipse region, up to a quarter
+    # circumference away and clipped to the terminator).
     idx = np.array([tp.i for tp in track], dtype=int)
+    bearings = np.array([tp.bearing for tp in track])
     n_lat, n_lon, s_lat, s_lon, widths = shadow_edge_limits_v(
         elems["x"][idx], elems["y"][idx], elems["d"][idx], elems["mu"][idx],
-        elems["l2"][idx], elems["tan_f2"][idx], np.array([tp.bearing for tp in track]),
+        elems["l2"][idx], elems["tan_f2"][idx], bearings,
+    )
+    pn_lat, pn_lon, ps_lat, ps_lon, _pw = shadow_edge_limits_v(
+        elems["x"][idx], elems["y"][idx], elems["d"][idx], elems["mu"][idx],
+        elems["l1"][idx], elems["tan_f1"][idx], bearings, max_km=10_000.0,
     )
 
     points = []
@@ -167,16 +185,25 @@ def central_line(
         if not np.isnan(n_lat[k]):
             pt["north_limit"] = {"lat": round(float(n_lat[k]), 5), "lon": round(float(n_lon[k]), 5)}
             pt["south_limit"] = {"lat": round(float(s_lat[k]), 5), "lon": round(float(s_lon[k]), 5)}
+        if not np.isnan(pn_lat[k]):
+            pt["penumbra_north_limit"] = {"lat": round(float(pn_lat[k]), 5),
+                                          "lon": round(float(pn_lon[k]), 5)}
+            pt["penumbra_south_limit"] = {"lat": round(float(ps_lat[k]), 5),
+                                          "lon": round(float(ps_lon[k]), 5)}
         points.append(pt)
 
     # Sub-solar point at T0 drives the frontend's sunlight / day-night terminator.
     ss_lon, ss_lat = sub_solar_point(model.et0, frame)
+
+    # Global contacts: when the penumbra (P1/P4) and umbra (U1-U4) touch the Earth.
+    contacts = {name: format_clock(model.t0_utc, th) for name, th in global_contacts(model).items()}
 
     return {
         "t0_utc": model.t0_utc,
         "frame": frame,
         "count": len(points),
         "sun": {"lon": round(ss_lon, 4), "lat": round(ss_lat, 4)},
+        "contacts": contacts,
         "central_line": points,
     }
 
@@ -238,6 +265,42 @@ def eclipse_map(
         "visible": g["visible"].reshape(shape).tolist(),
         "central": g["central"].reshape(shape).tolist(),
     }
+
+
+@app.get("/eclipses")
+def eclipses(
+    start: str = Query(..., description="Range start, UTC ISO-8601"),
+    end: str = Query(..., description="Range end, UTC ISO-8601"),
+    detail: bool = Query(True, description="Add greatest-eclipse duration, width and contacts"),
+    frame: str = Query(DEFAULT_EARTH_FRAME),
+) -> dict:
+    """Catalog of solar eclipses with greatest eclipse in ``[start, end]``.
+
+    Each row: greatest-eclipse instant, type (partial/annular/total/hybrid),
+    gamma, magnitude, and for central eclipses the greatest-eclipse point;
+    with ``detail`` also the central duration, path width and global contacts
+    P1-U4 there.  Range limit: 10 years with detail, 100 without.
+    """
+    if frame not in EARTH_FRAMES:
+        raise HTTPException(status_code=400, detail=f"frame must be one of {EARTH_FRAMES}")
+    try:
+        span_years = (utc_to_et(normalize_utc(end)) - utc_to_et(normalize_utc(start))) / 3.15576e7
+        if span_years <= 0:
+            raise HTTPException(status_code=400, detail="end must be after start")
+        if span_years > MAX_CATALOG_YEARS[detail]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"range of {span_years:.1f} years exceeds {MAX_CATALOG_YEARS[detail]:.0f} "
+                       f"(detail={detail})",
+            )
+        events = find_eclipses(start, end, earth_frame=frame, detail=detail)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid epoch: {exc}") from exc
+    except spiceypy.utils.exceptions.SpiceyError as exc:
+        raise HTTPException(status_code=400, detail=f"SPICE error: {exc}") from exc
+    return {"start": start, "end": end, "frame": frame, "count": len(events), "eclipses": events}
 
 
 # Serve the Three.js frontend at /ui (same origin as the API, so no CORS hop).

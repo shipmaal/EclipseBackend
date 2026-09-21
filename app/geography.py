@@ -232,7 +232,8 @@ def bearing(lat1, lon1, lat2, lon2):
     return (np.degrees(np.arctan2(y, x)) + 360.0) % 360.0
 
 
-def shadow_edge_limits_v(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km=600.0):
+def shadow_edge_limits_v(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km=600.0,
+                         sunlit_only=True):
     """Shadow-edge points and widths for arrays of track instants (vectorized).
 
     Array form of :func:`shadow_edge_limits`: every argument is a 1-D array of
@@ -241,6 +242,12 @@ def shadow_edge_limits_v(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km
     where the central point is outside the shadow or the edge is not found
     within ``max_km``.  The bisection runs on all ``2n`` edge searches at once,
     so the cost is 50 array evaluations regardless of ``n``.
+
+    ``sunlit_only`` treats points beyond the terminator (``zeta <= 0``, Sun
+    geometrically below the horizon) as outside the shadow, so a penumbral
+    limit that would fall on the night side is clipped to the terminator --
+    the boundary of where the partial eclipse is actually *seen*.  For the
+    umbra (``max_km`` ~600) it never engages.
     """
     x, y, d_deg, mu_deg, l, tan_f, brg = np.broadcast_arrays(
         *(np.atleast_1d(np.asarray(v, dtype=float))
@@ -256,7 +263,8 @@ def shadow_edge_limits_v(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km
 
     def residual(lat, lon):
         xi, eta, zeta = geo_to_fund(lat, lon, dd, mm)
-        return np.hypot(xi - xx, eta - yy) - np.abs(ll - zeta * tf)
+        r = np.hypot(xi - xx, eta - yy) - np.abs(ll - zeta * tf)
+        return np.where(zeta <= 0.0, 1.0, r) if sunlit_only else r
 
     inside = residual(lat0, lon0) < 0.0  # central point inside this shadow (n,)
     s_lo = np.zeros((2, n))
@@ -303,6 +311,66 @@ def shadow_edge_limits(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km=6
     if np.isnan(n_lat[0]):
         return None, None, 0.0
     return (float(n_lat[0]), float(n_lon[0])), (float(s_lat[0]), float(s_lon[0])), float(width[0])
+
+
+# Global (whole-Earth) contacts: the instants the penumbra / umbra first and
+# last touch the Earth's outline.  In the fundamental plane the outline is the
+# auxiliary circle of unit radius in (x, y/rho1) [ES92] eq. 8.331, so the
+# external contacts are where the axis distance equals 1 + (cone radius) and
+# the internal umbral contacts (whole umbra on the Earth) where it equals
+# 1 - |l2| [ES92] sec. 8.34.  Treating the cone radius as unscaled by rho1 is
+# the standard bulletin approximation (a few seconds).
+GLOBAL_CONTACTS = ("P1", "U1", "U2", "U3", "U4", "P4")
+
+
+def global_contacts(model: BesselianModel, half_window_hours: float = 5.0) -> dict[str, float]:
+    """Times (hours from T0) of P1/P4 (penumbra) and U1-U4 (umbra) global contacts.
+
+    Direct evaluation on a 1-minute grid over ``+/- half_window_hours`` (a solar
+    eclipse lasts at most ~6 h on Earth), roots bracketed by sign change and
+    bisected with one vectorized evaluation per iteration.  Missing contacts
+    (no umbra on Earth, or the window too narrow) are omitted from the dict.
+    """
+    from .numerics import bisect, sign_changes
+
+    def rho_and_radii(t):
+        e = model.evaluate_direct(t)
+        aux = _reduction_aux(np.radians(e["d"]))
+        rho = np.hypot(e["x"], e["y"] / aux.rho1)
+        return rho, e["l1"], np.abs(e["l2"])
+
+    t = np.arange(-half_window_hours, half_window_hours + 1e-9, 1.0 / 60.0)
+    rho, l1, l2 = rho_and_radii(t)
+    conditions = {
+        "P": rho - (1.0 + l1),   # penumbra external contacts P1 (falling), P4 (rising)
+        "UE": rho - (1.0 + l2),  # umbra external contacts U1, U4
+        "UI": rho - (1.0 - l2),  # umbra internal contacts U2, U3
+    }
+    names = {"P": ("P1", "P4"), "UE": ("U1", "U4"), "UI": ("U2", "U3")}
+    brackets: list[tuple[str, int]] = []
+    for key, f in conditions.items():
+        crossings = sign_changes(t, f)
+        falling = [i for i, rising in crossings if not rising]
+        rising_ = [i for i, rising in crossings if rising]
+        if falling:
+            brackets.append((names[key][0], min(falling)))
+        if rising_:
+            brackets.append((names[key][1], max(rising_)))
+    if not brackets:
+        return {}
+
+    kinds = np.array([b[0][0] + ("I" if b[0][1] in "23" else "E") for b in brackets])
+
+    def f_all(tt):
+        r, a1, a2 = rho_and_radii(tt)
+        return np.select(
+            [kinds == "PE", kinds == "UE", kinds == "UI"],
+            [r - (1.0 + a1), r - (1.0 + a2), r - (1.0 - a2)],
+        )
+
+    idx = np.array([b[1] for b in brackets])
+    roots = bisect(f_all, t[idx], t[idx + 1])
+    return {name: float(tc) for (name, _), tc in zip(brackets, roots, strict=True)}
 
 
 class TrackPoint(NamedTuple):

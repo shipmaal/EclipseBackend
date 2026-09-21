@@ -38,11 +38,13 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
 | `ephemeris.py` | SPICE apparent Sun/Moon positions; `besselian_instant()` builds the 8 elements at one instant; the four Earth-orientation frames (`ITRS`/`TOD`/`ITRF93`/`IAU_EARTH`); `sub_solar_point()`. Owns the lunar-radius constants `K_PENUMBRA`/`K_UMBRA`. |
 | `eop.py` | IERS polar motion + UT1−UTC, interpolated from the `astropy-iers-data` bundle. |
 | `besselian.py` | Samples the elements around T0 and polynomial-fits them (`BesselianModel`). |
-| `geography.py` | The ellipsoid geometry: `fund_to_geo` (fundamental→geographic), `geo_to_fund` (its exact inverse), `shadow_edge_limits` (N/S limits + true width), `shadow_radii`, great-circle helpers. Owns the WGS-84 constants. |
+| `geography.py` | The ellipsoid geometry: `fund_to_geo` (fundamental→geographic), `geo_to_fund` (its exact inverse), `shadow_edge_limits` (N/S limits + true width, umbral or penumbral), `global_contacts` (P1–U4), `shadow_radii`, great-circle helpers. |
 | `deltat.py` | ΔT = TT − UT1 polynomial model [Espenak] for epochs outside the IERS era. |
 | `circumstances.py` | Per-observer local circumstances from a `BesselianModel`; `circumstances_grid` for maps. |
+| `catalog.py` | `find_eclipses`: scan a date range, refine greatest eclipse, classify P/A/T/H, Canon-style rows. |
+| `numerics.py` | Vectorized bisection / parabolic-extremum helpers shared by circumstances, contacts and the catalog. |
 | `reference.py` | Parses `app/data.txt` (a reference central-line track). |
-| `main.py` | FastAPI: `/health`, `/besselian`, `/central-line`, `/circumstances`, `/map`; serves `frontend/` at `/ui`. |
+| `main.py` | FastAPI: `/health`, `/besselian`, `/central-line`, `/circumstances`, `/map`, `/eclipses`; serves `frontend/` at `/ui`. |
 | `kernels/bootstrap.py` | Downloads kernels (`--source auto|naif|mirror`) and writes `eclipse.tm`. |
 
 ## Scientific conventions — READ BEFORE EDITING MATH

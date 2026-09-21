@@ -42,6 +42,7 @@ add_library(eclipse STATIC
   core/src/deltat.cpp
   core/src/eop.cpp
   core/src/ephem.cpp
+  core/src/geometry.cpp
 )
 target_include_directories(eclipse PUBLIC core/include)
 target_link_libraries(eclipse PUBLIC cspice erfa)

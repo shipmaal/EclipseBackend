@@ -72,8 +72,9 @@ C1–C4 contact times, maximum-eclipse time, `magnitude`, `obscuration`,
 `central_duration_s` (when total/annular), the Sun's altitude at each contact and
 `below_horizon` (the events the observer cannot see; `eclipse` is `false` when
 that is all of them) — click anywhere on the globe in the frontend to see it.
-`/map` evaluates the same geometry for a whole lat/lon grid at once (vectorized;
-a 2° global grid takes well under a second).
+`/map` evaluates the same geometry for a whole lat/lon grid at once (vectorized:
+measured 0.6 s for a 2° global grid, 1.4 s at 1°, 5 s at 0.5°, with 2-minute time
+sampling).
 
 `epoch` must be ISO-8601 (`YYYY-MM-DDTHH:MM:SS[.fff][Z|±HH:MM]`); anything else is
 a 400.

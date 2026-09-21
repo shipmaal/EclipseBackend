@@ -6,9 +6,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <mutex>
 #include <type_traits>
 #include <utility>
+
+#ifdef _OPENMP  // CMake defines ECLIPSE_HAVE_OPENMP and adds -fopenmp together
+#include <omp.h>
+#endif
 
 #include "eclipse/constants.hpp"
 #include "eclipse/deltat.hpp"
@@ -183,7 +188,18 @@ Geocentric geocentric_vectors(std::span<const double> et, Frame frame) {
     if (frame == Frame::ITRS || frame == Frame::TOD) {
         spkpos_both(et, "J2000", g.moon, g.sun);
         const ephem::EarthRotation ert = ephem::earth_rotation_times(et);
-        for (size_t i = 0; i < n; ++i) {
+        // From here the loop is pure ERFA (reentrant, no shared state) plus
+        // one rotation per instant, with no SPICE call: it runs OpenMP-parallel
+        // for long vectors. Each instant writes only its own slots and there
+        // is no reduction, so the result is bit-identical for any thread
+        // count. Nested inside another parallel region (the catalog's
+        // per-event detail loop) it stays serial.
+        const auto count = static_cast<std::ptrdiff_t>(n);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (n >= 64 && !omp_in_parallel())
+#endif
+        for (std::ptrdiff_t ii = 0; ii < count; ++ii) {
+            const auto i = static_cast<size_t>(ii);
             double r[3][3];
             if (frame == Frame::ITRS) {
                 // ERFA c2t06a: full IAU 2006/2000A celestial-to-terrestrial matrix

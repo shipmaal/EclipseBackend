@@ -6,6 +6,7 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 
+#include <cstdint>
 #include <span>
 #include <utility>
 #include <vector>
@@ -25,8 +26,22 @@ inline Out1D to_numpy(std::vector<double>&& v) {
     return Out1D(heap->data(), {n}, owner);
 }
 
+using OutBool1D = nb::ndarray<nb::numpy, bool, nb::ndim<1>>;
+
+// Hand a 0/1 byte vector to NumPy as a bool array without copying: a
+// std::vector<std::uint8_t> holding only 0 and 1 is a valid ``bool`` buffer
+// (the layout numpy's bool dtype uses), and the capsule owns the vector.
+inline OutBool1D to_numpy_bool(std::vector<std::uint8_t>&& v) {
+    auto* heap = new std::vector<std::uint8_t>(std::move(v));
+    nb::capsule owner(heap,
+                      [](void* p) noexcept { delete static_cast<std::vector<std::uint8_t>*>(p); });
+    const size_t n = heap->size();
+    return OutBool1D(reinterpret_cast<bool*>(heap->data()), {n}, owner);
+}
+
 // One binding unit per core header (roadmap §3), so later work packages stay
 // file-disjoint. Declared here, defined in bind_<name>.cpp, called from NB_MODULE.
 void bind_numerics(nb::module_& m);
 void bind_ellipsoid(nb::module_& m);
 void bind_geometry(nb::module_& m);
+void bind_circumstances(nb::module_& m);

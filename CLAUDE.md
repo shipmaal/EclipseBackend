@@ -93,7 +93,7 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
    observers × instants) rather than looping; the scalar functions are thin
    wrappers over the array ones.
 
-## Native core (`libeclipse`, phases 0–2 done)
+## Native core (`libeclipse`, phases 0–3 done)
 
 `docs/CPP_ROADMAP.md` is the plan for the C++20 `libeclipse` core: the Python
 `app/` stays the API *and the oracle*; every C++ unit is parity-tested
@@ -125,6 +125,15 @@ structural, not stylistic:
   top of each, the Python body untouched. The scalar `fund_to_geo`,
   `_reduction_aux`, the private great-circle helpers, `central_track` and the
   formatters stay Python.
+- Phase 3, in `app/circumstances.py`: `local_circumstances` (the numbers —
+  `_local_raw` — come from C++ as a `_LocalRaw` tuple; `_format_local` stays
+  Python) and `circumstances_grid` (same keys/dtypes; `chunk` bounds only the
+  Python path's memory and is ignored natively). The grid's observer loop is
+  OpenMP-parallel (`ECLIPSE_OPENMP` CMake option, default ON; serial fallback
+  when no OpenMP is found, e.g. Apple Clang without libomp; results are
+  identical for any thread count). libgomp is **not fork-safe once it has
+  started its thread pool**, so a forking server must not warm the native
+  grid in the parent: run gunicorn without `--preload`.
 - No `-ffast-math`; `-ffp-contract=off` is set. Keep the Python's operation
   order so parity is bit-level, not "close".
 - `_eclipse` links its own CSPICE statically: its kernel pool is separate from

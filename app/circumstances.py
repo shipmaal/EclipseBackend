@@ -28,10 +28,11 @@ not modelled (item A3).
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NamedTuple, TypedDict
 
 import numpy as np
 
+from . import native
 from .ephemeris import sub_solar_points
 from .geography import bearing, format_clock, geo_to_fund
 from .numerics import bisect, sign_changes
@@ -208,23 +209,54 @@ def _refine_maximum(model, lat, lon, t, mag, imax):
     return float(t[imax])
 
 
-def local_circumstances(model, lat: float, lon: float) -> LocalCircumstances:
-    """Compute the eclipse circumstances at (lat, lon).
+class _LocalRaw(NamedTuple):
+    """The raw numbers of :func:`local_circumstances` before any rounding / formatting.
 
-    T0 should be near the observer's maximum eclipse (e.g. the greatest-eclipse
-    time).  The sampling window starts at the model's fit window and is expanded
-    as needed so the partial contacts C1/C4 are always bracketed, even for an
+    ``geometric`` is False when fewer than two partial roots were found or the
+    peak magnitude is ``<= 0``; every other field is then a placeholder (NaN /
+    False).  Otherwise ``central`` says the observer is inside the umbra /
+    antumbra at maximum with both C2 and C3 bracketed (``c2``/``c3`` NaN when
+    not).  Times are hours from T0.  ``alt_deg``/``az_deg``/``below`` hold five
+    entries in the event order C1, max, C4, C2, C3 (NaN / False where absent);
+    ``eclipse`` is False when every present event is below the horizon.  The
+    native core's ``LocalRaw`` (``core/include/eclipse/circumstances.hpp``) has
+    exactly these fields in this order.
+    """
+
+    geometric: bool
+    central: bool
+    c1: float
+    c4: float
+    c2: float
+    c3: float
+    t_max: float
+    magnitude: float
+    obscuration: float
+    L2_x: float
+    alt_deg: tuple[float, float, float, float, float]
+    az_deg: tuple[float, float, float, float, float]
+    below: tuple[bool, bool, bool, bool, bool]
+    eclipse: bool
+
+
+_NAN5 = (float("nan"),) * 5
+_NO_ECLIPSE_RAW = _LocalRaw(False, False, *([float("nan")] * 8), _NAN5, _NAN5,
+                            (False,) * 5, False)
+
+
+def _local_raw(model, lat: float, lon: float) -> _LocalRaw:
+    """The numbers behind :func:`local_circumstances` (the math; formatting is separate).
+
+    The sampling window starts at the model's fit window and is expanded as
+    needed so the partial contacts C1/C4 are always bracketed, even for an
     observer whose partial phase extends beyond it (item A2).  Contacts and the
-    maximum are refined below the 30-s grid (bisection / parabolic).  Events
-    with the Sun below the horizon are reported in ``below_horizon``; if every
-    event is, ``eclipse`` is ``False`` (module docstring, "Horizon").
+    maximum are refined below the 30-s grid (bisection / parabolic).
     """
     t, m, L1p, L2p, mag = _bracketed_series(model, lat, lon)
 
     partial = _roots(t, m - L1p)
     if len(partial) < 2 or mag.max() <= 0:
-        no_eclipse: LocalCircumstances = {"lat": lat, "lon": lon, "eclipse": False}
-        return no_eclipse
+        return _NO_ECLIPSE_RAW
 
     tc1, _, i1 = min((r for r in partial if not r[1]), key=lambda r: r[0])
     tc4, _, i4 = max((r for r in partial if r[1]), key=lambda r: r[0])
@@ -262,38 +294,100 @@ def local_circumstances(model, lat: float, lon: float) -> LocalCircumstances:
     ev_times = [c1, tmax, c4] + ([float(times[2]), float(times[3])] if central_phase else [])
     alts, azs = _sun_altaz(model, lat, lon, np.array(ev_times))
     below = [name for name, a in zip(events, alts, strict=True) if a <= HORIZON_ALT_DEG]
-    if len(below) == len(events):
-        # The cone geometry continues through the Earth; a night-side observer
-        # is "inside" it but sees nothing.
+    # The cone geometry continues through the Earth; a night-side observer is
+    # "inside" it but sees nothing.
+    eclipse = len(below) != len(events)
+
+    if central_phase:
+        c2, c3 = float(times[2]), float(times[3])
+    else:
+        c2 = c3 = float("nan")
+    pad = 5 - len(events)
+    return _LocalRaw(
+        geometric=True,
+        central=central_phase,
+        c1=c1,
+        c4=c4,
+        c2=c2,
+        c3=c3,
+        t_max=tmax,
+        magnitude=float(magnitude),
+        obscuration=float(_obscuration(L1_x, L2_x, m_x)),
+        L2_x=L2_x,
+        alt_deg=tuple(float(a) for a in alts) + (float("nan"),) * pad,
+        az_deg=tuple(float(a) for a in azs) + (float("nan"),) * pad,
+        below=tuple(name in below for name in events) + (False,) * pad,
+        eclipse=eclipse,
+    )
+
+
+def _format_local(t0_utc: str, lat: float, lon: float, raw: _LocalRaw) -> LocalCircumstances:
+    """Assemble the :class:`LocalCircumstances` dict from a :class:`_LocalRaw`.
+
+    All rounding, clock formatting and the varying dict shape live here (the
+    numbers come from :func:`_local_raw`, or from the native core).
+    """
+    if not raw.geometric:
+        no_eclipse: LocalCircumstances = {"lat": lat, "lon": lon, "eclipse": False}
+        return no_eclipse
+
+    events = ["C1", "max", "C4"] + (["C2", "C3"] if raw.central else [])
+    below = [name for name, b in zip(events, raw.below, strict=False) if b]
+    if not raw.eclipse:
         return {"lat": lat, "lon": lon, "eclipse": False, "below_horizon": below}
 
+    alts, azs = raw.alt_deg, raw.az_deg
     result: LocalCircumstances = {
         "lat": lat,
         "lon": lon,
         "eclipse": True,
         "type": "partial",  # upgraded to total/annular below if the observer enters the umbra
-        "magnitude": round(float(magnitude), 4),
-        "obscuration": round(float(_obscuration(L1_x, L2_x, m_x)), 4),
-        "max_time": format_clock(model.t0_utc, tmax),
+        "magnitude": round(float(raw.magnitude), 4),
+        "obscuration": round(float(raw.obscuration), 4),
+        "max_time": format_clock(t0_utc, raw.t_max),
         "sun_alt": round(float(alts[1]), 1),
         "sun_az": round(float(azs[1]), 1),
-        "C1": format_clock(model.t0_utc, c1),
-        "C4": format_clock(model.t0_utc, c4),
+        "C1": format_clock(t0_utc, raw.c1),
+        "C4": format_clock(t0_utc, raw.c4),
         "C1_alt": round(float(alts[0]), 1),
         "C4_alt": round(float(alts[2]), 1),
         "below_horizon": below,
     }
 
-    if central_phase:
-        c2, c3 = float(times[2]), float(times[3])
-        result["type"] = "total" if L2_x < 0 else "annular"
-        result["C2"] = format_clock(model.t0_utc, c2)
-        result["C3"] = format_clock(model.t0_utc, c3)
+    if raw.central:
+        c2, c3 = raw.c2, raw.c3
+        result["type"] = "total" if raw.L2_x < 0 else "annular"
+        result["C2"] = format_clock(t0_utc, c2)
+        result["C3"] = format_clock(t0_utc, c3)
         result["C2_alt"] = round(float(alts[3]), 1)
         result["C3_alt"] = round(float(alts[4]), 1)
         result["central_duration_s"] = round((c3 - c2) * 3600.0, 1)
 
     return result
+
+
+def local_circumstances(model, lat: float, lon: float) -> LocalCircumstances:
+    """Compute the eclipse circumstances at (lat, lon).
+
+    T0 should be near the observer's maximum eclipse (e.g. the greatest-eclipse
+    time).  The sampling window starts at the model's fit window and is expanded
+    as needed so the partial contacts C1/C4 are always bracketed, even for an
+    observer whose partial phase extends beyond it (item A2).  Contacts and the
+    maximum are refined below the 30-s grid (bisection / parabolic).  Events
+    with the Sun below the horizon are reported in ``below_horizon``; if every
+    event is, ``eclipse`` is ``False`` (module docstring, "Horizon").
+
+    The numbers are :func:`_local_raw`; the dict shape is :func:`_format_local`.
+    Dispatches the numbers to the native core under ``ECLIPSE_BACKEND=native``
+    (the elements are re-evaluated there from the model's ``et0`` / frame /
+    fit half-window; formatting stays here).
+    """
+    if native.is_native():
+        raw = native.module().local_circumstances(
+            model.et0, model.earth_frame, model.half_window_hours, float(lat), float(lon)
+        )
+        return _format_local(model.t0_utc, lat, lon, _LocalRaw(*raw))
+    return _format_local(model.t0_utc, lat, lon, _local_raw(model, lat, lon))
 
 
 def circumstances_grid(
@@ -317,9 +411,21 @@ def circumstances_grid(
     above ``HORIZON_ALT_DEG`` at maximum) and ``central`` (inside the
     umbra/antumbra at maximum).  Same geometry as :func:`local_circumstances`,
     minus the contact times and refinement.
+
+    Dispatches to the native core under ``ECLIPSE_BACKEND=native`` (same keys,
+    dtypes and shapes; the observer loop runs in parallel there).  ``chunk``
+    only bounds the Python path's memory and is ignored natively.
     """
     lats = np.atleast_1d(np.asarray(lats, dtype=float))
     lons = np.atleast_1d(np.asarray(lons, dtype=float))
+    if native.is_native():
+        g = native.module().circumstances_grid(
+            model.et0, model.earth_frame, model.half_window_hours,
+            np.ascontiguousarray(lats, dtype=float), np.ascontiguousarray(lons, dtype=float),
+            float(step_minutes),
+        )
+        return {k: g[k] for k in ("magnitude", "obscuration", "t_max_hours", "sun_alt",
+                                  "visible", "central")}
     hw = model.half_window_hours
     t = np.arange(-hw, hw + 1e-9, step_minutes / 60.0)
     ss_lon, ss_lat = sub_solar_points(model.et0 + t * 3600.0, model.earth_frame)

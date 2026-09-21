@@ -25,6 +25,34 @@ radii / km as the Python signatures say::
                                                                # shadow_edge_limits_v (sunlit 0/1)
     rad x y d l1 l2 tf1 tf2 pen umb is_total                   # shadow_radii (is_total 0/1)
 
+and, in ``circumstances_cases.txt`` (phase 3: app.circumstances helpers at
+literal inputs, kernel-free; angles in degrees, radii in Earth radii or, for
+``ovl``, any consistent unit)::
+
+    ovl  r R d area                      # _overlap_area (r <= R)
+    obsc L1p L2p m obs                   # _obscuration
+    unw  n v1..vn u1..un                 # np.degrees(np.unwrap(np.radians(v))), the
+                                         #   mu unwrap of BesselianModel.evaluate_direct
+    altaz lat lon ss_lon ss_lat alt az alt_grid
+                                         # _sun_altaz (alt, az) at a given sub-solar
+                                         #   point, and circumstances_grid's own
+                                         #   altitude expression (alt_grid)
+    roots n t1..tn f1..fn k tc1 rising1 i1 ... tck risingk ik   # _roots (rising 0/1)
+
+and, appended to the three modern ``se*.txt`` (kernel-backed; models built as
+``/circumstances`` and ``/map`` build them, ``lat``/``lon`` in degrees, times
+in hours from T0, ``et0`` in TDB seconds)::
+
+    local <label> <frame> <et0> <half_window_h> <lat> <lon> <_LocalRaw fields>
+                                         # _local_raw: geometric central c1 c4 c2 c3
+                                         #   t_max magnitude obscuration L2_x
+                                         #   alt_deg[5] az_deg[5] below[5] eclipse
+                                         #   (bools 0/1, nan where absent; events
+                                         #   C1, max, C4, C2, C3)
+    grid <label> <frame> <et0> <half_window_h> <step_min> <lat> <lon>
+         magnitude obscuration t_max_hours sun_alt visible central
+                                         # circumstances_grid on the single point
+
 Numbers are written with ``repr`` (shortest round-trip), so the fixture holds
 the oracle's doubles exactly (``nan`` for NaN; ``std::stod`` parses it).  The
 fixtures pin the **NAIF DE440s** kernel set (header line); the C++ test skips
@@ -34,16 +62,27 @@ when that SPK is not the one on disk.
 from __future__ import annotations
 
 import sys
+import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app import circumstances as circ  # noqa: E402
 from app import ephemeris as ep  # noqa: E402
 from app import native  # noqa: E402
 from app.besselian import BesselianModel  # noqa: E402
+from app.circumstances import (  # noqa: E402
+    _local_raw,
+    _obscuration,
+    _overlap_area,
+    _roots,
+    _sun_altaz,
+    circumstances_grid,
+)
 from app.eop import _table  # noqa: E402
 from app.geography import (  # noqa: E402
     _destination,
@@ -132,6 +171,100 @@ GC_CASES = [  # (lat, lon, bearing, dist_km): equator, mid-latitudes, poles, ant
     (11.4, -83.1, 359.999, 187.4),
 ]
 
+# circumstances_cases.txt inputs (kernel-free).
+OVL_CASES = [  # (r, R, d), r <= R: tests/test_circumstances_pure.py + the degenerate branches
+    (1.0, 2.0, 5.0),      # disjoint -> 0
+    (1.0, 3.0, 0.5),      # contained -> pi r^2
+    (1.0, 1.0, 1.0),      # two unit circles -> 2 pi/3 - sqrt(3)/2
+    (1.0, 1.0, 0.0),      # d = 0 with r = R: the contained branch (d <= R - r = 0)
+    (1.0, 2.0, 3.0),      # external tangency d == r + R -> 0
+    (1.0, 3.0, 2.0),      # internal tangency d == R - r -> pi r^2
+    (0.7, 1.0, 0.9),
+    (0.95, 1.0, 1.9),     # barely overlapping
+    (0.9, 1.0, 0.15),     # deep overlap, not contained
+    (1.0, 1.0, 0.5),
+    (0.0, 1.0, 0.5),      # zero radius
+    (1.0, 1.0, 1.9999),   # near tangency, r = R
+    (0.98, 1.0, 0.02),    # d one ulp below R - r (0.020000000000000018): the contained branch
+]
+OBSC_CASES = [  # (L1p, L2p, m) in Earth radii
+    (0.005, -0.003, 0.0),     # total, on axis -> 1
+    (0.005, 0.003, 0.0),      # annular, on axis -> q^2
+    (0.005, 0.003, 0.02),     # no overlap -> 0
+    (0.005, -0.005, 0.0),     # degenerate L1p + L2p == 0 -> 0
+    (0.001, -0.003, 0.0),     # degenerate L1p + L2p < 0 -> 0
+    (0.5352, -0.0092, 0.3),   # realistic partial (2024-like L1', L2')
+    (0.5352, -0.0092, 0.0),   # realistic total, on axis
+    (0.5352, -0.0092, 0.005), # inside the umbra, off axis
+    (0.5352, -0.0092, 0.0095),  # near the umbral edge
+    (0.5352, -0.0092, 0.53),  # near the penumbral edge
+    (0.5352, -0.0092, 0.5352),  # m == L1': the last contact
+    (0.5645, 0.0184, 0.0),    # realistic annular (2023-like)
+    (0.5645, 0.0184, 0.01),
+    (0.5645, 0.0184, 0.25),
+]
+UNW_CASES = [  # degrees, as mu series reaching evaluate_direct's unwrap
+    [170.0, 179.5, -179.5, -170.0],          # crossing +180 eastward
+    [-170.0, -179.5, 179.5, 170.0],          # crossing -180
+    [0.0, 180.0],                             # an exact +180 step (boundary_ambiguous)
+    [-90.0, 90.0, -90.0],                     # exact +-180 steps both ways
+    [175.0, -175.0, 175.0, -175.0],           # non-chronological 4-vector
+    [10.0, 20.0, 30.0],                       # no wrap: the round trip alone
+    [150.0, 165.0, 179.99, -165.0, -150.0],
+    list(np.linspace(44.6, 134.6, 13)),       # a realistic +/-3 h hour-angle series
+    [((v + 180.0) % 360.0) - 180.0 for v in np.linspace(150.0, 210.0, 13)],  # ... wrapping
+]
+ALTAZ_CASES = [  # (lat, lon, ss_lon, ss_lat)
+    (37.0, -87.7, -87.9, 11.9),     # 2017 greatest: Sun near the zenith
+    (25.3, -104.1, -95.6, 7.6),     # 2024 greatest
+    (11.4, -83.1, -90.3, -8.2),     # 2023 greatest
+    (40.71, -74.01, -95.6, 7.6),    # NYC, afternoon Sun
+    (53.3, -9.0, -95.6, 7.6),       # W Ireland, sunset
+    (20.0, 77.0, -95.6, 7.6),       # night side
+    (-30.0, -60.0, -95.6, 7.6),
+    (89.9, 0.0, -95.6, 7.6),        # poles
+    (-89.9, 0.0, -95.6, 7.6),
+    (90.0, 0.0, 0.0, 23.44),
+    (0.0, 179.99, -95.6, 7.6),      # antimeridian, both sides
+    (0.0, -179.99, -95.6, 7.6),
+    (0.0, 179.99, 179.99, 0.0),     # sub-solar point exactly: alt 90, cos_c = 1
+    (0.0, 0.0, 180.0, 0.0),         # antipode: alt -90
+    (7.6, -95.6, -95.6, 7.6),       # observer at the sub-solar point
+    (7.6, -95.6, 84.4, -7.6),       # ... and at its antipode
+]
+ROOTS_CASES = [  # (t, f)
+    (np.arange(-2.0, 2.0 + 1e-9, 0.5 / 60.0)[:5], [1.0, 0.5, -0.25, -1.0, 0.0]),  # one falling
+    ([0.0, 1.0, 2.0, 3.0], [-1.0, 0.0, 1.0, -2.0]),        # an exact zero (rising), then falling
+    ([0.0, 1.0, 2.0], [0.0, -1.0, 0.0]),                    # exact zero first, last unvisited
+    ([0.0, 0.5, 1.0, 1.5, 2.0], [2.0, 1.0, 0.5, 0.25, 0.125]),  # no crossing
+    ([0.0, 1.0, 2.0, 3.0, 4.0], [1.0, -1.0, float("nan"), -1.0, 1.0]),  # NaN skipped
+    (list(np.arange(-2.5, 2.5 + 1e-9, 0.5 / 60.0)[100:106]),
+     [0.0123, 0.0051, -0.0020, -0.0090, -0.0158, -0.0225]),  # a 30-s grid contact
+    ([0.0, 1.0, 2.0, 3.0], [-0.5, 0.0, 0.0, 0.5]),           # consecutive zeros
+]
+
+# Kernel-backed circumstances sites per modern eclipse, as (lat, lon): the
+# greatest-eclipse point (tests/test_besselian_integration.py reference values),
+# a partial site (NYC), a sunset-in-progress site (W Ireland, 2024), the night
+# side (central India), outside the penumbra (S America), the poles and both
+# sides of the antimeridian. ``local`` records use the /circumstances defaults
+# (half_window_hours 2.5) plus the greatest point at half_window_hours 1.0,
+# where _bracketed_series must widen; ``grid`` records use /map's defaults
+# (half_window_hours 3.0, step_minutes 2.0).
+GREATEST_SITE = {
+    "se2017aug21": (37.0, -87.7),
+    "se2023oct14": (11.4, -83.1),
+    "se2024apr08": (25.3, -104.1),
+}
+CIRC_SITES = [
+    (40.71, -74.01), (53.3, -9.0), (20.0, 77.0), (-30.0, -60.0),
+    (89.9, 0.0), (-89.9, 0.0), (0.0, 179.99), (0.0, -179.99),
+]
+LOCAL_HALF_WINDOW_H = 2.5   # /circumstances window_hours default
+LOCAL_NARROW_HALF_WINDOW_H = 1.0
+MAP_HALF_WINDOW_H = 3.0     # /map window_hours default
+MAP_STEP_MIN = 2.0          # /map step_minutes default
+
 
 def header(fh, title: str) -> None:
     fh.write(f"# {title}\n# generated by tools/dump_oracle.py; do not edit, regenerate\n")
@@ -150,6 +283,112 @@ def contact_records(label: str) -> str:
     contacts = global_contacts(model, CONTACT_HALF_WINDOW_H)  # insertion order = P1 P4 U1 U4 U2 U3
     names = " ".join(f"{name} {t!r}" for name, t in contacts.items())
     return f"contacts {label} {CONTACT_FRAME} {model.et0!r} {CONTACT_HALF_WINDOW_H!r} {names}\n"
+
+
+def _quiet_model(**kw) -> BesselianModel:
+    """BesselianModel without the RankWarning a 3-sample cubic fit emits (hw = 1 h)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", np.exceptions.RankWarning)
+        return BesselianModel(**kw)
+
+
+def circumstances_records(label: str) -> str:
+    """``local`` and ``grid`` records for ``label`` at its greatest-eclipse epoch."""
+    lat0, lon0 = GREATEST_SITE[label]
+    sites = [(lat0, lon0), *CIRC_SITES]
+    out = []
+    local = _quiet_model(t0_utc=CONTACT_EPOCHS[label], earth_frame=CONTACT_FRAME,
+                         half_window_hours=LOCAL_HALF_WINDOW_H)
+    narrow = _quiet_model(t0_utc=CONTACT_EPOCHS[label], earth_frame=CONTACT_FRAME,
+                          half_window_hours=LOCAL_NARROW_HALF_WINDOW_H)
+    for model, pts in ((local, sites), (narrow, [(lat0, lon0)])):
+        for lat, lon in pts:
+            raw = _local_raw(model, lat, lon)
+            vals = [raw.geometric, raw.central, raw.c1, raw.c4, raw.c2, raw.c3, raw.t_max,
+                    raw.magnitude, raw.obscuration, raw.L2_x, *raw.alt_deg, *raw.az_deg,
+                    *raw.below, raw.eclipse]
+            out.append(f"local {label} {CONTACT_FRAME} {model.et0!r} {model.half_window_hours!r} "
+                       f"{lat!r} {lon!r} {row(*vals)}\n")
+    grid = _quiet_model(t0_utc=CONTACT_EPOCHS[label], earth_frame=CONTACT_FRAME,
+                        half_window_hours=MAP_HALF_WINDOW_H)
+    for lat, lon in sites:
+        g = circumstances_grid(grid, [lat], [lon], step_minutes=MAP_STEP_MIN)
+        vals = [g["magnitude"][0], g["obscuration"][0], g["t_max_hours"][0], g["sun_alt"][0],
+                bool(g["visible"][0]), bool(g["central"][0])]
+        out.append(f"grid {label} {CONTACT_FRAME} {grid.et0!r} {grid.half_window_hours!r} "
+                   f"{MAP_STEP_MIN!r} {lat!r} {lon!r} {row(*vals)}\n")
+    return "".join(out)
+
+
+class _SubSolarStub:
+    """The slice of BesselianModel the altitude helpers read, with a fixed sub-solar
+    point patched into ``app.circumstances.sub_solar_points`` so ``_sun_altaz`` and
+    ``circumstances_grid`` run their real expressions kernel-free. ``evaluate_direct``
+    returns constant elements (irrelevant to ``sun_alt``); half_window_hours 0 makes
+    the grid's ``np.arange`` a single instant."""
+
+    et0 = 0.0
+    earth_frame = CONTACT_FRAME
+    half_window_hours = 0.0
+
+    def __init__(self, ss_lon: float, ss_lat: float) -> None:
+        self.ss_lon, self.ss_lat = ss_lon, ss_lat
+
+    def evaluate_direct(self, t):
+        one = np.ones_like(np.atleast_1d(np.asarray(t, dtype=float)))
+        return {"x": 0.0 * one, "y": 0.0 * one, "d": 0.0 * one, "mu": 0.0 * one,
+                "l1": 0.5 * one, "l2": -0.01 * one, "tan_f1": 0.0046 * one,
+                "tan_f2": 0.0046 * one}
+
+    def sub_solar_points(self, et, earth_frame):
+        et = np.atleast_1d(np.asarray(et, dtype=float))
+        return np.full(et.shape, self.ss_lon), np.full(et.shape, self.ss_lat)
+
+
+def write_circumstances_cases(path: Path) -> int:
+    """circumstances_cases.txt: the app.circumstances helpers at literal inputs
+    (roadmap §4 row circumstances, kernel-free part). Returns the record count."""
+    n_rec = 0
+    with open(path, "w") as fh:
+        header(fh, "app.circumstances oracle at literal inputs (phase 3 circumstances parity)")
+
+        fh.write("# ovl r R d area  (_overlap_area)\n")
+        for r, R, d in OVL_CASES:
+            fh.write(f"ovl {row(r, R, d, _overlap_area(r, R, d))}\n")
+            n_rec += 1
+
+        fh.write("# obsc L1p L2p m obs  (_obscuration)\n")
+        for L1p, L2p, m in OBSC_CASES:
+            fh.write(f"obsc {row(L1p, L2p, m, _obscuration(L1p, L2p, m))}\n")
+            n_rec += 1
+
+        fh.write("# unw n v1..vn u1..un  (np.degrees(np.unwrap(np.radians(v))), degrees)\n")
+        for v in UNW_CASES:
+            v = np.asarray(v, dtype=float)
+            u = np.degrees(np.unwrap(np.radians(v)))
+            fh.write(f"unw {len(v)} {row(*v)} {row(*u)}\n")
+            n_rec += 1
+
+        fh.write("# altaz lat lon ss_lon ss_lat alt az alt_grid  "
+                 "(_sun_altaz; circumstances_grid's sun_alt)\n")
+        for lat, lon, ss_lon, ss_lat in ALTAZ_CASES:
+            stub = _SubSolarStub(ss_lon, ss_lat)
+            with mock.patch.object(circ, "sub_solar_points", stub.sub_solar_points):
+                alt, az = _sun_altaz(stub, lat, lon, 0.0)
+                alt_grid = circumstances_grid(stub, [lat], [lon], step_minutes=MAP_STEP_MIN)
+            vals = (lat, lon, ss_lon, ss_lat, alt[0], az[0], alt_grid["sun_alt"][0])
+            fh.write(f"altaz {row(*vals)}\n")
+            n_rec += 1
+
+        fh.write("# roots n t1..tn f1..fn k tc1 rising1 i1 ...  (_roots; rising 0/1)\n")
+        for t, f in ROOTS_CASES:
+            t, f = np.asarray(t, dtype=float), np.asarray(f, dtype=float)
+            found = _roots(t, f)
+            flat = [v for tc, rising, i in found for v in (tc, rising, float(i))]
+            fh.write(f"roots {len(t)} {row(*t)} {row(*f)} {len(found)}"
+                     f"{' ' + row(*flat) if flat else ''}\n")
+            n_rec += 1
+    return n_rec
 
 
 def write_geometry_cases(path: Path) -> int:
@@ -270,6 +509,7 @@ def main() -> None:
                     fh.write(f"case {label}[{i}] {frame} {row(*vals)}\n")
             if label in CONTACT_EPOCHS:
                 fh.write(contact_records(label))
+                fh.write(circumstances_records(label))
 
     with open(OUT / "utc_cases.txt", "w") as fh:
         header(fh, "utc_to_et / et_to_utc oracle cases (IERS-era rule)")
@@ -284,10 +524,11 @@ def main() -> None:
             cols = " ".join(repr(float(v)) for v in (mjd[i], xp[i], yp[i], dut1[i]))
             fh.write(f"eop {cols}\n")
     n_geo = write_geometry_cases(OUT / "geometry_cases.txt")
+    n_circ = write_circumstances_cases(OUT / "circumstances_cases.txt")
 
     n_rows = int(keep.sum())
-    print(f"wrote {len(ECLIPSES) + 3} fixtures to {OUT.relative_to(ROOT)}, {n_rows} EOP rows, "
-          f"{n_geo} geometry records")
+    print(f"wrote {len(ECLIPSES) + 4} fixtures to {OUT.relative_to(ROOT)}, {n_rows} EOP rows, "
+          f"{n_geo} geometry records, {n_circ} circumstances records")
 
 
 if __name__ == "__main__":

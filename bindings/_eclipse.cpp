@@ -4,9 +4,9 @@
 // injection, Besselian elements and sub-solar points, bound here. Arrays
 // cross the boundary as NumPy float64 (spans in, fresh ndarrays out); the
 // SPICE-touching calls release the GIL and the C++ side holds its own lock.
-// Phase 2 units are bound one translation unit per core header
-// (bind_numerics / bind_ellipsoid / bind_geometry, see common.hpp) and
-// assembled at the end of NB_MODULE.
+// Phase 2 and 3 units are bound one translation unit per core header
+// (bind_numerics / bind_ellipsoid / bind_geometry / bind_circumstances, see
+// common.hpp) and assembled at the end of NB_MODULE.
 #include <nanobind/stl/array.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
@@ -192,4 +192,5 @@ NB_MODULE(_eclipse, m) {
     bind_numerics(m);
     bind_ellipsoid(m);
     bind_geometry(m);
+    bind_circumstances(m);  // phase 3
 }

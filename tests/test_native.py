@@ -11,6 +11,8 @@ pool — furnishing here does not affect spiceypy's pool and vice versa.
 
 from __future__ import annotations
 
+import os
+
 import erfa
 import numpy as np
 import pytest
@@ -621,3 +623,251 @@ def test_geography_round_trip_through_native(monkeypatch, native_pool):
             assert lon2 == pytest.approx(lon, abs=1e-6), (lat, lon)
             checked += 1
     assert checked >= 3
+
+
+# ---------------------------------------------------------------- phase 3: circumstances
+# Roadmap §4 gates for app.circumstances: contacts / t_max 1e-9 h, magnitude
+# and obscuration 1e-12, grid 1e-12 with the bool arrays bit-identical, horizon
+# flags identical; and the phase exit, /circumstances and /map byte-identical
+# through the two backends plus the 0.5-degree global-grid benchmark.
+# Measured residuals are recorded in each test after its gate.
+_LOCAL_TIME_TOL_H = 1e-9   # c1, c4, c2, c3, t_max [h]
+_LOCAL_MAG_TOL = 1e-12     # magnitude, obscuration, L2_x
+_LOCAL_ALT_TOL_DEG = 1e-11  # Sun altitude / azimuth at the events [deg]
+_GRID_TOL = 1e-12          # magnitude, obscuration, t_max_hours, sun_alt
+
+# (epoch near greatest eclipse) as /circumstances and /map receive it.
+_CIRC_EPOCHS = ["2017-08-21T18:25:30", "2023-10-14T17:59:27", "2024-04-08T18:17:15"]
+# Off-path observers shared by every eclipse: NYC, a sunset-in-progress site
+# (W Ireland on 2024-04-08), the night side (central India), outside the
+# penumbra (S America on 2024-04-08), both poles and the antimeridian.
+_CIRC_FIXED_SITES = [(40.71, -74.01), (53.3, -9.0), (20.0, 77.0), (-30.0, -60.0),
+                     (89.9, 0.0), (-89.9, 0.0), (0.0, 179.99), (0.0, -179.99)]
+
+
+def _circumstances_model(epoch: str, half_window_hours: float = 2.5):
+    """BesselianModel exactly as /circumstances builds it (default window, frame)."""
+    from app.besselian import BesselianModel
+    from app.ephemeris import DEFAULT_EARTH_FRAME
+
+    return BesselianModel(t0_utc=epoch, earth_frame=DEFAULT_EARTH_FRAME,
+                          half_window_hours=half_window_hours)
+
+
+def _map_model(epoch: str):
+    """BesselianModel exactly as /map builds it (window_hours 3.0, default frame)."""
+    return _circumstances_model(epoch, half_window_hours=3.0)
+
+
+def _path_sites(model):
+    """The greatest-eclipse point (axis on the fundamental plane at T0, reduced
+    to the ellipsoid) and three central-line points along the track."""
+    from app.geography import central_track, fund_to_geo
+
+    e = model.evaluate(np.array([0.0]))
+    lon, lat = fund_to_geo(e["x"][0], e["y"][0], e["d"][0], e["mu"][0])
+    _elems, track = central_track(model, np.array([-0.9, -0.3, 0.6]))
+    assert len(track) == 3, "central line expected at all three offsets"
+    return [(float(lat), float(lon))] + [(tp.lat, tp.lon) for tp in track]
+
+
+def _native_local_raw(native_pool, model, lat, lon):
+    from app.circumstances import _LocalRaw
+
+    raw = native_pool.local_circumstances(model.et0, model.earth_frame,
+                                          model.half_window_hours, float(lat), float(lon))
+    return _LocalRaw(*raw)
+
+
+@requires_kernels
+def test_local_circumstances_parity(oracle, native_pool):
+    """_local_raw against the native core, field by field, at 13 observers per
+    modern reference eclipse (39 sites): the greatest-eclipse point and three
+    central-line points (total / annular phases with C2, C3), NYC (partial), the
+    sunset site (max and C4 below the horizon), the night side (geometric
+    penumbra, eclipse False), a site outside the penumbra (geometric False),
+    the poles, the antimeridian, and the greatest point with a 1-hour fit
+    window (the bracketing widens 1.0 -> 1.5 -> 2.25 h).  Flags and NaN masks
+    identical; contacts / t_max within 1e-9 h, magnitude / obscuration / L2_x
+    within 1e-12, altitudes / azimuths within 1e-11 deg.  Measured on x86-64
+    (39 sites): contacts C1-C4 0.0 (bit-identical: the bisection's 30 decisions
+    land on the same doubles), t_max 2.55e-12 h (the parabolic step's
+    ``(y0 - y2) / denom`` amplifies 1 ulp of the magnitude samples; the same
+    figure tests/cpp/test_circumstances.cpp records), magnitude / obscuration /
+    L2_x 1.5e-14, altitude 2.1e-14 deg, azimuth 5.7e-14 deg -- the 1-ulp
+    libm-vs-NumPy SIMD trig noise of phases 1-2 and nothing above it.  The
+    oracle's ValueError (partial roots all one-signed) was not reached at any
+    site of a 5-degree global scan of the three eclipses at both windows, so
+    it has no parity case here; the native core maps it to ValueError."""
+    from app.circumstances import _local_raw
+
+    oracle.load_kernels()
+    worst = {"contact": 0.0, "t_max": 0.0, "mag": 0.0, "alt": 0.0, "az": 0.0}
+    n_sites = n_central = n_hidden = n_none = 0
+    for epoch in _CIRC_EPOCHS:
+        model = _circumstances_model(epoch)
+        if not _ephemeris_covers(oracle, model.et0):
+            continue
+        cases = [(model, s) for s in _path_sites(model) + _CIRC_FIXED_SITES]
+        cases.append((_circumstances_model(epoch, half_window_hours=1.0), cases[0][1]))
+        for m, (lat, lon) in cases:
+            ref = _local_raw(m, lat, lon)
+            ours = _native_local_raw(native_pool, m, lat, lon)
+            site = (epoch, m.half_window_hours, lat, lon)
+            for name in ("geometric", "central", "eclipse", "below"):
+                assert getattr(ours, name) == getattr(ref, name), (site, name)
+            for name in ("c1", "c4", "c2", "c3", "t_max"):
+                a, b = getattr(ours, name), getattr(ref, name)
+                assert np.isnan(a) == np.isnan(b), (site, name)
+                if not np.isnan(b):
+                    key = "t_max" if name == "t_max" else "contact"
+                    worst[key] = max(worst[key], abs(a - b))
+                    assert abs(a - b) <= _LOCAL_TIME_TOL_H, (site, name, a, b)
+            for name in ("magnitude", "obscuration", "L2_x"):
+                a, b = getattr(ours, name), getattr(ref, name)
+                assert np.isnan(a) == np.isnan(b), (site, name)
+                if not np.isnan(b):
+                    worst["mag"] = max(worst["mag"], abs(a - b))
+                    assert abs(a - b) <= _LOCAL_MAG_TOL, (site, name, a, b)
+            for name, key in (("alt_deg", "alt"), ("az_deg", "az")):
+                a, b = np.array(getattr(ours, name)), np.array(getattr(ref, name))
+                assert np.array_equal(np.isnan(a), np.isnan(b)), (site, name)
+                ok = ~np.isnan(b)
+                if ok.any():
+                    diff = float(np.max(np.abs(a[ok] - b[ok])))
+                    worst[key] = max(worst[key], diff)
+                    assert diff <= _LOCAL_ALT_TOL_DEG, (site, name, diff)
+            n_sites += 1
+            n_central += ref.central
+            n_hidden += ref.geometric and not ref.eclipse
+            n_none += not ref.geometric
+    assert n_sites >= 26 and n_central >= 8 and n_hidden >= 2 and n_none >= 2
+    print(f"\nlocal_circumstances ({n_sites} sites): contacts {worst['contact']:.3g} h, "
+          f"t_max {worst['t_max']:.3g} h, magnitude/obscuration/L2_x {worst['mag']:.3g}, "
+          f"alt {worst['alt']:.3g} deg, az {worst['az']:.3g} deg")
+
+
+@requires_kernels
+def test_circumstances_grid_parity(oracle, native_pool):
+    """circumstances_grid on the 10-degree global grid (19 x 36 = 684 cells) of
+    the three modern eclipses, with the /map model (3-hour window, 2-minute
+    step): the four float arrays within 1e-12 and ``visible`` / ``central``
+    bit-identical; and the native result independent of the thread count
+    (``threads=1`` equal to the OpenMP default on all six arrays).  Measured on
+    x86-64 (3 x 684 cells): ``visible`` / ``central`` identical, t_max_hours
+    0.0 (the same grid instant is the argmax), magnitude 7.3e-14, obscuration
+    6.3e-14, sun_alt 5.7e-14 deg -- 1 ulp of values of order 1 / 60 deg, the
+    libm-vs-NumPy trig noise of phases 1-2."""
+    from app.circumstances import circumstances_grid
+
+    oracle.load_kernels()
+    lats = np.arange(-90.0, 90.0 + 1e-9, 10.0)
+    lons = np.arange(-180.0, 180.0, 10.0)
+    la, lo = (a.ravel() for a in np.meshgrid(lats, lons, indexing="ij"))
+    keys = ("magnitude", "obscuration", "t_max_hours", "sun_alt", "visible", "central")
+    worst: dict[str, float] = {}
+    n_checked = n_central = 0
+    for epoch in _CIRC_EPOCHS:
+        model = _map_model(epoch)
+        if not _ephemeris_covers(oracle, model.et0):
+            continue
+        ref = circumstances_grid(model, la, lo, step_minutes=2.0)
+        ours = native_pool.circumstances_grid(model.et0, model.earth_frame,
+                                              model.half_window_hours, la, lo, 2.0)
+        serial = native_pool.circumstances_grid(model.et0, model.earth_frame,
+                                                model.half_window_hours, la, lo, 2.0, threads=1)
+        assert tuple(ours) == keys and tuple(ref) == keys
+        for k in keys:
+            assert ours[k].dtype == ref[k].dtype and ours[k].shape == ref[k].shape, (epoch, k)
+            assert np.array_equal(ours[k], serial[k]), (epoch, k, "thread count")
+            if ref[k].dtype == bool:
+                assert np.array_equal(ours[k], ref[k]), (epoch, k)
+            else:
+                diff = float(np.max(np.abs(ours[k] - ref[k])))
+                worst[k] = max(worst.get(k, 0.0), diff)
+                assert diff <= _GRID_TOL, (epoch, k, diff)
+        assert ref["visible"].sum() > 50  # a real map
+        n_central += int(ref["central"].sum())
+        n_checked += 1
+    assert n_checked == 3 and n_central >= 1  # the 10-degree grid meets the 2024 path
+    print("\ncircumstances_grid: " + ", ".join(f"{k} {v:.3g}" for k, v in worst.items()))
+
+
+@requires_kernels
+@pytest.mark.parametrize("path, params", [
+    # test_api.py's /circumstances request (a 400: the same error body on both
+    # backends), then the reference sites of test_besselian_integration.py.
+    ("/circumstances", {"epoch": "2024 APR 08 18:17:15", "lat": 25.3, "lon": -104.1}),
+    ("/circumstances", {"epoch": "2024-04-08T18:17:15", "lat": 25.3, "lon": -104.1}),
+    ("/circumstances", {"epoch": "2017-08-21T18:25:30", "lat": 37.0, "lon": -87.7}),
+    ("/circumstances", {"epoch": "2023-10-14T17:59:27", "lat": 11.4, "lon": -83.1}),
+    ("/circumstances", {"epoch": "2024-04-08T18:17:15", "lat": 40.71, "lon": -74.01}),
+    ("/circumstances", {"epoch": "2024-04-08T18:17:15", "lat": 53.3, "lon": -9.0}),
+    ("/circumstances", {"epoch": "2024-04-08T18:17:15", "lat": 20.0, "lon": 77.0}),
+    ("/circumstances", {"epoch": "2024-04-08T18:17:15", "lat": -30.0, "lon": -60.0}),
+    # test_api.py's /map request, then the default 2-degree maps of the three.
+    ("/map", {"epoch": "2024-04-08T18:17:15", "lat_step": 10, "lon_step": 10}),
+    ("/map", {"epoch": "2024-04-08T18:17:15"}),
+    ("/map", {"epoch": "2017-08-21T18:25:30"}),
+    ("/map", {"epoch": "2023-10-14T17:59:27"}),
+])
+def test_circumstances_endpoints_identical_through_native(monkeypatch, native_pool, path, params):
+    """Phase-3 exit: /circumstances and /map are unchanged to the last digit.
+    The same request through the pure-Python backend and through the native one
+    (elements, reduction, contacts, magnitudes, horizon all in C++) parses to
+    equal JSON at the endpoints' own rounding (1e-4 magnitude, 0.1 deg, 0.1 s,
+    whole clock seconds; 1e-3 on the map).  Measured: identical for the twelve
+    requests (status codes included; the default maps are 91 x 180 cells)."""
+    from fastapi.testclient import TestClient
+
+    from app import ephemeris
+    from app import native as native_mod
+    from app.main import app
+
+    client = TestClient(app)
+    monkeypatch.setattr(native_mod, "BACKEND", "python")
+    ephemeris.load_kernels()
+    r_python = client.get(path, params=params)
+    monkeypatch.setattr(native_mod, "BACKEND", "native")
+    r_native = client.get(path, params=params)
+    body_python, body_native = r_python.json(), r_native.json()
+    assert r_native.status_code == r_python.status_code
+    if path == "/map" and r_python.status_code == 200:
+        assert sum(map(sum, body_python["central"])) >= 1
+    elif r_python.status_code == 200:
+        assert body_python["lat"] == params["lat"]
+    assert body_native == body_python, "\n".join(_diff_paths(body_native, body_python))
+
+
+@requires_kernels
+@pytest.mark.skipif(os.environ.get("ECLIPSE_BENCH") != "1",
+                    reason="benchmark: run with ECLIPSE_BENCH=1 (ECLIPSE_BENCH_MAX_S = gate)")
+def test_circumstances_grid_benchmark(native_pool):
+    """Roadmap §5 phase 3: the 0.5-degree global grid (361 x 720 = 259 920
+    observers, /map's 3-hour window at a 2-minute step = 181 instants) through
+    the native circumstances_grid in < 0.5 s.  Called directly because the grid
+    exceeds /map's MAX_MAP_CELLS (150 000).  Measured on the development host
+    (4 cores, x86-64, OpenMP default threads): 0.38 s (1.39 s serial) against
+    4.0 s for the Python circumstances_grid on the same grid, whose six arrays
+    the native ones match as in test_circumstances_grid_parity (bools
+    identical, floats <= 9.4e-14); the 0.5 s figure is the developer-host
+    criterion, and CI runs it with ECLIPSE_BENCH_MAX_S=2.0 as a regression
+    guard on shared 2-4 vCPU runners."""
+    import time
+
+    from app.ephemeris import utc_to_et
+
+    model_et0 = utc_to_et("2024-04-08T18:17:15")
+    lats = np.arange(-90.0, 90.0 + 1e-9, 0.5)
+    lons = np.arange(-180.0, 180.0, 0.5)
+    la, lo = (a.ravel() for a in np.meshgrid(lats, lons, indexing="ij"))
+    assert la.size == 361 * 720
+    native_pool.circumstances_grid(model_et0, "ITRS", 3.0, la[:720], lo[:720], 2.0)  # warm-up
+    t0 = time.perf_counter()
+    g = native_pool.circumstances_grid(model_et0, "ITRS", 3.0, la, lo, 2.0)
+    elapsed = time.perf_counter() - t0
+    assert g["central"].sum() > 0 and g["visible"].sum() > 10_000
+    limit = float(os.environ.get("ECLIPSE_BENCH_MAX_S", "0.5"))
+    print(f"\ncircumstances_grid 0.5-degree global grid: {elapsed:.3f} s "
+          f"({os.cpu_count()} CPUs; gate {limit} s)")
+    assert elapsed < limit, f"{elapsed:.3f} s >= {limit} s"

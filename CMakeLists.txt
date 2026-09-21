@@ -42,6 +42,7 @@ add_library(eclipse STATIC
   core/src/deltat.cpp
   core/src/eop.cpp
   core/src/ephem.cpp
+  core/src/geometry.cpp
 )
 target_include_directories(eclipse PUBLIC core/include)
 target_link_libraries(eclipse PUBLIC cspice erfa)
@@ -63,7 +64,12 @@ if(ECLIPSE_BUILD_PYTHON)
     OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE nanobind_ROOT)
   find_package(nanobind CONFIG REQUIRED)
 
-  nanobind_add_module(_eclipse NB_STATIC bindings/_eclipse.cpp)
+  nanobind_add_module(_eclipse NB_STATIC
+    bindings/_eclipse.cpp
+    bindings/bind_numerics.cpp
+    bindings/bind_ellipsoid.cpp
+    bindings/bind_geometry.cpp
+  )
   target_link_libraries(_eclipse PRIVATE eclipse)
   target_compile_options(_eclipse PRIVATE ${ECLIPSE_FP_FLAGS})
   install(TARGETS _eclipse LIBRARY DESTINATION .)

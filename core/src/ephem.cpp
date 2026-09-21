@@ -12,6 +12,7 @@
 #include "eclipse/constants.hpp"
 #include "eclipse/deltat.hpp"
 #include "eclipse/eop.hpp"
+#include "eclipse/numerics.hpp"
 
 extern "C" {
 #include "SpiceUsr.h"
@@ -24,6 +25,7 @@ namespace eclipse {
 namespace {
 
 using namespace constants;
+using numerics::wrap_180;
 
 // One lock around every CSPICE entry point: the kernel pool and the error
 // subsystem are process-global state (roadmap §2).
@@ -99,19 +101,6 @@ struct Spherical {
 Spherical reclat(const Vec3& v) {
     return {norm(v), std::atan2(v[1], v[0]), std::atan2(v[2], std::hypot(v[0], v[1]))};
 }
-
-// NumPy float remainder (npy_divmod): fmod, then add the divisor when the
-// signs differ, +0 for an exact multiple. Used for (deg + 180) % 360 - 180.
-double np_remainder(double a, double b) {
-    double mod = std::fmod(a, b);
-    if (mod != 0.0) {
-        if ((b < 0.0) != (mod < 0.0)) mod += b;
-    } else {
-        mod = std::copysign(0.0, b);
-    }
-    return mod;
-}
-double wrap_180(double deg) { return np_remainder(deg + 180.0, 360.0) - 180.0; }
 
 // --- geocentric vectors (app.ephemeris._geocentric_vectors) --------------------
 

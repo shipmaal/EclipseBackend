@@ -44,10 +44,12 @@ PyPI) needs none and is verified equivalent.
 The C++20 core under `core/` + `bindings/` links the **vendored** NAIF CSPICE
 N0067 and liberfa 2.0.1 (`third_party/`, unmodified; see
 `THIRD_PARTY_NOTICES.md`) and is exposed to Python as `_eclipse`. It is at
-roadmap phase 1 (`docs/CPP_ROADMAP.md`): kernel management, time scales,
-delta-T, IERS EOP and the Besselian elements, parity-tested against the Python
-oracle to ~1e-13. Set `ECLIPSE_BACKEND=native` to route the ephemeris layer
-through it (the default stays `python` until phase 3).
+roadmap phase 2 (`docs/CPP_ROADMAP.md`): kernel management, time scales,
+delta-T, IERS EOP, the Besselian elements, the ellipsoid reduction, the
+shadow-edge limits/path width and the global contacts P1–P4, parity-tested
+against the Python oracle to ~1e-13 (`/central-line` is byte-identical through
+either backend). Set `ECLIPSE_BACKEND=native` to route the ephemeris and
+geometry layers through it (the default stays `python` until phase 3).
 
 ```bash
 cmake --preset release && cmake --build --preset release   # standalone build

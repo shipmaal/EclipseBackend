@@ -90,6 +90,7 @@ when that SPK is not the one on disk.
 
 from __future__ import annotations
 
+import os
 import sys
 import warnings
 from datetime import datetime, timedelta
@@ -99,6 +100,9 @@ from unittest import mock
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# The fixtures are the *Python* oracle: the default backend is ``auto`` (native
+# when built), so pin it before ``app`` resolves it.
+os.environ["ECLIPSE_BACKEND"] = "python"
 
 from app import catalog as cat  # noqa: E402
 from app import circumstances as circ  # noqa: E402
@@ -627,7 +631,7 @@ def write_geometry_cases(path: Path) -> int:
 
 
 def main() -> None:
-    assert not native.is_native(), "dump the *Python* oracle: unset ECLIPSE_BACKEND"
+    assert not native.is_native(), "dump the *Python* oracle: ECLIPSE_BACKEND=python"
     if not (ROOT / "kernels" / SPK).exists():
         sys.exit(f"fixtures pin {SPK}: run `python -m kernels.bootstrap --source naif`")
     ep.load_kernels()

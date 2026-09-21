@@ -12,6 +12,8 @@ pool — furnishing here does not affect spiceypy's pool and vice versa.
 from __future__ import annotations
 
 import os
+import warnings
+from pathlib import Path
 
 import erfa
 import numpy as np
@@ -21,6 +23,8 @@ import spiceypy
 from app.ephemeris import default_metakernel
 
 native = pytest.importorskip("_eclipse", reason="native core not built (run `uv sync`)")
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 requires_kernels = pytest.mark.skipif(
     not default_metakernel().exists(),
@@ -937,3 +941,386 @@ def test_circumstances_grid_benchmark(native_pool):
     print(f"\ncircumstances_grid 0.5-degree global grid: {elapsed:.3f} s "
           f"({os.cpu_count()} CPUs; gate {limit} s)")
     assert elapsed < limit, f"{elapsed:.3f} s >= {limit} s"
+
+
+# ---------------------------------------------------------------- phase 4: catalog
+# Roadmap §4 gate for app.catalog ("identical rows"), revised by the
+# "CONDITIONING OF et_g" note in core/include/eclipse/catalog.hpp and
+# app.catalog._rho_at: the greatest-eclipse instant is determined only to
+# ~1 ms by double precision (rho is quadratic and flat at its minimum), so the
+# raw et_g gate is 1e-2 s, the rows must be identical except for a whole-second
+# greatest_utc flip that is admissible ONLY when the oracle's et_g lies within
+# |delta et_g| of the .5-s rounding boundary (asserted, and WARNed naming the
+# row), and the row quantities are checked two ways: the native row against
+# the oracle's classification replayed AT THE NATIVE'S OWN et_g (pure geometry:
+# gamma / magnitude 1e-12, lat / lon 1e-11 deg -- the definitive statement, the
+# mirror of tests/cpp/test_catalog.cpp's replay at the oracle's et_g), and the
+# native row against the oracle's row at those gates PLUS the quantity's
+# excursion over the et_g band, derived per event from the oracle.  The band
+# excursion is SAMPLED across the band (41 instants), not read at its two
+# ends as the Catch2 test does: rho carries ~3e-12 of sample-to-sample jitter
+# from the SPK Chebyshev / light-time evaluation (identical in both backends),
+# so a millisecond shift moves gamma by that jitter, not by the smooth
+# quadratic's ~1e-13 -- the excursion is measured, not assumed.  Detail: et0
+# bit-identical (same whole second), contacts 1e-9 h in identical order,
+# LocalRaw at the phase-3 gates, width 1e-6 km.  Measured residuals are
+# recorded in each test after its gate.
+_ETG_TOL_S = 1e-2         # et_g [s]: the double-precision conditioning band
+_ROW_MAG_TOL = 1e-12      # gamma, magnitude (before the band excursion)
+_ROW_DEG_TOL = 1e-11      # lat, lon [deg] (before the band excursion)
+_BAND_SAMPLES = 41        # instants across et_g +/- _ETG_TOL_S for the excursion
+_CATALOG_WINDOW = ("2019-01-01", "2024-12-31")   # the canon of tests/test_catalog.py
+
+
+def _classify_at(oracle_catalog, et, frame: str):
+    """The oracle's classification replayed at the instants ``et`` (no hybrid
+    test): arrays (central, gamma, magnitude, lat, lon) exactly as _catalog_raw
+    computes them after the refinement -- what an et_g shift can move."""
+    from app.geography import fund_to_geo_v, geo_to_fund
+
+    et = np.atleast_1d(np.asarray(et, dtype=float))
+    e = oracle_catalog.besselian_instants(et, frame)
+    rho = np.hypot(e["x"], e["y"])
+    lon, lat = fund_to_geo_v(e["x"], e["y"], e["d"], e["mu"])
+    central = ~np.isnan(lat)
+    mag = np.empty(len(et))
+    for i in range(len(et)):
+        zeta = float("nan")
+        if central[i]:
+            _xi, _eta, zeta = geo_to_fund(lat[i], lon[i], e["d"][i], e["mu"][i])
+        _kind, mag[i], _L2p = oracle_catalog._classify(
+            float(rho[i]), float(e["l1"][i]), float(e["l2"][i]), float(e["tan_f1"][i]),
+            float(e["tan_f2"][i]), bool(central[i]), zeta)
+    return central, np.copysign(rho, e["y"]), mag, lat, lon
+
+
+def _band_excursion(oracle_catalog, et: float, frame: str):
+    """Max |change| of (gamma, magnitude, lat, lon) over the sampled band
+    et +/- _ETG_TOL_S, relative to the values at et."""
+    ets = et + np.linspace(-_ETG_TOL_S, _ETG_TOL_S, _BAND_SAMPLES)
+    c, g, m, la, lo = _classify_at(oracle_catalog, ets, frame)
+    c0, g0, m0, la0, lo0 = _classify_at(oracle_catalog, et, frame)
+    both = c & c0[0]
+    band = [float(np.max(np.abs(g - g0[0]))), float(np.max(np.abs(m - m0[0]))), 0.0, 0.0]
+    if both.any():
+        band[2] = float(np.max(np.abs(la[both] - la0[0])))
+        band[3] = float(np.max(_wrapped_deg(lo[both], lo0[0])))
+    return band
+
+
+def _utc_fraction(oracle, et: float) -> float:
+    """Fractional UTC second of et (et2utc's rounding boundary is at .5)."""
+    import spiceypy
+
+    s = spiceypy.et2utc(et, "ISOC", 6)
+    return float(s[s.rfind("."):])
+
+
+def _nan_or_within(a, b, tol) -> bool:
+    if isinstance(a, float) and np.isnan(a):
+        return isinstance(b, float) and np.isnan(b)
+    return abs(a - b) <= tol
+
+
+def _nan_safe(obj):
+    """NaN -> 'nan' recursively, so tuples holding NaN compare equal by value."""
+    if isinstance(obj, float) and np.isnan(obj):
+        return "nan"
+    if isinstance(obj, (tuple, list)):
+        return type(obj)(_nan_safe(v) for v in obj)
+    return obj
+
+
+class _CatalogResiduals:
+    """Max |native - oracle| per raw field, printed as the live record."""
+
+    def __init__(self):
+        self.max = {}
+        self.boundary = []
+
+    def add(self, key, a, b):
+        if isinstance(a, float) and (np.isnan(a) or np.isnan(b)):
+            return
+        self.max[key] = max(self.max.get(key, 0.0), abs(a - b))
+
+    def report(self, what, n):
+        fields = ", ".join(f"{k} {v:.3g}" for k, v in self.max.items())
+        print(f"\ncatalog residuals ({what}, {n} events, {len(self.boundary)} greatest_utc "
+              f"boundary case(s)): {fields}")
+
+
+def _check_raw_events(oracle, raw_py, raw_nat, frame, detail, res):
+    """The derived-gate comparison of two _EventRaw lists (oracle vs native)."""
+    from app import catalog as cat
+    from app.circumstances import _LocalRaw
+
+    assert len(raw_nat) == len(raw_py)
+    for p, n in zip(raw_py, raw_nat, strict=True):
+        n = cat._event_from_native(n)
+        label = oracle.et_to_utc(p.et_g)
+        d_et = abs(n.et_g - p.et_g)
+        assert d_et <= _ETG_TOL_S, (label, d_et)
+        res.add("et_g_s", n.et_g, p.et_g)
+        assert n.kind == p.kind and n.central == p.central, label
+        # Pure geometry: the oracle replayed at the native's own instant.
+        c_at, g_at, m_at, la_at, lo_at = (v[0] for v in _classify_at(cat, n.et_g, frame))
+        assert bool(c_at) == n.central, label
+        for key, a, b, tol in (("gamma_at", n.gamma, float(g_at), _ROW_MAG_TOL),
+                               ("magnitude_at", n.magnitude, float(m_at), _ROW_MAG_TOL),
+                               ("lat_at", n.lat, float(la_at), _ROW_DEG_TOL),
+                               ("lon_at", n.lon, float(lo_at), _ROW_DEG_TOL)):
+            assert _nan_or_within(a, b, tol), (label, key, a, b)
+            res.add(key, a, b)
+        # The row against the oracle's row: geometry gate + the band excursion.
+        band = _band_excursion(cat, p.et_g, frame)
+        for k, key, tol, bd in ((3, "gamma", _ROW_MAG_TOL, band[0]),
+                                (4, "magnitude", _ROW_MAG_TOL, band[1]),
+                                (5, "lat_deg", _ROW_DEG_TOL, band[2]),
+                                (6, "lon_deg", _ROW_DEG_TOL, band[3])):
+            assert _nan_or_within(n[k], p[k], tol + bd), (label, key, n[k], p[k], tol, bd)
+            res.add(key, n[k], p[k])
+            res.add("band_" + key, bd, 0.0)
+        utc_n, utc_p = oracle.et_to_utc(n.et_g), oracle.et_to_utc(p.et_g)
+        if utc_n != utc_p:
+            frac = _utc_fraction(oracle, p.et_g)
+            assert abs(frac - 0.5) <= d_et, (label, utc_n, frac, d_et)
+            warnings.warn(f"greatest_utc boundary case {utc_p}: native {utc_n}, oracle et_g "
+                          f"fraction {frac:.6f}, |delta et_g| {d_et:.2e} s", stacklevel=2)
+            res.boundary.append(utc_p)
+            # The oracle's detail replayed at the native's whole second: the
+            # phase-2/3 gates then apply to every number.
+            p = cat._detail_raw(p._replace(et_g=n.et_g), frame) if detail else p
+        if not detail:
+            assert n.et0 is None and n.contacts is None and n.local is None and n.width_km is None
+            continue
+        assert n.et0 == p.et0, label  # bit-identical: the same whole second re-parsed
+        assert [c[0] for c in n.contacts] == [c[0] for c in p.contacts], label
+        for (_, tn), (_, tp) in zip(n.contacts, p.contacts, strict=True):
+            assert abs(tn - tp) <= _CONTACT_TOL_H, label
+            res.add("contacts_h", tn, tp)
+        assert (n.local is None) == (p.local is None), label
+        if n.local is not None:
+            assert isinstance(n.local, _LocalRaw)
+            _check_local_raw(n.local, p.local, res, label)
+        assert (n.width_km is None) == (p.width_km is None), label
+        if n.width_km is not None:
+            assert abs(n.width_km - p.width_km) <= _LIMIT_TOL_KM, label
+            res.add("width_km", n.width_km, p.width_km)
+
+
+def _check_local_raw(n, p, res, label):
+    """_LocalRaw vs _LocalRaw at the phase-3 gates."""
+    assert (n.geometric, n.central, n.below, n.eclipse) == (p.geometric, p.central, p.below,
+                                                             p.eclipse), label
+    for f in ("c1", "c4", "c2", "c3", "t_max"):
+        assert _nan_or_within(getattr(n, f), getattr(p, f), _LOCAL_TIME_TOL_H), (label, f)
+        res.add("local_times_h", getattr(n, f), getattr(p, f))
+    for f in ("magnitude", "obscuration", "L2_x"):
+        assert _nan_or_within(getattr(n, f), getattr(p, f), _LOCAL_MAG_TOL), (label, f)
+        res.add("local_mags", getattr(n, f), getattr(p, f))
+    for f in ("alt_deg", "az_deg"):
+        for a, b in zip(getattr(n, f), getattr(p, f), strict=True):
+            assert _nan_or_within(a, b, _LOCAL_ALT_TOL_DEG), (label, f)
+            res.add("local_angles_deg", a, b)
+
+
+def _rows_equal_up_to_boundary(oracle, rows_py, rows_nat, raw_py, raw_nat, frame, detail):
+    """find_eclipses dicts equal, except a boundary row's whole-second flip (see
+    the section comment): that row must equal the oracle's row re-formatted at
+    the native's whole second."""
+    from app import catalog as cat
+
+    assert len(rows_nat) == len(rows_py) == len(raw_py)
+    for rp, rn, p, n in zip(rows_py, rows_nat, raw_py, raw_nat, strict=True):
+        if rn == rp:
+            continue
+        assert rn["greatest_utc"] != rp["greatest_utc"], "\n".join(_diff_paths(rn, rp))
+        d_et = abs(n[0] - p.et_g)
+        frac = _utc_fraction(oracle, p.et_g)
+        assert abs(frac - 0.5) <= d_et <= _ETG_TOL_S, (rp["greatest_utc"], rn["greatest_utc"])
+        replay = p._replace(et_g=n[0])
+        replay = cat._detail_raw(replay, frame) if detail else replay
+        assert rn == cat._format_event(replay, detail), "\n".join(
+            _diff_paths(rn, cat._format_event(replay, detail)))
+
+
+def _catalog_both_backends(monkeypatch, oracle, native_pool, start, end, detail, frame="ITRS"):
+    from app import catalog as cat
+    from app import native as native_mod
+
+    monkeypatch.setattr(native_mod, "BACKEND", "python")
+    oracle.load_kernels()
+    et_a, et_b = oracle.utc_to_et(f"{start}T00:00:00"), oracle.utc_to_et(f"{end}T00:00:00")
+    raw_py = cat._catalog_raw(et_a, et_b, frame, detail)
+    raw_nat = native_pool.find_eclipses(et_a, et_b, frame, detail)
+    rows_py = cat.find_eclipses(start, end, frame, detail)
+    monkeypatch.setattr(native_mod, "BACKEND", "native")
+    oracle.load_kernels()
+    rows_nat = cat.find_eclipses(start, end, frame, detail)
+    monkeypatch.setattr(native_mod, "BACKEND", "python")  # the checks replay the oracle
+    return et_a, et_b, raw_py, raw_nat, rows_py, rows_nat
+
+
+@requires_kernels
+@pytest.mark.parametrize("detail", [False, True])
+def test_catalog_rows_identical_through_native(monkeypatch, oracle, native_pool, detail):
+    """Phase-4 exit: the 2019-2024 canon (13 eclipses) is identical through the
+    two backends -- find_eclipses dicts equal (the whole-second greatest_utc,
+    the 1e-4 gamma / magnitude, the 0.01-deg point, and with detail the contact
+    clocks, sun_alt, duration and 0.1-km width), and the raw _EventRaw fields
+    at the derived gates of the section comment.  Measured on x86-64 (DE440s,
+    4 cores): rows identical with 0 greatest_utc boundary cases (detail off and
+    on); et_g 3.3e-3 s (gate 1e-2); the oracle replayed at the native's et_g
+    agrees with the native row to gamma 1.1e-14, magnitude 2.8e-15, lat 5.5e-14
+    deg, lon 1.5e-12 deg (the 2021-06-10 point at lat 80.8 amplifies the 1-ulp
+    x / mu noise by 1 / cos lat); row against row: gamma 1.4e-12, magnitude
+    1.3e-10, lat 2.6e-5 deg, lon 1.4e-5 deg against sampled band excursions of
+    1.0e-11, 1.2e-9, 8.4e-5 deg and 2.1e-4 deg -- every row residual is the
+    et_g shift times the quantity's rate (plus rho's ~3e-12 jitter), not a
+    geometry difference; et0 and the global contacts bit-identical (0),
+    LocalRaw times 1.0e-14 h, magnitudes 0, altitudes / azimuths 5.7e-14 deg,
+    width 9.9e-13 km."""
+    from app import catalog as cat
+
+    start, end = _CATALOG_WINDOW
+    _et_a, _et_b, raw_py, raw_nat, rows_py, rows_nat = _catalog_both_backends(
+        monkeypatch, oracle, native_pool, start, end, detail)
+    assert [(r["greatest_utc"][:10], r["type"]) for r in rows_py] == [
+        ("2019-01-06", "partial"), ("2019-07-02", "total"), ("2019-12-26", "annular"),
+        ("2020-06-21", "annular"), ("2020-12-14", "total"), ("2021-06-10", "annular"),
+        ("2021-12-04", "total"), ("2022-04-30", "partial"), ("2022-10-25", "partial"),
+        ("2023-04-20", "hybrid"), ("2023-10-14", "annular"), ("2024-04-08", "total"),
+        ("2024-10-02", "annular")]
+    res = _CatalogResiduals()
+    _check_raw_events(oracle, raw_py, raw_nat, "ITRS", detail, res)
+    _rows_equal_up_to_boundary(oracle, rows_py, rows_nat, raw_py, raw_nat, "ITRS", detail)
+    # The dispatch composes the same rows the raw tuples format to.
+    assert rows_nat == [cat._format_event(cat._event_from_native(t), detail) for t in raw_nat]
+    res.report(f"2019-2024 detail={detail}", len(raw_py))
+    assert res.boundary == []  # measured: none in the canon window (documented above)
+
+
+@requires_kernels
+def test_catalog_half_century_rows_identical(monkeypatch, oracle, native_pool):
+    """2000-2050 (112 eclipses, detail off) identical through the two backends
+    under the same boundary rule, and the raw fields at the derived gates.
+    Measured on x86-64 (DE440s): rows identical, 0 greatest_utc boundary cases;
+    et_g 3.0e-3 s; the oracle at the native's et_g: gamma 1.3e-14, magnitude
+    1.9e-14, lat 1.0e-12 deg, lon 5.7e-12 deg; row against row: gamma 4.4e-12
+    (the 2019-12-26 row: a 0.8 ms et_g shift across rho's ~3e-12 jitter, which
+    a two-point quadratic band would miss), magnitude 2.2e-10, lat 1.6e-5 deg,
+    lon 2.3e-5 deg against sampled band excursions up to 2.9e-11, 2.2e-9,
+    9.0e-5 deg and 3.6e-4 deg."""
+    _et_a, _et_b, raw_py, raw_nat, rows_py, rows_nat = _catalog_both_backends(
+        monkeypatch, oracle, native_pool, "2000-01-01", "2050-01-01", False)
+    assert len(rows_py) > 100
+    res = _CatalogResiduals()
+    _check_raw_events(oracle, raw_py, raw_nat, "ITRS", False, res)
+    _rows_equal_up_to_boundary(oracle, rows_py, rows_nat, raw_py, raw_nat, "ITRS", False)
+    res.report("2000-2050 detail=False", len(raw_py))
+
+
+@requires_kernels
+def test_catalog_thread_count_independence(oracle, native_pool):
+    """The per-event hybrid / detail loop is OpenMP-parallel; serial (threads=1)
+    and the default give value-identical tuples (no cross-event reductions)."""
+    oracle.load_kernels()
+    et_a, et_b = oracle.utc_to_et("2023-01-01T00:00:00"), oracle.utc_to_et("2024-12-31T00:00:00")
+    default = native_pool.find_eclipses(et_a, et_b, "ITRS", True)
+    serial = native_pool.find_eclipses(et_a, et_b, "ITRS", True, threads=1)
+    assert len(default) == 4 and [t[1] for t in default] == ["hybrid", "annular", "total",
+                                                              "annular"]
+    assert _nan_safe(serial) == _nan_safe(default)
+    assert _nan_safe(native_pool.find_eclipses(et_a, et_b, "ITRS", True, threads=3)) == \
+        _nan_safe(default)
+
+
+@requires_kernels
+@pytest.mark.parametrize("params", [
+    # test_api.py's two /eclipses requests (the second a 400: range cap), then
+    # the canon window without detail and the last two years with it.
+    {"start": "2024-01-01", "end": "2024-12-31", "detail": False},
+    {"start": "2000-01-01", "end": "2024-12-31"},
+    {"start": "2019-01-01", "end": "2024-12-31", "detail": False},
+    {"start": "2023-01-01", "end": "2024-12-31", "detail": True},
+])
+def test_eclipses_endpoint_identical_through_native(monkeypatch, native_pool, params):
+    """Phase-4 exit: /eclipses is unchanged to the last digit.  The same request
+    through the pure-Python backend and through the native one (scan,
+    refinement, classification, detail all in C++) gives the same status and
+    parses to equal JSON at the endpoint's own rounding.  Measured: identical
+    for the four requests (13 + 2 + 4 rows and the 400)."""
+    from fastapi.testclient import TestClient
+
+    from app import ephemeris
+    from app import native as native_mod
+    from app.main import app
+
+    client = TestClient(app)
+    monkeypatch.setattr(native_mod, "BACKEND", "python")
+    ephemeris.load_kernels()
+    r_python = client.get("/eclipses", params=params)
+    monkeypatch.setattr(native_mod, "BACKEND", "native")
+    ephemeris.load_kernels()
+    r_native = client.get("/eclipses", params=params)
+    body_python, body_native = r_python.json(), r_native.json()
+    assert r_native.status_code == r_python.status_code
+    if r_python.status_code == 200:
+        assert body_python["count"] == len(body_python["eclipses"]) > 0
+    else:
+        assert "exceeds" in body_python["detail"]
+    assert body_native == body_python, "\n".join(_diff_paths(body_native, body_python))
+
+
+def test_backend_default_is_native():
+    """With ECLIPSE_BACKEND unset the resolved backend is native when _eclipse
+    imports (it does here: this module importorskips it)."""
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "ECLIPSE_BACKEND"}
+    env["PYTHONPATH"] = str(_REPO_ROOT)
+    out = subprocess.run(
+        [sys.executable, "-W", "error::RuntimeWarning", "-c",
+         "from app import native; print(native.BACKEND)"],
+        cwd=_REPO_ROOT, env=env, capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "native", out.stderr
+
+
+@requires_kernels
+@pytest.mark.skipif(os.environ.get("ECLIPSE_BENCH") != "1",
+                    reason="benchmark: run with ECLIPSE_BENCH=1 "
+                           "(ECLIPSE_CATALOG_BENCH_MAX_S = gate)")
+def test_catalog_century_benchmark(monkeypatch, oracle):
+    """Roadmap §5 phase 4: a century scan with detail=True in < 10 s through
+    app.catalog.find_eclipses under the native backend (the module function:
+    /eclipses caps detail scans at 10 years).  2000-2100 when the loaded SPK
+    covers it (DE440s), else 1950-2050 (the DE432s mirror, 1949-2050).
+    Measured on the development host (4 cores, x86-64, OpenMP default
+    threads): 2000-2100, 226 eclipses, detail on 8.5 s (12.1 s serial), detail
+    off 4.07 s, against 7.9 s for the Python oracle with detail OFF (its detail
+    scan is minutes); the 10 s figure is the developer-host criterion and CI
+    runs it with ECLIPSE_CATALOG_BENCH_MAX_S=30 as a regression guard on
+    shared 2-4 vCPU runners."""
+    import time
+
+    from app import catalog as cat
+    from app import native as native_mod
+
+    monkeypatch.setattr(native_mod, "BACKEND", "native")
+    oracle.load_kernels()
+    start, end = ("2000-01-01", "2100-01-01") if _ephemeris_covers(
+        oracle, oracle.utc_to_et("2100-01-08T00:00:00")) else ("1950-01-01", "2050-01-01")
+    cat.find_eclipses("2024-01-01", "2024-12-31", detail=True)  # warm-up
+    t0 = time.perf_counter()
+    rows = cat.find_eclipses(start, end, detail=True)
+    elapsed = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    rows_off = cat.find_eclipses(start, end, detail=False)
+    elapsed_off = time.perf_counter() - t0
+    assert 200 <= len(rows) == len(rows_off) <= 260
+    assert all("contacts" in r for r in rows)
+    limit = float(os.environ.get("ECLIPSE_CATALOG_BENCH_MAX_S", "10.0"))
+    print(f"\nfind_eclipses {start}..{end} ({len(rows)} eclipses): detail on {elapsed:.2f} s, "
+          f"detail off {elapsed_off:.2f} s ({os.cpu_count()} CPUs; gate {limit} s)")
+    assert elapsed < limit, f"{elapsed:.2f} s >= {limit} s"

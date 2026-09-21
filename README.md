@@ -43,16 +43,25 @@ PyPI) needs none and is verified equivalent.
 
 The C++20 core under `core/` + `bindings/` links the **vendored** NAIF CSPICE
 N0067 and liberfa 2.0.1 (`third_party/`, unmodified; see
-`THIRD_PARTY_NOTICES.md`) and is exposed to Python as `_eclipse`. It is at
-roadmap phase 3 (`docs/CPP_ROADMAP.md`): kernel management, time scales,
+`THIRD_PARTY_NOTICES.md`) and is exposed to Python as `_eclipse`. Roadmap
+phase 4 is done (`docs/CPP_ROADMAP.md`): kernel management, time scales,
 delta-T, IERS EOP, the Besselian elements, the ellipsoid reduction, the
-shadow-edge limits/path width, the global contacts P1–P4 and the local
+shadow-edge limits/path width, the global contacts P1–P4, the local
 circumstances (contacts, duration, magnitude, obscuration, horizon flags and
-the OpenMP-parallel global map grid), parity-tested against the Python oracle
-to ~1e-13 (`/central-line`, `/circumstances` and `/map` are byte-identical
-through either backend; the 0.5° global map grid takes 0.4 s against 4 s in
-Python). Set `ECLIPSE_BACKEND=native` to route the ephemeris, geometry and
-circumstances layers through it (the default stays `python` until phase 4).
+the OpenMP-parallel global map grid) and the eclipse catalog (scan, greatest
+eclipse, classification, greatest-eclipse detail) all run natively,
+parity-tested against the Python oracle to ~1e-13 (`/central-line`,
+`/circumstances`, `/map` and `/eclipses` are byte-identical through either
+backend; the 0.5° global map grid takes 0.4 s against 4 s in Python, a
+century catalog scan with detail 9 s). **The native core is the default**:
+`ECLIPSE_BACKEND` unset means `auto`, which resolves to `native` when
+`_eclipse` is built and otherwise falls back to the pure-Python backend with a
+`RuntimeWarning`; set `ECLIPSE_BACKEND=python` to force the oracle (CI runs
+the whole suite through both) or `native` to make a missing build an error.
+The Docker image builds the core in a two-stage build (wheel on the full
+`bookworm` image, installed into the slim runtime with `libgomp1`); gunicorn
+there must not `--preload`, since libgomp is not fork-safe once its pool has
+started.
 
 ```bash
 cmake --preset release && cmake --build --preset release   # standalone build

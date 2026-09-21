@@ -28,8 +28,10 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 ```
 
 Environment: `SPICE_EARTH_FRAME` overrides the default frame (`ITRS`);
-`SPICE_METAKERNEL` overrides the kernel path; `ECLIPSE_BACKEND=native` routes
-the ephemeris layer through the C++ core (`app/native.py`; default `python`).
+`SPICE_METAKERNEL` overrides the kernel path; `ECLIPSE_BACKEND=python|native|auto`
+selects the compute backend (`app/native.py`; default `auto` = `native` when the
+`_eclipse` extension is built, else `python` with one `RuntimeWarning`; an
+explicit `native` that cannot import is an `ImportError`).
 
 ## Architecture (`app/`)
 
@@ -93,7 +95,7 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
    observers × instants) rather than looping; the scalar functions are thin
    wrappers over the array ones.
 
-## Native core (`libeclipse`, phases 0–3 done)
+## Native core (`libeclipse`, phases 0–4 done)
 
 `docs/CPP_ROADMAP.md` is the plan for the C++20 `libeclipse` core: the Python
 `app/` stays the API *and the oracle*; every C++ unit is parity-tested
@@ -113,13 +115,15 @@ structural, not stylistic:
   formula goes into both languages in the same PR, then
   `uv run python tools/dump_oracle.py` regenerates `tests/cpp/fixtures/`.
 - Parity is checked live in `tests/test_native.py` (Python vs native over
-  dense windows) and offline in `tests/cpp/test_elements.cpp` (fixtures).
+  dense windows; `tests/test_backend_switch.py` covers the backend resolution
+  in subprocesses) and offline in `tests/cpp/test_*.cpp` (fixtures).
   Residuals are documented there; do not widen a tolerance to make a test
-  pass.
+  pass. `tools/dump_oracle.py` pins `ECLIPSE_BACKEND=python` itself.
 - The EOP table is injected from `app.eop` (`set_eop_table`); the C++ never
   parses `finals2000A.all`.
-- Dispatch under `ECLIPSE_BACKEND=native`: the five `app/ephemeris.py`
-  functions (phase 1) and, in `app/geography.py` (phase 2), `fund_to_geo_v`,
+- Dispatch under the native backend (`native.is_native()`, read at call
+  time): the five `app/ephemeris.py` functions plus `axis_separation` (phases
+  1 / 4) and, in `app/geography.py` (phase 2), `fund_to_geo_v`,
   `geo_to_fund`, `shadow_radii`, `bearing`, `shadow_edge_limits_v` and
   `global_contacts` — a dispatch line plus broadcast/ravel/reshape glue at the
   top of each, the Python body untouched. The scalar `fund_to_geo`,
@@ -133,7 +137,23 @@ structural, not stylistic:
   when no OpenMP is found, e.g. Apple Clang without libomp; results are
   identical for any thread count). libgomp is **not fork-safe once it has
   started its thread pool**, so a forking server must not warm the native
-  grid in the parent: run gunicorn without `--preload`.
+  grid in the parent: run gunicorn without `--preload` (the Dockerfile's CMD
+  does not).
+- Phase 4, in `app/catalog.py`: `find_eclipses` takes the core's `_EventRaw`
+  tuples (`_eclipse.find_eclipses`, `local` rebuilt as `_LocalRaw`) in place
+  of `_catalog_raw` and formats them with the same `_format_event`; the
+  per-event hybrid / detail loop is OpenMP-parallel (identical for any thread
+  count). The catalog's one formula change, made in both languages: the scan
+  and refinement objective is the frame-free `ephemeris.axis_separation`
+  (`rho`, `z` from the un-rotated J2000 vectors — the same [ES92] eq. 8.322-6,
+  invariant under any Earth-orientation rotation) instead of `hypot(x, y)` of
+  the ITRS elements, so the C++ scan needs no ERFA / EOP per sample; only the
+  elements *at* greatest eclipse use the configured frame. Parity consequence:
+  `rho` is flat at its minimum (and carries ~3e-12 of SPK evaluation jitter,
+  identical in both backends), so `et_g` is conditioned to ~1 ms and its gate
+  is 1e-2 s, with rows required identical up to a whole-second `greatest_utc`
+  flip at a rounding boundary inside that band (`catalog.hpp` "CONDITIONING
+  OF et_g", `app/catalog.py::_rho_at`, `tests/test_native.py` phase 4).
 - No `-ffast-math`; `-ffp-contract=off` is set. Keep the Python's operation
   order so parity is bit-level, not "close".
 - `_eclipse` links its own CSPICE statically: its kernel pool is separate from

@@ -47,6 +47,7 @@ from typing import NamedTuple, TypedDict
 
 import numpy as np
 
+from . import native
 from .besselian import BesselianModel, normalize_utc
 from .ephemeris import (
     DEFAULT_EARTH_FRAME,
@@ -335,11 +336,27 @@ def find_eclipses(
 
     Epoch strings follow :func:`~app.besselian.normalize_utc`.  Coverage is
     that of the loaded SPK (DE432s mirror: 1949-2050; DE440s: 1550-2650).
-    The numbers are :func:`_catalog_raw`; the row shape is :func:`_format_event`.
+    The numbers are :func:`_catalog_raw`, or under ``ECLIPSE_BACKEND=native``
+    the core's ``find_eclipses`` (the same ``_EventRaw`` tuples, its ``local``
+    rebuilt as :class:`~app.circumstances._LocalRaw`); the row shape is
+    :func:`_format_event` either way.
     """
     load_kernels()
     et_a = utc_to_et(normalize_utc(start_utc))
     et_b = utc_to_et(normalize_utc(end_utc))
     if et_b <= et_a:
         raise ValueError("end must be after start")
-    return [_format_event(raw, detail) for raw in _catalog_raw(et_a, et_b, earth_frame, detail)]
+    if native.is_native():
+        raws = [_event_from_native(t) for t in
+                native.module().find_eclipses(et_a, et_b, earth_frame, detail)]
+    else:
+        raws = _catalog_raw(et_a, et_b, earth_frame, detail)
+    return [_format_event(raw, detail) for raw in raws]
+
+
+def _event_from_native(t: tuple) -> _EventRaw:
+    """An :class:`_EventRaw` from the native core's tuple (``local`` retyped)."""
+    from .circumstances import _LocalRaw
+
+    raw = _EventRaw(*t)
+    return raw if raw.local is None else raw._replace(local=_LocalRaw(*raw.local))

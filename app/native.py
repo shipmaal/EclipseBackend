@@ -1,13 +1,22 @@
 """Backend switch for the native core (``libeclipse``, module ``_eclipse``).
 
-``ECLIPSE_BACKEND`` selects who computes the ephemeris layer:
+``ECLIPSE_BACKEND`` selects who computes the ephemeris, geometry, circumstances
+and catalog layers:
 
-* ``python`` (default) -- the pure-Python/NumPy implementation in
-  :mod:`app.ephemeris`, which is the **oracle** and is never deleted.
+* ``python`` -- the pure-Python/NumPy implementation in :mod:`app.ephemeris`,
+  :mod:`app.geography`, :mod:`app.circumstances` and :mod:`app.catalog`, which
+  is the **oracle** and is never deleted.
 * ``native`` -- the C++ port (``core/``), reached through the nanobind module
   ``_eclipse`` built by ``uv sync``.  Its results are parity-tested against the
   Python at the tolerances of ``docs/CPP_ROADMAP.md`` §4
-  (``tests/test_native.py``).
+  (``tests/test_native.py``).  Explicitly requested and not importable is an
+  ``ImportError`` at import time.
+* ``auto`` (the default since phase 4) -- ``native`` when ``_eclipse`` imports,
+  else ``python`` with one :class:`RuntimeWarning`: the API never fails for a
+  missing extension.
+
+:data:`BACKEND` holds the resolved choice (``python`` or ``native``);
+:func:`is_native` reads it at call time, so tests can monkeypatch it.
 
 The extension links its own CSPICE, so it has its *own* kernel pool: this
 module furnishes the metakernel into it alongside spiceypy's, and injects the
@@ -20,19 +29,47 @@ from __future__ import annotations
 
 import functools
 import os
+import warnings
 from functools import lru_cache
 
 import spiceypy.utils.exceptions as spice_exc
 
-BACKEND = os.environ.get("ECLIPSE_BACKEND", "python").lower()
-BACKENDS = ("python", "native")
+BACKENDS = ("python", "native", "auto")
 
-if BACKEND not in BACKENDS:
-    raise RuntimeError(f"ECLIPSE_BACKEND={BACKEND!r}; expected one of {BACKENDS}")
+
+def _resolve(requested: str) -> str:
+    """``python`` or ``native`` for the ``ECLIPSE_BACKEND`` value ``requested``.
+
+    ``auto`` probes ``import _eclipse`` (no kernel furnish, no EOP table: that
+    happens on first use in :func:`raw_module`) and falls back to ``python``
+    with a warning; ``native`` lets the ``ImportError`` propagate.
+    """
+    if requested not in BACKENDS:
+        raise RuntimeError(f"ECLIPSE_BACKEND={requested!r}; expected one of {BACKENDS}")
+    if requested == "native":
+        import _eclipse  # noqa: F401  -- explicit request: an unbuilt core is an error
+        return "native"
+    if requested == "auto":
+        try:
+            import _eclipse  # noqa: F401
+        except ImportError as exc:
+            warnings.warn(
+                "ECLIPSE_BACKEND is unset and the native core `_eclipse` is not importable "
+                f"({exc}); computing with the pure-Python backend (run `uv sync` to build it, "
+                "or set ECLIPSE_BACKEND=python to silence this).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return "python"
+        return "native"
+    return "python"
+
+
+BACKEND = _resolve(os.environ.get("ECLIPSE_BACKEND", "auto").lower())
 
 
 def is_native() -> bool:
-    """True when ``ECLIPSE_BACKEND=native``."""
+    """True when the resolved backend is ``native`` (read at call time)."""
     return BACKEND == "native"
 
 

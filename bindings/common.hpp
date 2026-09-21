@@ -39,6 +39,15 @@ inline OutBool1D to_numpy_bool(std::vector<std::uint8_t>&& v) {
     return OutBool1D(reinterpret_cast<bool*>(heap->data()), {n}, owner);
 }
 
+namespace eclipse::circumstances {
+struct LocalRaw;
+}
+
+// ``circumstances::LocalRaw`` as the Python ``_LocalRaw`` NamedTuple's tuple
+// (field order, five-slot event arrays as tuples). Defined in
+// bind_circumstances.cpp; the catalog's detail rows reuse it.
+nb::tuple local_raw_tuple(const eclipse::circumstances::LocalRaw& r);
+
 // One binding unit per core header (roadmap §3), so later work packages stay
 // file-disjoint. Declared here, defined in bind_<name>.cpp, called from NB_MODULE.
 void bind_numerics(nb::module_& m);

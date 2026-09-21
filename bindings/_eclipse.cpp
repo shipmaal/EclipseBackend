@@ -45,8 +45,24 @@ NB_MODULE(_eclipse, m) {
     m.doc() = "libeclipse: native core of EclipseBackend (CSPICE + ERFA).";
 
     // ``SpiceError`` derives from RuntimeError so ``except RuntimeError`` still
-    // catches it; ``str(e)`` is the spiceypy-style multi-line report.
-    nb::exception<eclipse::spice_error>(m, "SpiceError", PyExc_RuntimeError);
+    // catches it; ``str(e)`` is the spiceypy-style multi-line report and the
+    // four CSPICE message fields are attributes, so app/native.py can rebuild
+    // the exact spiceypy exception class (e.g. SpiceFRAMEDATANOTFOUND) that the
+    // Python backend would have raised.
+    static PyObject* spice_error_type =
+        nb::exception<eclipse::spice_error>(m, "SpiceError", PyExc_RuntimeError).inc_ref().ptr();
+    nb::register_exception_translator([](const std::exception_ptr& p, void*) {
+        try {
+            std::rethrow_exception(p);
+        } catch (const eclipse::spice_error& e) {
+            nb::object exc = nb::borrow(spice_error_type)(e.what());
+            exc.attr("short_message") = e.short_message();
+            exc.attr("explanation") = e.explanation();
+            exc.attr("long_message") = e.long_message();
+            exc.attr("traceback_text") = e.traceback();
+            PyErr_SetObject(spice_error_type, exc.ptr());
+        }
+    });
 
     nb::class_<eclipse::ephem::Position>(m, "Position",
                                          "spkpos_c result: km vector + light time (s).")

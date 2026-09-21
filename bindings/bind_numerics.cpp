@@ -38,6 +38,10 @@ auto python_objective(nb::callable& f) {
 void bind_numerics(nb::module_& m) {
     m.def("np_remainder", &num::np_remainder, "a"_a, "b"_a,
           "NumPy float remainder (np.remainder / %) for one pair, signed zero included.");
+    m.def("py_round", &num::py_round, "x"_a, "ndigits"_a,
+          "Python's round(x, ndigits) for a float, ndigits >= 0 (eclipse::numerics::py_round).\n\n"
+          "TEST-ONLY parity hook: the catalog port rounds with it natively; Python code has "
+          "round().");
     m.def(
         "np_arange",
         [](double start, double stop, double step) {

@@ -45,3 +45,4 @@ void bind_numerics(nb::module_& m);
 void bind_ellipsoid(nb::module_& m);
 void bind_geometry(nb::module_& m);
 void bind_circumstances(nb::module_& m);
+void bind_catalog(nb::module_& m);

@@ -221,6 +221,72 @@ def test_besselian_elements_parity(oracle, native_pool):
 
 
 @requires_kernels
+def test_axis_separation_parity(oracle, native_pool):
+    """Phase 4: ephem::axis_separation (the catalog's frame-free scan objective)
+    against app.ephemeris.axis_separation over the dense windows: rho / z within
+    the 1e-13 x-y gate.  Measured on x86-64: rho 2.7e-14, z 7.1e-15 (the
+    phase-1 hypot / atan2 ulp noise at the Moon's ~60 R_E distance; the
+    vectors themselves are bit-identical).  Also: the frame-free values equal
+    hypot(x, y) and z of the ITRS elements to the same noise (4.9e-14; the
+    invariance the scan relies on), and the SPICE-lock batching (2048 instants) is
+    invisible: a 5000-instant call equals its per-instant evaluation bit for
+    bit."""
+    oracle.load_kernels()
+    worst_rho = worst_z = worst_inv = 0.0
+    for utc0, utc1 in _WINDOWS:
+        et = np.linspace(oracle.utc_to_et(utc0), oracle.utc_to_et(utc1), 241)
+        if not _ephemeris_covers(oracle, float(et[0])):
+            continue
+        rho, z = native_pool.axis_separation(et)
+        rrho, rz = oracle.axis_separation(et)
+        worst_rho = max(worst_rho, float(np.max(np.abs(rho - rrho))))
+        worst_z = max(worst_z, float(np.max(np.abs(z - rz))))
+        assert worst_rho <= _XY_TOL and worst_z <= _XY_TOL, (utc0, worst_rho, worst_z)
+        e = oracle.besselian_instants(et, "ITRS")
+        worst_inv = max(worst_inv, float(np.max(np.abs(np.hypot(e["x"], e["y"]) - rrho))),
+                        float(np.max(np.abs(e["z"] - rz))))
+        assert worst_inv <= _XY_TOL, (utc0, worst_inv)
+    et = np.linspace(oracle.utc_to_et(_WINDOWS[2][0]), oracle.utc_to_et(_WINDOWS[2][1]), 5000)
+    rho, z = native_pool.axis_separation(et)
+    for i in (0, 2047, 2048, 4095, 4096, 4999):
+        r1, z1 = native_pool.axis_separation(et[i:i + 1])
+        assert rho[i] == r1[0] and z[i] == z1[0], i
+    print(f"\naxis_separation: rho {worst_rho:.3g}, z {worst_z:.3g}, vs ITRS {worst_inv:.3g}")
+
+
+def test_py_round_parity(native_pool):
+    """Phase 4: eclipse::numerics::py_round is Python's round(x, n) bit for bit
+    (value and the sign of zero) over 1e6 values -- uniform over several
+    magnitudes at n = 1, 2, 4, the exact-tie and 'looks like a tie' cases
+    (2.675, 0.125, 1.005, +-0.005), tiny and huge magnitudes, signed zeros,
+    NaN and the infinities.  Measured: 0 mismatches."""
+    rng = np.random.default_rng(1919)
+    values = np.concatenate([
+        rng.uniform(-200.0, 200.0, 400_000),
+        rng.uniform(-1.0, 1.0, 300_000) * 10.0 ** rng.integers(-6, 6, 300_000),
+        np.round(rng.uniform(-100.0, 100.0, 200_000), 3),        # decimal-looking values
+        rng.uniform(-1e15, 1e15, 100_000),
+        np.array([2.675, 0.125, 0.375, 1.005, 0.005, -0.005, -0.001, 0.001, -0.0, 0.0,
+                  1e16, 40.71, -104.1, 25.3, 0.5, 1.5, 2.5, -2.5, 0.43675, 114.75,
+                  197.54999, 5e-324, -5e-324, 1.7976931348623157e308, np.nan, np.inf,
+                  -np.inf, 0.30000000000000004, 0.9999999999999999]),
+    ])
+    n_checked = 0
+    for n in (0, 1, 2, 4):
+        ours = np.array([native_pool.py_round(float(v), n) for v in values])
+        ref = np.array([round(float(v), n) for v in values])
+        finite = np.isfinite(ref)
+        assert np.array_equal(ours[finite], ref[finite])
+        assert np.array_equal(np.signbit(ours[finite]), np.signbit(ref[finite]))
+        assert np.array_equal(np.isnan(ours), np.isnan(ref))
+        assert np.array_equal(ours[np.isinf(ref)], ref[np.isinf(ref)])
+        n_checked += len(values)
+    assert n_checked >= 4_000_000
+    with pytest.raises(ValueError):
+        native_pool.py_round(1234.5, -2)
+
+
+@requires_kernels
 def test_sub_solar_parity(oracle, native_pool):
     oracle.load_kernels()
     for utc0, utc1 in _WINDOWS:

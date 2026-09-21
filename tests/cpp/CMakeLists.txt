@@ -9,6 +9,7 @@ FetchContent_MakeAvailable(Catch2)
 add_executable(eclipse_tests
   test_ephem.cpp test_deltat.cpp test_elements.cpp
   test_numerics.cpp test_ellipsoid.cpp test_geometry.cpp test_circumstances.cpp
+  test_catalog.cpp
 )
 target_link_libraries(eclipse_tests PRIVATE eclipse Catch2::Catch2WithMain)
 target_compile_options(eclipse_tests PRIVATE ${ECLIPSE_FP_FLAGS})

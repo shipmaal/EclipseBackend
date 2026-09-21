@@ -64,9 +64,10 @@ Native backend
 With ``ECLIPSE_BACKEND=native`` (:mod:`app.native`) the public functions below
 that compute -- :func:`utc_to_et`, :func:`et_to_utc`,
 :func:`earth_rotation_times`, :func:`besselian_instants`,
-:func:`sub_solar_points` -- dispatch to the C++ port in ``core/`` (roadmap
-phase 1).  The Python bodies stay as the oracle; ``tests/test_native.py``
-holds the two to the roadmap's parity tolerances.
+:func:`sub_solar_points` (roadmap phase 1) and :func:`axis_separation` (phase
+4) -- dispatch to the C++ port in ``core/``.  The Python bodies stay as the
+oracle; ``tests/test_native.py`` holds the two to the roadmap's parity
+tolerances.
 
 Thread safety
 -------------
@@ -83,6 +84,7 @@ import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 
 import erfa
 import numpy as np
@@ -298,6 +300,46 @@ class BesselianInstant:
     tan_f2: float
 
 
+class _FundamentalXYZ(NamedTuple):
+    """The Moon's fundamental-plane coordinates and the shadow-axis direction."""
+
+    x: np.ndarray       # [Earth radii]
+    y: np.ndarray       # [Earth radii]
+    z: np.ndarray       # [Earth radii], toward the Sun
+    a: np.ndarray       # axis longitude (right ascension) in the vectors' frame [rad]
+    d: np.ndarray       # axis declination [rad]
+    g_dist: np.ndarray  # Sun-Moon distance [Earth radii]
+
+
+def _fundamental_xyz(moon: np.ndarray, sun: np.ndarray) -> _FundamentalXYZ:
+    """Fundamental-plane coordinates of the Moon from geocentric Moon/Sun vectors.
+
+    ``moon``/``sun`` are ``(n, 3)`` apparent geocentric vectors in Earth radii,
+    in ANY common equatorial frame.  The shadow-axis direction is from the Moon
+    toward the Sun (``S - M``), matching the Explanatory Supplement sign
+    convention [ES92] ch. 8: its longitude is ``a``, its latitude the axis
+    declination ``d`` and its length the Sun-Moon distance of the shadow-cone
+    geometry.  ``x, y, z`` are [ES92] eq. 8.322-6.  Shared by
+    :func:`besselian_instants` (Earth-fixed / true-of-date vectors) and
+    :func:`axis_separation` (un-rotated J2000 vectors): one formula, one home.
+    """
+    # Moon geocentric spherical coordinates.
+    r_moon, alpha, delta = _reclat(moon)
+
+    # Shadow-axis direction: from the Moon toward the Sun (S - M), matching the
+    # Explanatory Supplement sign convention [ES92] ch. 8.  Its longitude is ``a``
+    # and its latitude is the axis declination ``d``; its length is the Sun-Moon
+    # distance used by the shadow-cone geometry.
+    g_dist, a, d = _reclat(sun - moon)
+
+    # Fundamental-plane coordinates of the Moon [ES92] eq. 8.322-6.
+    ha = alpha - a
+    x = r_moon * np.cos(delta) * np.sin(ha)
+    y = r_moon * (np.sin(delta) * np.cos(d) - np.cos(delta) * np.sin(d) * np.cos(ha))
+    z = r_moon * (np.sin(delta) * np.sin(d) + np.cos(delta) * np.cos(d) * np.cos(ha))
+    return _FundamentalXYZ(x=x, y=y, z=z, a=a, d=d, g_dist=g_dist)
+
+
 def _geocentric_vectors(et: np.ndarray, earth_frame: str):
     """Apparent geocentric Moon and Sun (Earth radii) plus the sidereal offset.
 
@@ -365,22 +407,11 @@ def besselian_instants(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> dict[str, 
 
     moon, sun, gast = _geocentric_vectors(et, earth_frame)
 
-    # Moon geocentric spherical coordinates.
-    r_moon, alpha, delta = _reclat(moon)
-
-    # Shadow-axis direction: from the Moon toward the Sun (S - M), matching the
-    # Explanatory Supplement sign convention [ES92] ch. 8.  Its longitude is ``a``
-    # and its latitude is the axis declination ``d``; its length is the Sun-Moon
-    # distance used by the shadow-cone geometry.
-    g_dist, a, d = _reclat(sun - moon)
+    # Fundamental-plane coordinates of the Moon and the axis direction
+    # [ES92] eq. 8.322-6 (shared with axis_separation).
+    x, y, z, a, d, g_dist = _fundamental_xyz(moon, sun)
 
     mu = gast - a  # Greenwich hour angle of the axis [ES92] ch. 8
-
-    # Fundamental-plane coordinates of the Moon [ES92] eq. 8.322-6.
-    ha = alpha - a
-    x = r_moon * np.cos(delta) * np.sin(ha)
-    y = r_moon * (np.sin(delta) * np.cos(d) - np.cos(delta) * np.sin(d) * np.cos(ha))
-    z = r_moon * (np.sin(delta) * np.sin(d) + np.cos(delta) * np.cos(d) * np.cos(ha))
 
     # Penumbral (f1) and umbral (f2) shadow cones [ES92] eq. 8.323-1, 8.323-6,
     # 8.323-7, with distinct penumbral/umbral lunar radii k1/k2 [Espenak].
@@ -416,6 +447,41 @@ def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> Bess
     """
     e = besselian_instants(np.array([float(et)]), earth_frame)
     return BesselianInstant(**{k: float(v[0]) for k, v in e.items() if k != "z"})
+
+
+def axis_separation(et) -> tuple[np.ndarray, np.ndarray]:
+    """``(rho, z)`` at each TDB ``et`` of a 1-D array: the Moon's cylindrical
+    coordinates about the shadow axis, frame-free.
+
+    ``rho = hypot(x, y)`` is the shadow axis' distance from the Earth's centre in
+    the fundamental plane and ``z`` the Moon's distance along the axis toward
+    the Sun, both in Earth equatorial radii, from the same [ES92] eq. 8.322-6
+    expressions as :func:`besselian_instants` (:func:`_fundamental_xyz`) applied
+    to the un-rotated apparent (``LT+S``) J2000 geocentric vectors.  The
+    Earth-orientation frames of :func:`besselian_instants` (ITRS / TOD / ITRF93 /
+    IAU_EARTH) all *rotate* those same two vectors by one common rotation, and
+    ``x, y, z`` are the Moon's coordinates in the axis-aligned frame built from
+    the Sun-Moon direction and the Moon direction alone, so they are invariant
+    under any rotation of the reference frame; only ``mu`` (and ``d``) depend
+    on it.  Hence ``rho`` and ``z`` here equal the ``hypot(x, y)`` and ``z`` of
+    :func:`besselian_instants` in every frame to rounding, with no ERFA
+    nutation and no EOP -- this is the catalog's scan objective
+    (:mod:`app.catalog`), which reads nothing else.
+
+    Dispatches to the native core under ``ECLIPSE_BACKEND=native`` (phase 4).
+    """
+    et = np.atleast_1d(np.asarray(et, dtype=float))
+    if native.is_native():
+        return native.module().axis_separation(et)
+    a_e = earth_equatorial_radius_km()
+    n = len(et)
+    with SPICE_LOCK:
+        moon, _ = spice.spkpos("MOON", et, "J2000", "LT+S", "EARTH")
+        sun, _ = spice.spkpos("SUN", et, "J2000", "LT+S", "EARTH")
+    moon = np.asarray(moon).reshape(n, 3) / a_e
+    sun = np.asarray(sun).reshape(n, 3) / a_e
+    f = _fundamental_xyz(moon, sun)
+    return np.hypot(f.x, f.y), f.z
 
 
 def sub_solar_points(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> tuple[np.ndarray, np.ndarray]:

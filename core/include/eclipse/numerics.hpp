@@ -16,10 +16,13 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <numbers>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace eclipse::numerics {
@@ -144,6 +147,33 @@ inline std::vector<double> unwrap(std::span<const double> p, double discont = st
         up[i + 1] = p[i + 1] + cumsum;
     }
     return up;
+}
+
+// --- Python float semantics -----------------------------------------------------
+
+/// Python's ``round(x, ndigits)`` for a float — ``float.__round__`` (CPython
+/// ``Objects/floatobject.c``, ``double_round``): ``x`` is converted to the
+/// correctly rounded decimal string with ``ndigits`` fractional digits
+/// (``_Py_dg_dtoa`` mode 3, round-half-even on the EXACT binary value, so
+/// ``round(2.675, 2) == 2.67`` since 2.675 is 2.67499999... in binary and
+/// ``round(0.125, 2) == 0.12`` by the even rule) and that string is converted
+/// back with a correctly rounded ``_Py_dg_strtod``. The sign of a zero result
+/// follows ``x`` (``round(-0.001, 2) == -0.0``). Here ``snprintf("%.*f")``
+/// plays dtoa's role — correctly rounded, ties to even, in glibc / musl / the
+/// UCRT — and ``strtod`` plays ``_Py_dg_strtod``'s. NaN and the infinities
+/// round to themselves; ``ndigits > 323`` (CPython's ``NDIGITS_MAX``) returns
+/// ``x``. Only ``ndigits >= 0`` is implemented (the catalog rounds to 1, 2 and
+/// 4 places); a negative ``ndigits`` throws ``std::invalid_argument``. (numerical)
+inline double py_round(double x, int ndigits) {
+    if (ndigits < 0) throw std::invalid_argument("py_round: ndigits must be >= 0");
+    if (!std::isfinite(x)) return x;
+    if (ndigits > 323) return x;  // NDIGITS_MAX: no double has more decimal places
+    // "%.*f" of a double is at most 309 integer digits + sign + '.' + ndigits.
+    std::string buf(static_cast<std::size_t>(340 + ndigits), '\0');
+    const int len = std::snprintf(buf.data(), buf.size(), "%.*f", ndigits, x);
+    if (len < 0 || static_cast<std::size_t>(len) >= buf.size())
+        throw std::runtime_error("py_round: formatting failed");
+    return std::strtod(buf.c_str(), nullptr);
 }
 
 // --- vectorized objectives ----------------------------------------------------------

@@ -60,6 +60,55 @@ TEST_CASE("np_remainder follows NumPy's float % (signed zero, negative operands)
     CHECK(num::wrap_180(190.0) == -170.0);
 }
 
+TEST_CASE("py_round is Python's round(x, n): exact-binary half-even, signed zero") {
+    // Hand values checked against CPython 3.12's float.__round__.
+    CHECK(num::py_round(2.675, 2) == 2.67);   // 2.675 is 2.67499999... in binary
+    CHECK(num::py_round(0.125, 2) == 0.12);   // exact tie -> even
+    CHECK(num::py_round(0.375, 2) == 0.38);   // exact tie -> even
+    CHECK(num::py_round(1.005, 2) == 1.0);    // 1.00499999...
+    CHECK(num::py_round(0.005, 2) == 0.01);   // 0.005000000000000000104...
+    CHECK(num::py_round(-0.005, 2) == -0.01);
+    CHECK(num::py_round(0.5, 0) == 0.0);
+    CHECK(num::py_round(1.5, 0) == 2.0);
+    CHECK(num::py_round(2.5, 0) == 2.0);
+    CHECK(num::py_round(1e16, 2) == 1e16);
+    CHECK(num::py_round(40.71, 2) == 40.71);
+    CHECK(num::py_round(-104.1, 2) == -104.1);
+    CHECK(num::py_round(0.43671234, 4) == 0.4367);
+    CHECK(num::py_round(197.54999, 1) == 197.5);
+    CHECK(num::py_round(1.7976931348623157e308, 2) == 1.7976931348623157e308);
+    CHECK(num::py_round(123.456, 400) == 123.456);  // ndigits > NDIGITS_MAX
+    // A zero result keeps x's sign.
+    CHECK(num::py_round(-0.001, 2) == 0.0);
+    CHECK(std::signbit(num::py_round(-0.001, 2)));
+    CHECK(std::signbit(num::py_round(-0.0, 2)));
+    CHECK_FALSE(std::signbit(num::py_round(0.001, 2)));
+    CHECK(std::isnan(num::py_round(kNaN, 2)));
+    CHECK(num::py_round(std::numeric_limits<double>::infinity(), 1) ==
+          std::numeric_limits<double>::infinity());
+    CHECK_THROWS_AS(num::py_round(1234.5, -2), std::invalid_argument);
+}
+
+TEST_CASE("py_round parity: the pyround records of catalog_cases.txt, bit-identical",
+          "[parity]") {
+    int n = 0;
+    for (const auto& r : fixtures::read("catalog_cases.txt")) {
+        if (r.kind != "pyround") continue;
+        const double x = r.num(0), want = r.num(2);
+        const int nd = static_cast<int>(r.num(1));
+        const double got = num::py_round(x, nd);
+        INFO("round(" << r.tokens.at(0) << ", " << nd << ")");
+        if (std::isnan(want)) {
+            CHECK(std::isnan(got));
+        } else {
+            CHECK(got == want);
+            CHECK(std::signbit(got) == std::signbit(want));
+        }
+        ++n;
+    }
+    CHECK(n >= 20);
+}
+
 TEST_CASE("np_sign and np_clip propagate NaN like NumPy") {
     CHECK(num::np_sign(3.5) == 1.0);
     CHECK(num::np_sign(-2.0) == -1.0);

@@ -366,6 +366,23 @@ def _format_local(t0_utc: str, lat: float, lon: float, raw: _LocalRaw) -> LocalC
     return result
 
 
+def local_raw(model, lat: float, lon: float) -> _LocalRaw:
+    """The :class:`_LocalRaw` numbers of :func:`local_circumstances` at (lat, lon).
+
+    Dispatches to the native core under ``ECLIPSE_BACKEND=native`` (the
+    elements are re-evaluated there from the model's ``et0`` / frame / fit
+    half-window) and to :func:`_local_raw` otherwise.  The one place that
+    dispatch lives: :func:`local_circumstances` and the catalog's
+    greatest-eclipse detail (:mod:`app.catalog`) both format from it.
+    """
+    if native.is_native():
+        raw = native.module().local_circumstances(
+            model.et0, model.earth_frame, model.half_window_hours, float(lat), float(lon)
+        )
+        return _LocalRaw(*raw)
+    return _local_raw(model, lat, lon)
+
+
 def local_circumstances(model, lat: float, lon: float) -> LocalCircumstances:
     """Compute the eclipse circumstances at (lat, lon).
 
@@ -377,17 +394,10 @@ def local_circumstances(model, lat: float, lon: float) -> LocalCircumstances:
     with the Sun below the horizon are reported in ``below_horizon``; if every
     event is, ``eclipse`` is ``False`` (module docstring, "Horizon").
 
-    The numbers are :func:`_local_raw`; the dict shape is :func:`_format_local`.
-    Dispatches the numbers to the native core under ``ECLIPSE_BACKEND=native``
-    (the elements are re-evaluated there from the model's ``et0`` / frame /
-    fit half-window; formatting stays here).
+    The numbers are :func:`local_raw` (:func:`_local_raw`, or the native core
+    under ``ECLIPSE_BACKEND=native``); the dict shape is :func:`_format_local`.
     """
-    if native.is_native():
-        raw = native.module().local_circumstances(
-            model.et0, model.earth_frame, model.half_window_hours, float(lat), float(lon)
-        )
-        return _format_local(model.t0_utc, lat, lon, _LocalRaw(*raw))
-    return _format_local(model.t0_utc, lat, lon, _local_raw(model, lat, lon))
+    return _format_local(model.t0_utc, lat, lon, local_raw(model, lat, lon))
 
 
 def circumstances_grid(

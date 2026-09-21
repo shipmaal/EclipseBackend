@@ -12,6 +12,8 @@ Record types::
     case <label> <frame> <et> x y z d mu l1 l2 tan_f1 tan_f2 tt2 ut1 xp yp lon lat
     utc  <string> <et> <round_trip_string>
     contacts <label> <frame> <et0> <half_window_h> <name> <t_hours> ...   # se*.txt
+    axis <et> <rho> <z>                                    # se*.txt, phase 4: axis_separation
+                                                           #   at the case instants (frame-free)
 
 and, in ``geometry_cases.txt`` (phase 2: app.geography; inputs are literal so
 these need no kernel to replay), all angles in degrees, lengths in Earth
@@ -53,8 +55,35 @@ in hours from T0, ``et0`` in TDB seconds)::
          magnitude obscuration t_max_hours sun_alt visible central
                                          # circumstances_grid on the single point
 
+and, for phase 4 (app.catalog), in ``catalog_cases.txt`` (literal inputs:
+replayable kernel-free)::
+
+    ismin n rho1..rhon k idx1..idxk      # _local_minima: the k candidate indices into
+                                         #   rho (1 <= idx <= n - 2), grid order
+    classify rho_g l1 l2 tf1 tf2 central zeta kind magnitude L2p
+                                         # _classify (central 0/1; kind a word; L2p
+                                         #   nan when not central; the pre-hybrid kind)
+    pyround x n r                        # Python's round(x, n) == r (signed zero kept)
+
+and in ``catalog_2019_2024.txt`` (kernel-backed; ``label`` names the window,
+``frame`` is ITRS, times in TDB seconds, ``kind`` a word, ``central`` 0/1,
+``lat``/``lon`` the UNROUNDED greatest point in degrees or ``nan``)::
+
+    scan <label> <et_a> <et_b> <n_grid> <grid0> <grid1> <grid_last> <n_cand> <cand_et>...
+                                         # _coarse_grid / _scan_candidates over the window
+    event <label> <frame> <detail> <et_g> <kind> <central> <gamma> <magnitude> <lat> <lon>
+          <greatest_utc>                 # one _EventRaw of _catalog_raw (detail 0), or
+    event ... <greatest_utc> <et0> <n_contacts> <name> <t_hours>... <local> <width>
+                                         # (detail 1): contacts in global_contacts
+                                         #   insertion order [h from et0]; <local> the
+                                         #   26 _LocalRaw fields (as ``local``) or ``-``
+                                         #   when not central; <width> km, ``0.0``
+                                         #   when the limits are NaN, ``nan`` when
+                                         #   absent (not central / no t = 0 track point)
+
 Numbers are written with ``repr`` (shortest round-trip), so the fixture holds
-the oracle's doubles exactly (``nan`` for NaN; ``std::stod`` parses it).  The
+the oracle's doubles exactly (``nan`` / ``inf`` for NaN and infinities;
+``strtod`` parses them).  The
 fixtures pin the **NAIF DE440s** kernel set (header line); the C++ test skips
 when that SPK is not the one on disk.
 """
@@ -71,6 +100,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app import catalog as cat  # noqa: E402
 from app import circumstances as circ  # noqa: E402
 from app import ephemeris as ep  # noqa: E402
 from app import native  # noqa: E402
@@ -265,6 +295,54 @@ LOCAL_NARROW_HALF_WINDOW_H = 1.0
 MAP_HALF_WINDOW_H = 3.0     # /map window_hours default
 MAP_STEP_MIN = 2.0          # /map step_minutes default
 
+# catalog_2019_2024.txt windows (tests/test_catalog.py's canon range and the
+# one-year 2024 window of its greatest-eclipse rows), as find_eclipses parses them.
+CATALOG_WINDOWS = [
+    ("y2019_2024", "2019-01-01", "2024-12-31"),
+    ("y2024", "2024-01-01", "2024-12-31"),
+]
+INF = float("inf")
+ISMIN_CASES = [  # literal rho arrays for _local_minima (Earth radii; inf = far side)
+    [3.0, 2.0, 1.0, 2.0, 3.0],                       # one V
+    [3.0, 1.0, 1.0, 3.0],                            # a two-sample plateau: first wins
+    [3.0, 1.0, 1.0, 1.0, 3.0],                       # three-sample plateau
+    [INF, 2.0, INF, 1.0, INF],                       # far-side samples never qualify
+    [3.0, 2.7, 3.0, 2.6, 3.0],                       # at / above CANDIDATE_RHO
+    [3.0, 2.5999999999999996, 3.0],                  # one ulp below it
+    [1.0, 2.0, 3.0],                                 # a minimum at the first sample: never
+    [3.0, 2.0, 1.0],                                 # ... or the last
+    [2.0, float("nan"), 1.0, 2.0],                   # NaN compares false
+    [2.0, 1.0, 2.0, 0.5, 0.4, 0.4, 0.9, 2.0, INF, 2.5, 2.4, 2.5],
+    [1.0],
+    [1.0, 0.5],
+    [],
+]
+CLASSIFY_CASES = [  # (rho_g, l1, l2, tf1, tf2, central, zeta), Earth radii
+    (0.34, 0.5359, -0.0102, 0.004656, 0.004632, True, 0.94),     # central total (2024-like)
+    (0.375, 0.5645, 0.0184, 0.004681, 0.004657, True, 0.93),     # central annular (2023-like)
+    (0.1, 0.5359, 0.5 * 0.0046, 0.004656, 0.0046, True, 0.5),    # L2' == 0 exactly -> annular
+    (0.9, 0.5359, 0.0040, 0.004656, 0.0046, True, 0.9),          # L2' slightly < 0 (hybrid-like)
+    (0.99, 0.5359, -0.0102, 0.004656, 0.004632, True, 0.0),      # zeta = 0: L2' = l2
+    (1.2166, 0.5359, -0.0102, 0.004656, 0.004632, False, 0.0),   # partial
+    (1.0 + 0.5359, 0.5359, -0.0102, 0.004656, 0.004632, False, 0.0),  # rho_g == 1 + l1
+    (1.0 + 0.0102, 0.5359, -0.0102, 0.004656, 0.004632, False, 0.0),  # rho_g == 1 + |l2|: grazing
+    (1.0 + 0.0184, 0.5645, 0.0184, 0.004681, 0.004657, False, 0.0),   # ... annular
+    (1.005, 0.5359, -0.0102, 0.004656, 0.004632, False, 0.0),    # non-central total
+    (1.005, 0.5645, 0.0184, 0.004681, 0.004657, False, 0.0),     # non-central annular
+    (1.0102000000000002, 0.5359, -0.0102, 0.004656, 0.004632, False, 0.0),  # one ulp above
+    (0.0, 0.5359, -0.0102, 0.004656, 0.004632, True, 1.0),       # on axis
+]
+PYROUND_CASES = [  # (x, n): the hard cases of float.__round__ plus catalog-like values
+    (2.675, 2), (0.125, 2), (0.375, 2), (1.005, 2), (0.005, 2), (-0.005, 2), (-0.001, 2),
+    (0.001, 2), (-0.0, 2), (0.0, 4), (1e16, 2), (40.71, 2), (-104.1, 2), (25.3, 2),
+    (0.5, 0), (1.5, 0), (2.5, 0), (-2.5, 0), (float("nan"), 2), (INF, 1), (-INF, 4),
+    (0.43671234, 4), (1.0306, 4), (0.4367499999, 4), (0.43675, 4), (197.54999, 1),
+    (114.65, 1), (114.75, 1), (1e-5, 4), (5e-5, 4), (-5e-5, 4), (2.5e-5, 4),
+    (123456789.987654321, 4), (0.30000000000000004, 4), (0.9999999999999999, 4),
+    (1.7976931348623157e308, 2), (5e-324, 2), (1234.5, 3), (37.00000000000001, 2),
+    (-87.69999999999999, 2), (11.4, 2), (-83.1, 2), (0.34314159, 4), (1.0566, 4),
+]
+
 
 def header(fh, title: str) -> None:
     fh.write(f"# {title}\n# generated by tools/dump_oracle.py; do not edit, regenerate\n")
@@ -391,6 +469,77 @@ def write_circumstances_cases(path: Path) -> int:
     return n_rec
 
 
+def write_catalog_cases(path: Path) -> int:
+    """catalog_cases.txt: the kernel-free app.catalog helpers and Python's round at
+    literal inputs (roadmap §4 row catalog). Returns the record count."""
+    n_rec = 0
+    rng = np.random.default_rng(20240408)
+    with open(path, "w") as fh:
+        header(fh, "app.catalog oracle at literal inputs (phase 4 catalog parity)")
+
+        fh.write("# ismin n rho1..rhon k idx1..idxk  (_local_minima; indices into rho)\n")
+        # ... plus a real 20-day slice of the 2024 coarse grid (the March full
+        # moon's far-side inf samples and the April new-moon minimum).
+        real = cat._rho_at(cat._coarse_grid(ep.utc_to_et("2024-03-20T00:00:00"),
+                                            ep.utc_to_et("2024-04-09T00:00:00")))
+        for rho in [*ISMIN_CASES, list(real)]:
+            rho = np.asarray(rho, dtype=float)
+            idx = cat._local_minima(rho)
+            fh.write(f"ismin {len(rho)}{' ' + row(*rho) if len(rho) else ''} {len(idx)}"
+                     f"{' ' + row(*idx) if len(idx) else ''}\n")
+            n_rec += 1
+
+        fh.write("# classify rho_g l1 l2 tf1 tf2 central zeta kind magnitude L2p  (_classify)\n")
+        for rho_g, l1, l2, tf1, tf2, central, zeta in CLASSIFY_CASES:
+            kind, mag, L2p = cat._classify(rho_g, l1, l2, tf1, tf2, central, zeta)
+            fh.write(f"classify {row(rho_g, l1, l2, tf1, tf2, central, zeta)} {kind} "
+                     f"{row(mag, L2p)}\n")
+            n_rec += 1
+
+        fh.write("# pyround x n r  (Python round(x, n))\n")
+        cases = list(PYROUND_CASES)
+        for n in (1, 2, 4):
+            cases += [(float(v), n) for v in rng.uniform(-200.0, 200.0, 8)]
+            cases += [(float(v), n) for v in rng.uniform(-1.0, 1.0, 8) * 10.0 ** (-n)]
+        for x, n in cases:
+            fh.write(f"pyround {x!r} {n} {round(x, n)!r}\n")
+            n_rec += 1
+    return n_rec
+
+
+def catalog_records(label: str, start: str, end: str) -> tuple[str, list[float]]:
+    """``scan`` + ``event`` records of one window and the events' et_g (for the EOP
+    subset). The events are ``_catalog_raw`` at detail False and True."""
+    from app.besselian import normalize_utc
+
+    et_a, et_b = ep.utc_to_et(normalize_utc(start)), ep.utc_to_et(normalize_utc(end))
+    grid = cat._coarse_grid(et_a, et_b)
+    cand = cat._scan_candidates(et_a, et_b)
+    out = [f"scan {label} {row(et_a, et_b)} {len(grid)} {row(grid[0], grid[1], grid[-1])} "
+           f"{len(cand)} {row(*cand)}\n"]
+    et_gs: list[float] = []
+    for detail in (False, True):
+        for ev in cat._catalog_raw(et_a, et_b, CONTACT_FRAME, detail):
+            head = (f"event {label} {CONTACT_FRAME} {int(detail)} {ev.et_g!r} {ev.kind} "
+                    f"{row(ev.central, ev.gamma, ev.magnitude, ev.lat, ev.lon)} "
+                    f"{ep.et_to_utc(ev.et_g)}")
+            if not detail:
+                out.append(head + "\n")
+                et_gs.append(ev.et_g)
+                continue
+            contacts = " ".join(f"{name} {t!r}" for name, t in ev.contacts)
+            if ev.local is None:
+                local = "-"
+            else:
+                raw = ev.local
+                local = row(raw.geometric, raw.central, raw.c1, raw.c4, raw.c2, raw.c3,
+                            raw.t_max, raw.magnitude, raw.obscuration, raw.L2_x,
+                            *raw.alt_deg, *raw.az_deg, *raw.below, raw.eclipse)
+            width = "nan" if ev.width_km is None else repr(float(ev.width_km))
+            out.append(f"{head} {ev.et0!r} {len(ev.contacts)} {contacts} {local} {width}\n")
+    return "".join(out), et_gs
+
+
 def write_geometry_cases(path: Path) -> int:
     """geometry_cases.txt: the app.geography oracle at literal inputs (roadmap §4 rows
     ellipsoid / shadow_edge_limits_v / great-circle helpers). Returns the record count."""
@@ -507,6 +656,9 @@ def main() -> None:
                             e["l1"][i], e["l2"][i], e["tan_f1"][i], e["tan_f2"][i],
                             tt2[i], ut1[i], pxp[i], pyp[i], lon[i], lat[i]]
                     fh.write(f"case {label}[{i}] {frame} {row(*vals)}\n")
+            rho, z = ep.axis_separation(et)
+            for i in range(N):
+                fh.write(f"axis {row(et[i], rho[i], z[i])}\n")
             if label in CONTACT_EPOCHS:
                 fh.write(contact_records(label))
                 fh.write(circumstances_records(label))
@@ -518,6 +670,15 @@ def main() -> None:
             keep |= np.abs(mjd - (ep._J2000_JD - ep._MJD_OFFSET + et / 86400.0)) <= 5.0
             fh.write(f"utc {s} {et!r} {ep.et_to_utc(et)}\n")
 
+    with open(OUT / "catalog_2019_2024.txt", "w") as fh:
+        header(fh, "app.catalog oracle: scan candidates and _catalog_raw events, 2019-2024 "
+                   "and 2024, ITRS, detail 0 and 1 (phase 4 catalog parity)")
+        for label, start, end in CATALOG_WINDOWS:
+            text, et_gs = catalog_records(label, start, end)
+            fh.write(text)
+            for et_g in et_gs:  # EOP rows for the elements / detail at each event
+                keep |= np.abs(mjd - (ep._J2000_JD - ep._MJD_OFFSET + et_g / 86400.0)) <= 5.0
+
     with open(OUT / "eop_subset.txt", "w") as fh:
         header(fh, "IERS Bulletin A rows (astropy-iers-data) within 5 d of the cases")
         for i in np.flatnonzero(keep):
@@ -525,10 +686,11 @@ def main() -> None:
             fh.write(f"eop {cols}\n")
     n_geo = write_geometry_cases(OUT / "geometry_cases.txt")
     n_circ = write_circumstances_cases(OUT / "circumstances_cases.txt")
+    n_cat = write_catalog_cases(OUT / "catalog_cases.txt")
 
     n_rows = int(keep.sum())
-    print(f"wrote {len(ECLIPSES) + 4} fixtures to {OUT.relative_to(ROOT)}, {n_rows} EOP rows, "
-          f"{n_geo} geometry records, {n_circ} circumstances records")
+    print(f"wrote {len(ECLIPSES) + 6} fixtures to {OUT.relative_to(ROOT)}, {n_rows} EOP rows, "
+          f"{n_geo} geometry records, {n_circ} circumstances records, {n_cat} catalog records")
 
 
 if __name__ == "__main__":

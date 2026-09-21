@@ -78,10 +78,16 @@ def test_time_and_position_parity_with_spiceypy():
 # ---------------------------------------------------------------- phase 1 parity
 # Roadmap §4 gates. Measured residuals on x86-64/AVX-512 (NumPy SIMD arctan2,
 # hypot, tan, arcsin differ from libm by 1 ulp; everything else bit-identical):
-# x ~5e-14, mu ~1e-13 deg, times / EOP / delta-T exactly 0.
+# x ~5e-14, mu ~1e-13 deg, times / delta-T exactly 0. On Apple arm64 NumPy's
+# own build contracts the multiply-add inside ``np.interp`` into an FMA (the
+# C++ is compiled with -ffp-contract=off), so the EOP columns and everything
+# downstream of UT1 differ by 1 ulp there; those asserts use the 1e-9 s gate
+# with a 1e-12 s / 1e-18 rad record of the actual residual.
 _XY_TOL = 1e-13       # x, y, z, l1, l2 [Earth radii]; tan_f1/2
 _ANG_TOL = 1e-11      # d, mu, sub-solar lon/lat [deg]
-_TIME_TOL_S = 1e-9
+_TIME_TOL_S = 1e-9    # roadmap gate for the time layer
+_EOP_TOL_S = 1e-12    # UT1-UTC residual actually observed (0 on x86-64, 1 ulp on arm64)
+_EOP_TOL_RAD = 1e-18  # polar motion, same
 
 _WINDOWS = [  # ±3 h around greatest eclipse, plus a pre-IERS epoch (model delta-T)
     ("2017-08-21T15:26:40", "2017-08-21T21:26:40"),
@@ -128,8 +134,12 @@ def test_eop_parity(native_pool):
     lo, hi = iers_mjd_range()
     assert native_pool.eop_mjd_range() == (lo, hi)
     mjd = np.concatenate([np.linspace(lo - 100.0, hi + 100.0, 50_001), [lo, hi, 60408.0]])
-    for ours, ref in zip(native_pool.eop(mjd), eop(mjd), strict=True):
-        assert np.array_equal(ours, ref)  # exact: same np.interp semantics
+    (xp, yp, dut1), (rxp, ryp, rdut1) = native_pool.eop(mjd), eop(mjd)
+    assert np.max(np.abs(xp - rxp)) <= _EOP_TOL_RAD
+    assert np.max(np.abs(yp - ryp)) <= _EOP_TOL_RAD
+    assert np.max(np.abs(dut1 - rdut1)) <= _EOP_TOL_S
+    # Endpoint hold and exact-node semantics are value-for-value identical.
+    assert dut1[-3] == rdut1[-3] and dut1[-2] == rdut1[-2] and dut1[0] == rdut1[0]
 
 
 @requires_kernels
@@ -150,10 +160,15 @@ def test_earth_rotation_parity(oracle, native_pool):
     oracle.load_kernels()
     et0, et1 = oracle.utc_to_et("1900-01-01T00:00:00"), oracle.utc_to_et("2100-01-01T00:00:00")
     et = np.linspace(et0, et1, 20_001)
-    ours, ref = native_pool.earth_rotation_times(et), oracle.earth_rotation_times(et)
-    for a, b in zip(ours, ref, strict=True):
-        assert np.array_equal(a, b)  # exact
-    assert np.array_equal(native_pool.tt_minus_ut1(et), oracle.tt_minus_ut1(et))
+    (tt2, ut1, xp, yp), (rtt2, rut1, rxp, ryp) = (
+        native_pool.earth_rotation_times(et),
+        oracle.earth_rotation_times(et),
+    )
+    assert np.array_equal(tt2, rtt2)  # exact: et / 86400
+    assert np.max(np.abs(ut1 - rut1)) * 86400.0 <= _EOP_TOL_S  # gate 1e-9 s; see header
+    assert np.max(np.abs(xp - rxp)) <= _EOP_TOL_RAD
+    assert np.max(np.abs(yp - ryp)) <= _EOP_TOL_RAD
+    assert np.max(np.abs(native_pool.tt_minus_ut1(et) - oracle.tt_minus_ut1(et))) <= _EOP_TOL_S
 
 
 def _ephemeris_covers(oracle, et: float) -> bool:

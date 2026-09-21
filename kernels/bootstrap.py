@@ -36,7 +36,8 @@ NAIF_KERNELS: list[tuple[str, str]] = [
 ]
 
 # GitHub mirror, pinned for reproducibility. No binary Earth PCK here, so the
-# ITRF93 frame is unavailable -- use SPICE_EARTH_FRAME=IAU_EARTH.
+# ITRF93 frame is unavailable; the default ITRS frame (ERFA + IERS EOP from
+# PyPI) needs no PCK and loses nothing (see tests/test_frame_consistency.py).
 _AWP = "https://raw.githubusercontent.com/alfonsogonzalez/AWP/f90a593c76095cb1e94c609a947a1430458cefe2/data/spice"
 MIRROR_KERNELS: list[tuple[str, str]] = [
     (f"{_AWP}/lsk/naif0012.tls", "leapseconds (UTC <-> ET)"),
@@ -105,8 +106,8 @@ def main() -> None:
     if source == "mirror":
         print(
             "\nNote: the mirror has no binary Earth PCK, so the ITRF93 frame is "
-            "unavailable. The default 'TOD' frame (pyerfa) is high precision and "
-            "needs no binary PCK, so no change is required."
+            "unavailable. The default 'ITRS' frame (pyerfa + IERS EOP) is high "
+            "precision and needs no binary PCK, so no change is required."
         )
     print("\nDone. The API and tests will find the kernels via kernels/eclipse.tm.")
 

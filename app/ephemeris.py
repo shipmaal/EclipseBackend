@@ -100,6 +100,7 @@ K_UMBRA = 0.2722810     # umbral / antumbral contacts                 [Espenak]
 # "TOD" drops the EOP correction; "ITRF93" uses the SPICE binary Earth PCK;
 # "IAU_EARTH" is a coarse fallback.  Override with $SPICE_EARTH_FRAME.
 DEFAULT_EARTH_FRAME = os.environ.get("SPICE_EARTH_FRAME", "ITRS")
+EARTH_FRAMES = ("ITRS", "TOD", "ITRF93", "IAU_EARTH")  # every supported earth_frame
 
 # Serializes every CSPICE call (global, non-thread-safe kernel pool); see the
 # module docstring.  Re-entrant so nested helpers can take it freely.

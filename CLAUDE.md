@@ -20,10 +20,11 @@ Earth orientation from **ERFA** (IAU 2006/2000A) with **IERS** EOP. Packaging is
 ## Setup & commands
 
 ```bash
-uv sync                                  # install into .venv
+uv sync                                  # install into .venv (also builds the native core)
 uv run python -m kernels.bootstrap       # download SPICE kernels (auto: NAIF else GitHub mirror)
 uv run pytest                            # tests (integration tests auto-skip without kernels)
 uv run uvicorn app.main:app --reload     # API + viewer at http://localhost:8000/ui/
+cmake --preset release && cmake --build --preset release && ctest --preset release  # C++ tests
 ```
 
 Environment: `SPICE_EARTH_FRAME` overrides the default frame (`ITRS`);
@@ -91,12 +92,27 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
    observers × instants) rather than looping; the scalar functions are thin
    wrappers over the array ones.
 
-## Native core (planned)
+## Native core (`libeclipse`, phase 0 done)
 
 `docs/CPP_ROADMAP.md` is the plan for the C++20 `libeclipse` core: the Python
 `app/` stays the API *and the oracle*; every C++ unit is parity-tested
 against it at the tolerances listed there before a reference-eclipse test is
-routed through it.
+routed through it. Layout: `core/include/eclipse/*.hpp` + `core/src/*.cpp`
+(library), `bindings/_eclipse.cpp` (nanobind), `tests/cpp/` (Catch2),
+`cmake/` (build of the vendored libs), `third_party/{cspice,erfa}` (vendored,
+**unmodified** — never edit; see `THIRD_PARTY_NOTICES.md`). Rules that are
+structural, not stylistic:
+
+- Only `core/src/ephem.cpp` includes `SpiceUsr.h`/`erfa.h`; every CSPICE call
+  goes through its `spice_call` (global mutex + RETURN mode + `failed_c()` →
+  `eclipse::spice_error`). Everything else is pure math and lock-free.
+- No `-ffast-math`; `-ffp-contract=off` is set. Keep the Python's operation
+  order so parity is bit-level, not "close".
+- `_eclipse` links its own CSPICE statically: its kernel pool is separate from
+  spiceypy's in the same process.
+- `uv sync` rebuilds it when `core/`, `bindings/`, `cmake/`, `CMakeLists.txt`
+  or `third_party/` change (`tool.uv.cache-keys`); install `ccache` to make
+  that seconds instead of a minute.
 
 ## Testing
 

@@ -5,25 +5,58 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  # nanobind/scikit-build-core pick up ccache via find_program in CMakeLists.txt.
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+
 jobs:
-  # Fast job: lint + the pure-function tests. The numerical-validation tests need
-  # SPICE kernels and skip cleanly without them, so this runs with no downloads.
+  # Fast job: lint + the pure-function tests. `uv sync` also builds the native
+  # core (vendored CSPICE + ERFA, ~1 min cold, seconds with ccache). The
+  # numerical-validation tests need SPICE kernels and skip cleanly without them.
   lint-and-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.os }}-native
+      - name: Install dependencies (builds _eclipse)
+        run: uv sync
+      - name: Native core imports and pins the vendored toolkit versions
+        run: uv run python -c "import _eclipse as e; print(e.toolkit_version(), e.erfa_version())"
+      - name: Ruff (lint)
+        run: uv run ruff check .
+      - name: Pure-function tests (kernels auto-skip)
+        run: uv run pytest -q
+
+  # C++ unit/parity tests (Catch2) through the CMake presets, without Python
+  # packaging in the loop.
+  native-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - name: Install dependencies
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ubuntu-latest-ctest
+      - name: Install dependencies (nanobind for the bindings target)
         run: uv sync
-      - name: Ruff (lint)
-        run: uv run ruff check .
-      - name: Pure-function tests (kernels auto-skip)
-        run: uv run pytest -q
+      - name: Configure, build, test
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+          ctest --preset release
 
   # Full job: download the pinned GitHub-mirror kernels (DE432s + IAU_EARTH) and
-  # run the reference-eclipse validation end to end.
+  # run the reference-eclipse validation end to end, plus the native parity tests.
   full-validation:
     runs-on: ubuntu-latest
     steps:
@@ -31,9 +64,12 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ubuntu-latest-native
       - name: Install dependencies
         run: uv sync
       - name: Download SPICE kernels (GitHub mirror)
         run: uv run python -m kernels.bootstrap --source mirror
-      - name: Full validation (reference eclipses)
+      - name: Full validation (reference eclipses + native parity)
         run: uv run pytest -q

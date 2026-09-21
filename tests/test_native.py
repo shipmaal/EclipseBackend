@@ -112,7 +112,7 @@ def native_pool():
     """``_eclipse`` with the IERS table and (if present) the kernels loaded."""
     from app import native as native_mod
 
-    mod = native_mod.module()
+    mod = native_mod.raw_module()
     if default_metakernel().exists():
         mod.kclear()
         mod.furnish(str(default_metakernel()))
@@ -248,6 +248,27 @@ def test_backend_switch_dispatches_to_native(monkeypatch, native_pool):
     assert bi.x == direct["x"][0] and bi.mu == direct["mu"][0]
     pre_iers = "1919-05-29T13:08:00"
     assert ephemeris.utc_to_et(pre_iers) == native_pool.utc_to_et(pre_iers)
+
+
+def test_native_backend_raises_spiceypy_exception_types(monkeypatch, native_pool):
+    """app.main / app.besselian catch spiceypy.utils.exceptions.SpiceyError (and the
+    frame probe in test_frame_consistency catches it at collection), so the native
+    backend must raise the same class the Python backend would."""
+    import spiceypy.utils.exceptions as spice_exc
+
+    from app import ephemeris
+    from app import native as native_mod
+
+    monkeypatch.setattr(native_mod, "BACKEND", "native")
+    with pytest.raises(spice_exc.SpiceUNPARSEDTIME) as exc_info:
+        ephemeris.utc_to_et("not a date")
+    assert isinstance(exc_info.value, spice_exc.SpiceyError)
+    assert isinstance(exc_info.value.__cause__, native_pool.SpiceError)
+    # The raw module still raises its own type with the four fields attached.
+    with pytest.raises(native_pool.SpiceError) as raw:
+        native_pool.str_to_et("not a date")
+    assert raw.value.short_message == "SPICE(UNPARSEDTIME)"
+    assert raw.value.traceback_text and raw.value.long_message
 
 
 def test_unknown_frame_is_a_value_error(native_pool):

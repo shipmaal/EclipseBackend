@@ -1,5 +1,10 @@
 # Handoff: native C++ core (`libeclipse`) with Python bindings — Path B
 
+> **See `CPP_ROADMAP.md`** for the review of the vertical slice's build choices
+> (C++20 / Ninja / vendored CSPICE), the measured native dependency surface,
+> the port map with parity gates, and the phased plan. This file keeps the
+> motivation and the capabilities case.
+
 Decision: build the numeric core as a **C++ library linking CSPICE + ERFA**,
 exposed to Python via bindings, with the existing Python `app/` becoming a thin
 facade over it. This is a deliberate architectural choice (the code is *not*

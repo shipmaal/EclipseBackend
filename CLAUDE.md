@@ -91,6 +91,13 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
    observers × instants) rather than looping; the scalar functions are thin
    wrappers over the array ones.
 
+## Native core (planned)
+
+`docs/CPP_ROADMAP.md` is the plan for the C++20 `libeclipse` core: the Python
+`app/` stays the API *and the oracle*; every C++ unit is parity-tested
+against it at the tolerances listed there before a reference-eclipse test is
+routed through it.
+
 ## Testing
 
 `uv run pytest`. Pure-function tests (geography, reference parsing) always run;

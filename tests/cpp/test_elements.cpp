@@ -89,6 +89,22 @@ void check_fixture(const std::string& name) {
         CHECK_THAT(ss.lon_deg[0], WithinAbs(r.num(16), kAngTol));
         CHECK_THAT(ss.lat_deg[0], WithinAbs(r.num(17), kAngTol));
     }
+
+    // ``axis <et> <rho> <z>`` (phase 4): app.ephemeris.axis_separation at the
+    // same instants — the frame-free scan objective; gate 1e-13 (the x/y gate;
+    // measured 0 to ~5e-14, the phase-1 hypot / atan2 ulp noise).
+    int n_axis = 0;
+    for (const auto& r : recs) {
+        if (r.kind != "axis") continue;
+        const double e_[] = {r.num(0)};
+        INFO(name << " axis et=" << r.tokens.at(0));
+        const ephem::AxisSeparation s = ephem::axis_separation(e_);
+        REQUIRE(s.rho.size() == 1);
+        CHECK_THAT(s.rho[0], WithinAbs(r.num(1), kXyTol));
+        CHECK_THAT(s.z[0], WithinAbs(r.num(2), kXyTol));
+        ++n_axis;
+    }
+    CHECK(n_axis == 13);
 }
 
 }  // namespace

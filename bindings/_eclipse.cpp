@@ -5,8 +5,8 @@
 // cross the boundary as NumPy float64 (spans in, fresh ndarrays out); the
 // SPICE-touching calls release the GIL and the C++ side holds its own lock.
 // Phase 2 and 3 units are bound one translation unit per core header
-// (bind_numerics / bind_ellipsoid / bind_geometry / bind_circumstances, see
-// common.hpp) and assembled at the end of NB_MODULE.
+// (bind_numerics / bind_ellipsoid / bind_geometry / bind_circumstances /
+// bind_catalog, see common.hpp) and assembled at the end of NB_MODULE.
 #include <nanobind/stl/array.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
@@ -176,6 +176,19 @@ NB_MODULE(_eclipse, m) {
         "et"_a, "earth_frame"_a = "ITRS",
         "Besselian elements at each et: dict of arrays as app.ephemeris.besselian_instants.");
     m.def(
+        "axis_separation",
+        [](In1D et) {
+            eclipse::ephem::AxisSeparation s;
+            {
+                nb::gil_scoped_release nogil;
+                s = eclipse::ephem::axis_separation(as_span(et));
+            }
+            return nb::make_tuple(to_numpy(std::move(s.rho)), to_numpy(std::move(s.z)));
+        },
+        "et"_a,
+        "(rho, z) at each et as app.ephemeris.axis_separation: the axis distance hypot(x, y)\n"
+        "and the Moon's distance along the axis [Earth radii], frame-free (J2000 vectors).");
+    m.def(
         "sub_solar_points",
         [](In1D et, std::string_view earth_frame) {
             const eclipse::Frame f = frame_arg(earth_frame);
@@ -193,4 +206,5 @@ NB_MODULE(_eclipse, m) {
     bind_ellipsoid(m);
     bind_geometry(m);
     bind_circumstances(m);  // phase 3
+    bind_catalog(m);        // phase 4
 }

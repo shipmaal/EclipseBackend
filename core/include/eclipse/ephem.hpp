@@ -105,6 +105,22 @@ std::vector<double> tt_minus_ut1(std::span<const double> et);
 /// ``et`` [ES92] eq. 8.322-6, 8.323-1/6/7 with k1/k2 [Espenak].
 Elements besselian_instants(std::span<const double> et, Frame frame = Frame::ITRS);
 
+/// ``app.ephemeris.axis_separation``: the Moon's cylindrical coordinates about
+/// the shadow axis at each ``et``, frame-free — ``rho = hypot(x, y)`` (the axis'
+/// distance from the Earth's centre in the fundamental plane) and ``z`` (the
+/// Moon's distance along the axis toward the Sun), both in Earth equatorial
+/// radii, from the SAME [ES92] eq. 8.322-6 expressions as ``besselian_instants``
+/// (one shared ``fundamental_xyz``) applied to the un-rotated apparent (LT+S)
+/// J2000 vectors. Every Earth-orientation frame rotates those two vectors by
+/// one common rotation and ``x, y, z`` are built from the Sun-Moon and Moon
+/// directions alone, so they are rotation-invariant: no ERFA, no EOP. This is
+/// the catalog's scan objective (``eclipse::catalog``), which reads nothing
+/// else. The SPICE lock is taken per batch of 2048 instants.
+struct AxisSeparation {
+    std::vector<double> rho, z;
+};
+AxisSeparation axis_separation(std::span<const double> et);
+
 /// ``app.ephemeris.sub_solar_points``: geographic (lon, lat) [deg] of the
 /// sub-solar point at each ``et``; lon east-positive in (-180, 180].
 struct SubSolar {

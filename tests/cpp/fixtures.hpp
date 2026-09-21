@@ -1,9 +1,11 @@
 // Reader for the plain-text oracle fixtures written by tools/dump_oracle.py.
 #pragma once
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -17,7 +19,15 @@ inline const std::filesystem::path kMetakernel = kKernelDir / "eclipse.tm";
 struct Record {
     std::string kind;
     std::vector<std::string> tokens;  // the rest
-    double num(size_t i) const { return std::stod(tokens.at(i)); }
+    // strtod, not std::stod: the latter throws out_of_range on a subnormal
+    // such as 5e-324 (glibc sets ERANGE), which is a valid fixture value.
+    double num(size_t i) const {
+        const std::string& t = tokens.at(i);
+        char* end = nullptr;
+        const double v = std::strtod(t.c_str(), &end);
+        if (end == t.c_str() || *end != '\0') throw std::invalid_argument("not a number: " + t);
+        return v;
+    }
 };
 
 inline std::vector<Record> read(const std::string& name) {

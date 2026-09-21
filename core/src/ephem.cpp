@@ -4,10 +4,16 @@
 // bit-level, not "close" — do not reassociate (roadmap §7).
 #include "eclipse/ephem.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <mutex>
 #include <type_traits>
 #include <utility>
+
+#ifdef _OPENMP  // CMake defines ECLIPSE_HAVE_OPENMP and adds -fopenmp together
+#include <omp.h>
+#endif
 
 #include "eclipse/constants.hpp"
 #include "eclipse/deltat.hpp"
@@ -109,18 +115,60 @@ struct Geocentric {
     std::vector<double> gast;     // radians; 0 for an Earth-fixed frame
 };
 
-// Apparent (LT+S) Moon and Sun in ``frame`` for each et, km, under one lock.
+// Instants per SPICE-lock acquisition in ``spkpos_both``: bounds how long a
+// long vector (a century catalog scan is ~4e5 instants) holds the pool lock.
+// Each spkpos_c call is independent of its neighbours, so the batching cannot
+// change a bit of the result.
+constexpr size_t kSpkposBatch = 2048;
+
+// Apparent (LT+S) Moon and Sun in ``frame`` for each et, km, the lock taken
+// per batch of ``kSpkposBatch`` instants.
 void spkpos_both(std::span<const double> et, const char* frame, std::vector<Vec3>& moon,
                  std::vector<Vec3>& sun) {
-    moon.resize(et.size());
-    sun.resize(et.size());
-    spice_call([&] {
-        SpiceDouble lt;
-        for (size_t i = 0; i < et.size(); ++i) {
-            spkpos_c("MOON", et[i], frame, "LT+S", "EARTH", moon[i].data(), &lt);
-            spkpos_c("SUN", et[i], frame, "LT+S", "EARTH", sun[i].data(), &lt);
-        }
-    });
+    const size_t n = et.size();
+    moon.resize(n);
+    sun.resize(n);
+    for (size_t b = 0; b < n; b += kSpkposBatch) {
+        const size_t end = std::min(n, b + kSpkposBatch);
+        spice_call([&] {
+            SpiceDouble lt;
+            for (size_t i = b; i < end; ++i) {
+                spkpos_c("MOON", et[i], frame, "LT+S", "EARTH", moon[i].data(), &lt);
+                spkpos_c("SUN", et[i], frame, "LT+S", "EARTH", sun[i].data(), &lt);
+            }
+        });
+    }
+}
+
+// --- fundamental-plane coordinates (app.ephemeris._fundamental_xyz) -------------
+
+// The Moon's fundamental-plane coordinates ``x, y, z`` [ES92] eq. 8.322-6 and
+// the shadow-axis direction (longitude ``a``, declination ``d``, Sun-Moon
+// distance ``g_dist``) from geocentric Moon/Sun vectors in Earth radii, in ANY
+// common equatorial frame. ONE formula, shared by ``besselian_instants``
+// (Earth-fixed / true-of-date vectors) and ``axis_separation`` (J2000).
+struct FundamentalXYZ {
+    double x, y, z, a, d, g_dist;
+};
+FundamentalXYZ fundamental_xyz(const Vec3& moon, const Vec3& sun) {
+    // Moon geocentric spherical coordinates.
+    const Spherical m = reclat(moon);
+    const double r_moon = m.r, alpha = m.lon, delta = m.lat;
+
+    // Shadow-axis direction, Moon toward Sun (S - M) [ES92] ch. 8: longitude
+    // ``a``, declination ``d``, length = Sun-Moon distance.
+    const Vec3 axis = {sun[0] - moon[0], sun[1] - moon[1], sun[2] - moon[2]};
+    const Spherical ax = reclat(axis);
+    const double g_dist = ax.r, a = ax.lon, d = ax.lat;
+
+    // Fundamental-plane coordinates of the Moon [ES92] eq. 8.322-6.
+    const double ha = alpha - a;
+    const double x = r_moon * std::cos(delta) * std::sin(ha);
+    const double y = r_moon * (std::sin(delta) * std::cos(d) -
+                               std::cos(delta) * std::sin(d) * std::cos(ha));
+    const double z = r_moon * (std::sin(delta) * std::sin(d) +
+                               std::cos(delta) * std::cos(d) * std::cos(ha));
+    return {x, y, z, a, d, g_dist};
 }
 
 // ``np.einsum("nij,nj->ni", r, v)`` then ``/ a_e``: rotate, then scale.
@@ -140,7 +188,18 @@ Geocentric geocentric_vectors(std::span<const double> et, Frame frame) {
     if (frame == Frame::ITRS || frame == Frame::TOD) {
         spkpos_both(et, "J2000", g.moon, g.sun);
         const ephem::EarthRotation ert = ephem::earth_rotation_times(et);
-        for (size_t i = 0; i < n; ++i) {
+        // From here the loop is pure ERFA (reentrant, no shared state) plus
+        // one rotation per instant, with no SPICE call: it runs OpenMP-parallel
+        // for long vectors. Each instant writes only its own slots and there
+        // is no reduction, so the result is bit-identical for any thread
+        // count. Nested inside another parallel region (the catalog's
+        // per-event detail loop) it stays serial.
+        const auto count = static_cast<std::ptrdiff_t>(n);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (n >= 64 && !omp_in_parallel())
+#endif
+        for (std::ptrdiff_t ii = 0; ii < count; ++ii) {
+            const auto i = static_cast<size_t>(ii);
             double r[3][3];
             if (frame == Frame::ITRS) {
                 // ERFA c2t06a: full IAU 2006/2000A celestial-to-terrestrial matrix
@@ -332,26 +391,12 @@ Elements besselian_instants(std::span<const double> et, Frame frame) {
     Elements out;
     out.reserve(et.size());
     for (size_t i = 0; i < et.size(); ++i) {
-        // Moon geocentric spherical coordinates.
-        const Spherical m = reclat(g.moon[i]);
-        const double r_moon = m.r, alpha = m.lon, delta = m.lat;
-
-        // Shadow-axis direction, Moon toward Sun (S - M) [ES92] ch. 8: longitude
-        // ``a``, declination ``d``, length = Sun-Moon distance.
-        const Vec3 axis = {g.sun[i][0] - g.moon[i][0], g.sun[i][1] - g.moon[i][1],
-                           g.sun[i][2] - g.moon[i][2]};
-        const Spherical ax = reclat(axis);
-        const double g_dist = ax.r, a = ax.lon, d = ax.lat;
+        // Fundamental-plane coordinates of the Moon and the axis direction
+        // [ES92] eq. 8.322-6 (shared with axis_separation).
+        const FundamentalXYZ f = fundamental_xyz(g.moon[i], g.sun[i]);
+        const double x = f.x, y = f.y, z = f.z, a = f.a, d = f.d, g_dist = f.g_dist;
 
         const double mu = g.gast[i] - a;  // Greenwich hour angle of the axis
-
-        // Fundamental-plane coordinates of the Moon [ES92] eq. 8.322-6.
-        const double ha = alpha - a;
-        const double x = r_moon * std::cos(delta) * std::sin(ha);
-        const double y = r_moon * (std::sin(delta) * std::cos(d) -
-                                   std::cos(delta) * std::sin(d) * std::cos(ha));
-        const double z = r_moon * (std::sin(delta) * std::sin(d) +
-                                   std::cos(delta) * std::cos(d) * std::cos(ha));
 
         // Penumbral (f1) and umbral (f2) cones [ES92] eq. 8.323-1, 8.323-6,
         // 8.323-7 with distinct lunar radii k1/k2 [Espenak].
@@ -369,6 +414,25 @@ Elements besselian_instants(std::span<const double> et, Frame frame) {
         out.l2.push_back((z - K_UMBRA / sin_f2) * tan_f2);
         out.tan_f1.push_back(tan_f1);
         out.tan_f2.push_back(tan_f2);
+    }
+    return out;
+}
+
+AxisSeparation axis_separation(std::span<const double> et) {
+    const double a_e = EARTH_EQUATORIAL_RADIUS_KM;
+    const size_t n = et.size();
+    std::vector<Vec3> moon, sun;
+    spkpos_both(et, "J2000", moon, sun);
+    AxisSeparation out;
+    out.rho.resize(n);
+    out.z.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        // ``moon / a_e``, ``sun / a_e``: km -> Earth radii, componentwise.
+        for (double& c : moon[i]) c = c / a_e;
+        for (double& c : sun[i]) c = c / a_e;
+        const FundamentalXYZ f = fundamental_xyz(moon[i], sun[i]);
+        out.rho[i] = std::hypot(f.x, f.y);
+        out.z[i] = f.z;
     }
     return out;
 }

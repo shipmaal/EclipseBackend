@@ -37,6 +37,12 @@ nb::tuple events_tuple(const std::array<T, 5>& a) {
 
 }  // namespace
 
+nb::tuple local_raw_tuple(const circ::LocalRaw& r) {
+    return nb::make_tuple(r.geometric, r.central, r.c1, r.c4, r.c2, r.c3, r.t_max, r.magnitude,
+                          r.obscuration, r.L2_x, events_tuple(r.alt_deg), events_tuple(r.az_deg),
+                          events_tuple(r.below), r.eclipse);
+}
+
 void bind_circumstances(nb::module_& m) {
     m.def(
         "local_circumstances",
@@ -48,9 +54,7 @@ void bind_circumstances(nb::module_& m) {
                 nb::gil_scoped_release nogil;
                 r = circ::local_circumstances(et0, f, half_window_hours, lat_deg, lon_deg);
             }
-            return nb::make_tuple(r.geometric, r.central, r.c1, r.c4, r.c2, r.c3, r.t_max,
-                                  r.magnitude, r.obscuration, r.L2_x, events_tuple(r.alt_deg),
-                                  events_tuple(r.az_deg), events_tuple(r.below), r.eclipse);
+            return local_raw_tuple(r);
         },
         "et0"_a, "earth_frame"_a, "half_window_hours"_a, "lat_deg"_a, "lon_deg"_a,
         "app.circumstances._local_raw for a model at et0 [TDB s] in earth_frame with the\n"

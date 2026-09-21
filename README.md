@@ -34,8 +34,9 @@ Then open the 3D viewer at **http://localhost:8000/ui/**.
 
 Kernels are written to `kernels/` and loaded through the metakernel
 `kernels/eclipse.tm`. See `kernels/README.md` for the exact kernel set and why
-each is needed. If only the mirror kernel set is available (no high-precision
-Earth PCK), set `SPICE_EARTH_FRAME=IAU_EARTH`.
+each is needed. The mirror set has no high-precision Earth PCK, so the `ITRF93`
+frame is unavailable there; the default `ITRS` frame (ERFA + IERS EOP from
+PyPI) needs none and is verified equivalent.
 
 ## Frontend
 
@@ -62,13 +63,30 @@ It ships a bundled `sample.json` so it renders even without a running backend
 | `GET /besselian?epoch=…` | Besselian element polynomials for the eclipse. |
 | `GET /central-line?epoch=…&start_hours=…&end_hours=…&step_minutes=…` | Geographic shadow-axis track. |
 | `GET /circumstances?epoch=…&lat=…&lon=…` | Local circumstances for an observer. |
+| `GET /map?epoch=…&lat_step=…&lon_step=…` | Global maximum-eclipse grid: magnitude, obscuration, visibility. |
+| `GET /eclipses?start=…&end=…` | Catalog of every solar eclipse in a range: type, gamma, magnitude, greatest-eclipse point, duration, width, global contacts. |
 
 `epoch` is a UTC ISO-8601 time, e.g. `2024-04-08T18:00:00`. `/central-line`
 points include the central `lat/lon`, the umbral `north_limit`/`south_limit`,
-the true `width_km`, and `is_total`. `/circumstances` returns the observer's
+the true `width_km`, `is_total`, and the `penumbra_north/south_limit` (the edge of
+the partial-eclipse region, clipped to the terminator); the response also carries
+the global `contacts` P1/U1/U2/U3/U4/P4 (when the penumbra and umbra first/last
+touch the Earth). `/circumstances` returns the observer's
 C1–C4 contact times, maximum-eclipse time, `magnitude`, `obscuration`,
-`central_duration_s` (when total/annular) and the Sun's altitude/azimuth — click
-anywhere on the globe in the frontend to see it.
+`central_duration_s` (when total/annular), the Sun's altitude at each contact and
+`below_horizon` (the events the observer cannot see; `eclipse` is `false` when
+that is all of them) — click anywhere on the globe in the frontend to see it.
+`/map` evaluates the same geometry for a whole lat/lon grid at once (vectorized:
+measured 0.6 s for a 2° global grid, 1.4 s at 1°, 5 s at 0.5°, with 2-minute time
+sampling).
+
+`/eclipses` scans a date range for eclipses (one vectorized element evaluation
+per 2 h, refined to greatest eclipse) and classifies them partial / annular /
+total / hybrid; 2019–2024 reproduces the NASA canon exactly, with gamma to 1e-4
+and greatest-eclipse instants within ~5 s.
+
+`epoch` must be ISO-8601 (`YYYY-MM-DDTHH:MM:SS[.fff][Z|±HH:MM]`); anything else is
+a 400.
 
 ## Accuracy
 
@@ -84,6 +102,13 @@ rounding, **path width to ~1 km** (114.7 / 197.4 / 187.4 km), and local
 greatest-eclipse points. Remaining approximations: DE432s rather than DE440
 (sub-km for Sun/Moon), and no per-position lunar-limb profile (the mean limb is
 folded into `k2`).
+
+**Time scales.** Inside the IERS era (1973 – about a year ahead) the epoch is
+UTC and ΔT = TT − UT1 comes from the leap-second kernel plus the measured
+UT1−UTC. Outside it the epoch is read as UT1 and ΔT comes from the Espenak &
+Meeus polynomial model (`app/deltat.py`, the ΔT of the *Five Millennium Canon*),
+with zero polar motion; historical/future geometry is only as good as that
+model (a few seconds in the 20th century, minutes by the 16th).
 
 ## Tests
 

@@ -95,3 +95,14 @@ def test_format_clock_rolls_over_midnight():
     # 23:30 UTC + 1 h -> 00:30 the next day (date rollover handled by datetime).
     assert format_clock("2024-04-08T23:30:00", 1.0) == "00:30:00"
     assert format_clock("2024-04-08T18:00:00", 0.5) == "18:30:00"
+
+
+def test_normalize_utc():
+    from app.besselian import normalize_utc
+
+    assert normalize_utc("2024-04-08T18:17:15Z") == "2024-04-08T18:17:15"
+    assert normalize_utc("2024-04-08 18:17:15") == "2024-04-08T18:17:15"
+    assert normalize_utc("2024-04-08T20:17:15+02:00") == "2024-04-08T18:17:15"
+    assert normalize_utc("2024-04-08T18:17:15.5") == "2024-04-08T18:17:15.500"
+    with pytest.raises(ValueError):
+        normalize_utc("2024 APR 08 18:17:15")  # SPICE-only format, rejected up front

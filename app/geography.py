@@ -3,8 +3,9 @@
 Given the Besselian ``x, y`` (shadow-axis position on the fundamental plane, in
 Earth equatorial radii) and the axis orientation ``d, mu``, find the geographic
 point where the axis pierces the Earth ellipsoid (the eclipse central line).
-Follows the Explanatory Supplement to the Astronomical Almanac [ES92] sec. 8.33 /
-Meeus, *Astronomical Algorithms* [Meeus98] ch. 54.
+Follows the Explanatory Supplement to the Astronomical Almanac [ES92] sec. 8.33;
+the parametric <-> geodetic latitude relation is Meeus, *Astronomical Algorithms*
+[Meeus98] ch. 11 ("The Earth's Globe", eq. 11.1).
 
 Two correctness fixes over the earlier astropy version:
 
@@ -89,7 +90,7 @@ def fund_to_geo(x: float, y: float, d_deg: float, mu_deg: float) -> tuple[float,
 
     Ellipsoid reduction on the auxiliary sphere [ES92] eq. 8.331-8.334; the
     resulting parametric (reduced) latitude is converted to geodetic latitude
-    with ``tan(phi) = tan(phi1)/(1 - f)`` [Meeus98] ch. 54.
+    with ``tan(phi) = tan(phi1)/(1 - f)`` [Meeus98] ch. 11, eq. 11.1.
 
     Geometric only: no atmospheric refraction (matters for a very low Sun) and
     the mean lunar limb is folded into the umbral radius k2 (item A3).
@@ -108,12 +109,36 @@ def fund_to_geo(x: float, y: float, d_deg: float, mu_deg: float) -> tuple[float,
     theta = np.arctan2(x, zeta1 * aux.cos_d1 - eta1 * aux.sin_d1)  # hour angle E of axis meridian
     phi1 = np.arcsin(sin_phi1)  # parametric (reduced) latitude
 
-    # Parametric -> geodetic latitude [Meeus98] ch. 54.
+    # Parametric -> geodetic latitude [Meeus98] ch. 11, eq. 11.1.
     phi = np.arctan(np.tan(phi1) / (1.0 - _F))
 
     lon = (np.degrees(theta) - mu_deg + 180.0) % 360.0 - 180.0
     lat = np.degrees(phi)
     return float(lon), float(lat)
+
+
+def fund_to_geo_v(x, y, d_deg, mu_deg) -> tuple[np.ndarray, np.ndarray]:
+    """Array form of :func:`fund_to_geo` (same math, [ES92] 8.331-8.334).
+
+    Broadcasts over its arguments and returns ``(lon, lat)`` arrays in degrees,
+    with ``NaN`` where the axis misses the Earth instead of raising.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mu_deg = np.asarray(mu_deg, dtype=float)
+    aux = _reduction_aux(np.radians(np.asarray(d_deg, dtype=float)))
+
+    eta1 = y / aux.rho1
+    disc = 1.0 - x**2 - eta1**2
+    zeta1 = np.sqrt(np.where(disc >= 0.0, disc, np.nan))
+
+    sin_phi1 = eta1 * aux.cos_d1 + zeta1 * aux.sin_d1
+    theta = np.arctan2(x, zeta1 * aux.cos_d1 - eta1 * aux.sin_d1)
+    phi1 = np.arcsin(np.clip(sin_phi1, -1.0, 1.0))
+    phi = np.arctan(np.tan(phi1) / (1.0 - _F))
+
+    lon = (np.degrees(theta) - mu_deg + 180.0) % 360.0 - 180.0
+    return lon, np.degrees(phi)
 
 
 def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float):
@@ -125,9 +150,16 @@ def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float):
 
     Uses the inverse ellipsoid reduction [ES92] eq. 8.331 (via
     :func:`_reduction_aux`), with the geodetic->parametric latitude
-    ``tan(beta) = (1 - f) tan(phi)`` [Meeus98] ch. 54.
+    ``tan(beta) = (1 - f) tan(phi)`` [Meeus98] ch. 11, eq. 11.1.
+
+    Array-native: every argument may be a scalar or an array and the usual NumPy
+    broadcasting applies (e.g. observers of shape ``(P, 1)`` against elements of
+    shape ``(N,)`` give ``(P, N)`` results).  Scalars in give Python floats out.
     """
-    aux = _reduction_aux(np.radians(d_deg))
+    lat_deg = np.asarray(lat_deg, dtype=float)
+    lon_deg = np.asarray(lon_deg, dtype=float)
+    mu_deg = np.asarray(mu_deg, dtype=float)
+    aux = _reduction_aux(np.radians(np.asarray(d_deg, dtype=float)))
 
     beta = np.arctan((1.0 - _F) * np.tan(np.radians(lat_deg)))  # parametric latitude
     theta = np.radians(lon_deg + mu_deg)  # hour angle east of the axis meridian
@@ -138,7 +170,9 @@ def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float):
     zeta1 = sb * aux.sin_d1 + cb * np.cos(theta) * aux.cos_d1
     eta = eta1 * aux.rho1
     zeta = aux.rho2 * (zeta1 * aux.cos_d1_d2 - eta1 * aux.sin_d1_d2)
-    return float(xi), float(eta), float(zeta)
+    if xi.ndim == 0 and eta.ndim == 0 and zeta.ndim == 0:
+        return float(xi), float(eta), float(zeta)
+    return xi, eta, zeta
 
 
 def shadow_radii(
@@ -198,6 +232,63 @@ def bearing(lat1, lon1, lat2, lon2):
     return (np.degrees(np.arctan2(y, x)) + 360.0) % 360.0
 
 
+def shadow_edge_limits_v(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km=600.0,
+                         sunlit_only=True):
+    """Shadow-edge points and widths for arrays of track instants (vectorized).
+
+    Array form of :func:`shadow_edge_limits`: every argument is a 1-D array of
+    the same length ``n`` (or a scalar).  Returns ``(north_lat, north_lon,
+    south_lat, south_lon, width_km)`` arrays; entries are ``NaN`` (width ``0``)
+    where the central point is outside the shadow or the edge is not found
+    within ``max_km``.  The bisection runs on all ``2n`` edge searches at once,
+    so the cost is 50 array evaluations regardless of ``n``.
+
+    ``sunlit_only`` treats points beyond the terminator (``zeta <= 0``, Sun
+    geometrically below the horizon) as outside the shadow, so a penumbral
+    limit that would fall on the night side is clipped to the terminator --
+    the boundary of where the partial eclipse is actually *seen*.  For the
+    umbra (``max_km`` ~600) it never engages.
+    """
+    x, y, d_deg, mu_deg, l, tan_f, brg = np.broadcast_arrays(
+        *(np.atleast_1d(np.asarray(v, dtype=float))
+          for v in (x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg))
+    )
+    n = len(x)
+    lon0, lat0 = fund_to_geo_v(x, y, d_deg, mu_deg)
+
+    # Residual for the two perpendicular searches stacked as (2, n): edge
+    # condition |axis separation| - |l - zeta tan f| = 0 [ES92] / [MeeusSE].
+    bearings = np.stack([(brg - 90.0) % 360.0, (brg + 90.0) % 360.0])
+    xx, yy, dd, mm, ll, tf = (np.broadcast_to(v, (2, n)) for v in (x, y, d_deg, mu_deg, l, tan_f))
+
+    def residual(lat, lon):
+        xi, eta, zeta = geo_to_fund(lat, lon, dd, mm)
+        r = np.hypot(xi - xx, eta - yy) - np.abs(ll - zeta * tf)
+        return np.where(zeta <= 0.0, 1.0, r) if sunlit_only else r
+
+    inside = residual(lat0, lon0) < 0.0  # central point inside this shadow (n,)
+    s_lo = np.zeros((2, n))
+    s_hi = np.full((2, n), float(max_km))
+    found = (residual(*_destination(lat0, lon0, bearings, s_hi)) >= 0.0) & inside  # (2, n)
+    for _ in range(50):
+        s_mid = 0.5 * (s_lo + s_hi)
+        r = residual(*_destination(lat0, lon0, bearings, s_mid))
+        s_lo = np.where(r < 0.0, s_mid, s_lo)
+        s_hi = np.where(r < 0.0, s_hi, s_mid)
+    lat_e, lon_e = _destination(lat0, lon0, bearings, 0.5 * (s_lo + s_hi))
+
+    ok = found[0] & found[1]
+    lat_e = np.where(ok, lat_e, np.nan)
+    lon_e = np.where(ok, lon_e, np.nan)
+    width = np.where(ok, _haversine_km(lat_e[0], lon_e[0], lat_e[1], lon_e[1]), 0.0)
+    first_is_north = lat_e[0] >= lat_e[1]
+    n_lat = np.where(first_is_north, lat_e[0], lat_e[1])
+    n_lon = np.where(first_is_north, lon_e[0], lon_e[1])
+    s_lat = np.where(first_is_north, lat_e[1], lat_e[0])
+    s_lon = np.where(first_is_north, lon_e[1], lon_e[0])
+    return n_lat, n_lon, s_lat, s_lon, width
+
+
 def shadow_edge_limits(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km=600.0):
     """Find the two shadow-edge points perpendicular to the track, and the width.
 
@@ -212,39 +303,74 @@ def shadow_edge_limits(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km=6
     ``|l - zeta*tan f|`` reduced to the ground -- is the umbral-limit definition
     of [ES92] / [MeeusSE]; solving it by bisection here is a numerical method, not
     a cited closed form.  Geometric only (no refraction; mean lunar limb), item A3.
+    Scalar wrapper over :func:`shadow_edge_limits_v`.
     """
-    lon0, lat0 = fund_to_geo(x, y, d_deg, mu_deg)
-
-    def residual(lat, lon):
-        xi, eta, zeta = geo_to_fund(lat, lon, d_deg, mu_deg)
-        perp = np.hypot(xi - x, eta - y)              # distance from the shadow axis
-        radius = abs(l - zeta * tan_f)                 # cone radius at this depth
-        return perp - radius
-
-    if residual(lat0, lon0) > 0:
-        return None, None, 0.0  # central point not inside this shadow
-
-    def find_edge(brg):
-        # bisection for the outward crossing residual = 0
-        s_lo, s_hi = 0.0, max_km
-        if residual(*_destination(lat0, lon0, brg, s_hi)) < 0:
-            return None  # still inside at max range
-        for _ in range(50):
-            s_mid = 0.5 * (s_lo + s_hi)
-            if residual(*_destination(lat0, lon0, brg, s_mid)) < 0:
-                s_lo = s_mid
-            else:
-                s_hi = s_mid
-        return _destination(lat0, lon0, brg, 0.5 * (s_lo + s_hi))
-
-    e1 = find_edge((path_bearing_deg - 90.0) % 360.0)
-    e2 = find_edge((path_bearing_deg + 90.0) % 360.0)
-    if e1 is None or e2 is None:
+    n_lat, n_lon, s_lat, s_lon, width = shadow_edge_limits_v(
+        x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km
+    )
+    if np.isnan(n_lat[0]):
         return None, None, 0.0
+    return (float(n_lat[0]), float(n_lon[0])), (float(s_lat[0]), float(s_lon[0])), float(width[0])
 
-    width = _haversine_km(e1[0], e1[1], e2[0], e2[1])
-    north, south = (e1, e2) if e1[0] >= e2[0] else (e2, e1)
-    return north, south, float(width)
+
+# Global (whole-Earth) contacts: the instants the penumbra / umbra first and
+# last touch the Earth's outline.  In the fundamental plane the outline is the
+# auxiliary circle of unit radius in (x, y/rho1) [ES92] eq. 8.331, so the
+# external contacts are where the axis distance equals 1 + (cone radius) and
+# the internal umbral contacts (whole umbra on the Earth) where it equals
+# 1 - |l2| [ES92] sec. 8.34.  Treating the cone radius as unscaled by rho1 is
+# the standard bulletin approximation (a few seconds).
+GLOBAL_CONTACTS = ("P1", "U1", "U2", "U3", "U4", "P4")
+
+
+def global_contacts(model: BesselianModel, half_window_hours: float = 5.0) -> dict[str, float]:
+    """Times (hours from T0) of P1/P4 (penumbra) and U1-U4 (umbra) global contacts.
+
+    Direct evaluation on a 1-minute grid over ``+/- half_window_hours`` (a solar
+    eclipse lasts at most ~6 h on Earth), roots bracketed by sign change and
+    bisected with one vectorized evaluation per iteration.  Missing contacts
+    (no umbra on Earth, or the window too narrow) are omitted from the dict.
+    """
+    from .numerics import bisect, sign_changes
+
+    def rho_and_radii(t):
+        e = model.evaluate_direct(t)
+        aux = _reduction_aux(np.radians(e["d"]))
+        rho = np.hypot(e["x"], e["y"] / aux.rho1)
+        return rho, e["l1"], np.abs(e["l2"])
+
+    t = np.arange(-half_window_hours, half_window_hours + 1e-9, 1.0 / 60.0)
+    rho, l1, l2 = rho_and_radii(t)
+    conditions = {
+        "P": rho - (1.0 + l1),   # penumbra external contacts P1 (falling), P4 (rising)
+        "UE": rho - (1.0 + l2),  # umbra external contacts U1, U4
+        "UI": rho - (1.0 - l2),  # umbra internal contacts U2, U3
+    }
+    names = {"P": ("P1", "P4"), "UE": ("U1", "U4"), "UI": ("U2", "U3")}
+    brackets: list[tuple[str, int]] = []
+    for key, f in conditions.items():
+        crossings = sign_changes(t, f)
+        falling = [i for i, rising in crossings if not rising]
+        rising_ = [i for i, rising in crossings if rising]
+        if falling:
+            brackets.append((names[key][0], min(falling)))
+        if rising_:
+            brackets.append((names[key][1], max(rising_)))
+    if not brackets:
+        return {}
+
+    kinds = np.array([b[0][0] + ("I" if b[0][1] in "23" else "E") for b in brackets])
+
+    def f_all(tt):
+        r, a1, a2 = rho_and_radii(tt)
+        return np.select(
+            [kinds == "PE", kinds == "UE", kinds == "UI"],
+            [r - (1.0 + a1), r - (1.0 + a2), r - (1.0 - a2)],
+        )
+
+    idx = np.array([b[1] for b in brackets])
+    roots = bisect(f_all, t[idx], t[idx + 1])
+    return {name: float(tc) for (name, _), tc in zip(brackets, roots, strict=True)}
 
 
 class TrackPoint(NamedTuple):
@@ -275,13 +401,11 @@ def central_track(
     t = np.atleast_1d(np.asarray(t_hours, dtype=float))
     elems = model.evaluate_direct(t)
 
-    valid: list[tuple[int, float, float, float]] = []  # (i, t, lat, lon)
-    for i, ti in enumerate(t):
-        try:
-            lon, lat = fund_to_geo(elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i])
-        except ValueError:
-            continue
-        valid.append((i, float(ti), lat, lon))
+    lon_all, lat_all = fund_to_geo_v(elems["x"], elems["y"], elems["d"], elems["mu"])
+    valid: list[tuple[int, float, float, float]] = [  # (i, t, lat, lon)
+        (i, float(t[i]), float(lat_all[i]), float(lon_all[i]))
+        for i in np.flatnonzero(~np.isnan(lat_all))
+    ]
 
     points: list[TrackPoint] = []
     n = len(valid)

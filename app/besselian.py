@@ -10,6 +10,7 @@ ships DE432s, the NAIF source DE440).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import numpy as np
 
@@ -17,6 +18,7 @@ from .ephemeris import (
     DEFAULT_EARTH_FRAME,
     BesselianInstant,
     besselian_instant,
+    besselian_instants,
     load_kernels,
     utc_to_et,
 )
@@ -46,6 +48,25 @@ class BesselianPolynomials:
     tan_f2: float
 
 
+def normalize_utc(epoch: str) -> str:
+    """Validate an epoch and return it as naive ISO-8601 UTC (``YYYY-MM-DDTHH:MM:SS[.fff]``).
+
+    Accepts what ``datetime.fromisoformat`` accepts plus a trailing ``Z``; an
+    explicit offset is converted to UTC.  This is the single epoch parser: SPICE
+    reads the normalized string and :func:`app.geography.format_clock` formats
+    it, so the two can never disagree on what is a valid epoch (a SPICE-only
+    format such as ``2024 APR 08`` used to pass model construction and then
+    crash the clock formatter with a 500).  Raises ``ValueError``.
+    """
+    s = epoch.strip()
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.isoformat(timespec="milliseconds" if dt.microsecond else "seconds")
+
+
 @dataclass
 class BesselianModel:
     t0_utc: str
@@ -54,10 +75,13 @@ class BesselianModel:
     step_hours: float = 1.0
     samples: list[BesselianInstant] = field(default_factory=list, repr=False)
     polynomials: BesselianPolynomials | None = None
+    et0: float = field(init=False, repr=False)  # TDB seconds past J2000 of t0_utc
 
     def __post_init__(self) -> None:
+        self.t0_utc = normalize_utc(self.t0_utc)
         load_kernels()
         et0 = utc_to_et(self.t0_utc)
+        self.et0 = et0
         offsets = np.arange(
             -self.half_window_hours,
             self.half_window_hours + self.step_hours / 2,
@@ -129,27 +153,17 @@ class BesselianModel:
         beyond ``+/-half_window_hours`` (review item A2).  The polynomial
         :meth:`evaluate` remains the ``/besselian`` tabular deliverable.
 
-        ``t_hours`` is treated as a 1-D sequence; results are 1-D arrays.
+        ``t_hours`` is treated as a 1-D sequence; results are 1-D arrays.  One
+        vectorized :func:`~app.ephemeris.besselian_instants` call, so a dense
+        grid costs little more than a single instant.
         """
-        et0 = utc_to_et(self.t0_utc)
         t = np.atleast_1d(np.asarray(t_hours, dtype=float))
-        instants = [
-            besselian_instant(et0 + ti * 3600.0, self.earth_frame) for ti in t
-        ]
+        e = besselian_instants(self.et0 + t * 3600.0, self.earth_frame)
         # mu is an angle: unwrap so a 360-degree wrap inside the range does not
         # leave a discontinuity (harmless for the modular use in geography, but
         # keeps the array continuous and consistent with evaluate()).
-        mu = np.degrees(np.unwrap([np.radians(bi.mu) for bi in instants]))
-        return {
-            "x": np.array([bi.x for bi in instants]),
-            "y": np.array([bi.y for bi in instants]),
-            "d": np.array([bi.d for bi in instants]),
-            "mu": mu,
-            "l1": np.array([bi.l1 for bi in instants]),
-            "l2": np.array([bi.l2 for bi in instants]),
-            "tan_f1": np.array([bi.tan_f1 for bi in instants]),
-            "tan_f2": np.array([bi.tan_f2 for bi in instants]),
-        }
+        e["mu"] = np.degrees(np.unwrap(np.radians(e["mu"])))
+        return e
 
 
 def best_earth_frame(frames: tuple[str, ...] = _FRAME_PREFERENCE) -> str:

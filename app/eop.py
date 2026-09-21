@@ -47,15 +47,27 @@ def _table() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     return (np.array(mjd), np.array(xp), np.array(yp), np.array(dut1))
 
 
-def eop(mjd_utc: float) -> tuple[float, float, float]:
-    """Interpolate (xp, yp, dut1) at a UTC MJD.
+def iers_mjd_range() -> tuple[float, float]:
+    """First and last MJD covered by the Bulletin A table (measured + predicted).
+
+    Epochs outside this range have no EOP: :mod:`app.ephemeris` then falls back
+    to the [Espenak] delta-T polynomial (:mod:`app.deltat`) and zero polar motion.
+    """
+    m = _table()[0]
+    return float(m[0]), float(m[-1])
+
+
+def eop(mjd_utc):
+    """Interpolate (xp, yp, dut1) at a UTC MJD (scalar or array).
 
     Returns polar motion ``xp, yp`` in **radians** and ``UT1-UTC`` in **seconds**.
-    Outside the table range the endpoint values are held (np.interp clamps).
+    Outside the table range the endpoint values are held (np.interp clamps);
+    callers should test :func:`iers_mjd_range` first -- :mod:`app.ephemeris`
+    switches to the delta-T model there rather than using the clamped values.
     """
     m, xp, yp, dut1 = _table()
     return (
-        float(np.interp(mjd_utc, m, xp) * _ARCSEC_TO_RAD),
-        float(np.interp(mjd_utc, m, yp) * _ARCSEC_TO_RAD),
-        float(np.interp(mjd_utc, m, dut1)),
+        np.interp(mjd_utc, m, xp) * _ARCSEC_TO_RAD,
+        np.interp(mjd_utc, m, yp) * _ARCSEC_TO_RAD,
+        np.interp(mjd_utc, m, dut1),
     )

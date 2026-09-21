@@ -156,6 +156,18 @@ def test_earth_rotation_parity(oracle, native_pool):
     assert np.array_equal(native_pool.tt_minus_ut1(et), oracle.tt_minus_ut1(et))
 
 
+def _ephemeris_covers(oracle, et: float) -> bool:
+    """False when the loaded SPK lacks the epoch (mirror DE432s spans 1949-2050,
+    so the 1919 window is skipped there, as test_besselian_integration does)."""
+    import spiceypy
+
+    try:
+        spiceypy.spkpos("SUN", et, "J2000", "LT+S", "EARTH")
+        return True
+    except spiceypy.utils.exceptions.SpiceyError:
+        return False
+
+
 def _frames_available(oracle):
     import spiceypy
 
@@ -174,6 +186,8 @@ def test_besselian_elements_parity(oracle, native_pool):
     worst: dict[str, float] = {}
     for utc0, utc1 in _WINDOWS:
         et = np.linspace(oracle.utc_to_et(utc0), oracle.utc_to_et(utc1), 241)
+        if not _ephemeris_covers(oracle, float(et[0])):
+            continue
         for frame in _frames_available(oracle):
             if frame == "ITRF93" and utc0 < "1950":
                 continue  # the binary Earth PCK starts in 1962
@@ -194,6 +208,8 @@ def test_sub_solar_parity(oracle, native_pool):
     oracle.load_kernels()
     for utc0, utc1 in _WINDOWS:
         et = np.linspace(oracle.utc_to_et(utc0), oracle.utc_to_et(utc1), 241)
+        if not _ephemeris_covers(oracle, float(et[0])):
+            continue
         for frame in ("ITRS", "TOD", "IAU_EARTH"):
             lon, lat = native_pool.sub_solar_points(et, frame)
             rlon, rlat = oracle.sub_solar_points(et, frame)

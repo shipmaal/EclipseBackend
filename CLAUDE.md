@@ -93,7 +93,7 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
    observers × instants) rather than looping; the scalar functions are thin
    wrappers over the array ones.
 
-## Native core (`libeclipse`, phases 0–1 done)
+## Native core (`libeclipse`, phases 0–2 done)
 
 `docs/CPP_ROADMAP.md` is the plan for the C++20 `libeclipse` core: the Python
 `app/` stays the API *and the oracle*; every C++ unit is parity-tested
@@ -118,6 +118,13 @@ structural, not stylistic:
   pass.
 - The EOP table is injected from `app.eop` (`set_eop_table`); the C++ never
   parses `finals2000A.all`.
+- Dispatch under `ECLIPSE_BACKEND=native`: the five `app/ephemeris.py`
+  functions (phase 1) and, in `app/geography.py` (phase 2), `fund_to_geo_v`,
+  `geo_to_fund`, `shadow_radii`, `bearing`, `shadow_edge_limits_v` and
+  `global_contacts` — a dispatch line plus broadcast/ravel/reshape glue at the
+  top of each, the Python body untouched. The scalar `fund_to_geo`,
+  `_reduction_aux`, the private great-circle helpers, `central_track` and the
+  formatters stay Python.
 - No `-ffast-math`; `-ffp-contract=off` is set. Keep the Python's operation
   order so parity is bit-level, not "close".
 - `_eclipse` links its own CSPICE statically: its kernel pool is separate from

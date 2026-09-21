@@ -343,3 +343,270 @@ def test_numerics_parity(native_pool):
     ours = native_pool.parabolic_minimum(lambda x: np.full_like(x, 2.0), t0, 1.0)
     ref = numerics.parabolic_minimum(lambda x: np.full_like(x, 2.0), t0, 1.0)
     assert np.array_equal(ours, ref) and np.array_equal(ours, t0)
+
+
+# ---------------------------------------------------------------- phase 2: ellipsoid + geometry
+# Roadmap §4 gates for app.geography: reduction / fund_to_geo / geo_to_fund 1e-13,
+# shadow_edge_limits_v 1e-9 deg / 1e-6 km, global_contacts 1e-9 h; and the phase
+# exit, /central-line byte-identical through the two backends.  Measured
+# residuals are recorded in each test after its gate.
+_ELL_TOL = 1e-13        # ellipsoid reduction [deg / Earth radii]
+_LIMIT_TOL_DEG = 1e-9   # shadow-edge limit points [deg]
+_LIMIT_TOL_KM = 1e-6    # path width [km]
+_CONTACT_TOL_H = 1e-9   # global contacts [h]
+_ECLIPSE_MU_DEG = 120.0  # |mu| bound of "eclipse-realistic" axis hour angles (see below)
+
+
+def test_reduction_aux_parity(native_pool):
+    """_reduction_aux over 200 001 declinations spanning ±90 deg: expected and
+    measured bit-identical (0.0 residual on every field, x86-64) -- plain libm
+    sqrt/sin/cos in both, same operation order."""
+    from app.geography import _reduction_aux
+
+    d = np.radians(np.linspace(-90.0, 90.0, 200_001))
+    ours = np.array([native_pool.reduction_aux(float(v)) for v in d])  # (n, 6)
+    ref = _reduction_aux(d)
+    worst = 0.0
+    for j, name in enumerate(ref._fields):
+        diff = float(np.max(np.abs(ours[:, j] - ref[j])))
+        worst = max(worst, diff)
+        assert diff <= _ELL_TOL, (name, diff)
+    assert worst == 0.0  # bit-identical today; a 1-ulp drift should be visible
+
+
+def _wrapped_deg(a, b):
+    """|a - b| in degrees reduced modulo 360 (longitudes at ±180 are one point)."""
+    d = np.abs(a - b)
+    return np.minimum(d, 360.0 - d)
+
+
+def test_fund_to_geo_and_inverse_parity(oracle, native_pool):
+    """fund_to_geo_v / geo_to_fund on dense grids against the pure-Python oracle.
+
+    Forward: x, y in [-1.3, 1.3] (121 x 121, axis on and off the Earth) x four
+    axis declinations x four hour angles.  NaN masks identical; latitude and the
+    longitude (reduced modulo 360) within the 1e-13 gate at every eclipse-
+    realistic hour angle (|mu| <= 120 deg).  KNOWN and understood: at mu near
+    ±180 deg the intermediate ``degrees(theta) - mu + 180`` reaches ~540 deg,
+    whose 1 ulp is 1.14e-13; NumPy's SIMD arctan2 differs from libm's by 1 ulp
+    on AVX-512 hosts, which the ``% 360`` then carries into the longitude at
+    that magnitude.  That regime is outside any eclipse (|mu| < 120 in every
+    reference case) and is bounded here at 1 ulp of that intermediate, not by
+    widening the gate.  Inverse: lat x lon grids at the same d, mu; xi/eta/zeta
+    within 1e-13 Earth radii.  Measured on x86-64 (this grid): forward lat
+    2.9e-14 deg, lon 5.7e-14 deg (1 ulp of a ~360 deg intermediate) at every
+    mu including ±179.9 -- the 1.14e-13 case is the analytic ceiling seen during
+    the ellipsoid port, not reached on this grid; inverse 2.8e-16 Earth radii.
+    """
+    from app import geography
+
+    xs = np.linspace(-1.3, 1.3, 121)
+    d_set = np.array([-8.24, 7.59, 11.87, 23.4])
+    mu_set = np.array([-179.9, 0.0, 89.6, 179.9])
+    x, y, d, mu = (a.ravel() for a in np.meshgrid(xs, xs, d_set, mu_set, indexing="ij"))
+
+    lon, lat = native_pool.fund_to_geo(x, y, d, mu)
+    rlon, rlat = geography.fund_to_geo_v(x, y, d, mu)
+    assert np.array_equal(np.isnan(lat), np.isnan(rlat))
+    assert np.array_equal(np.isnan(lon), np.isnan(rlon))
+    ok = ~np.isnan(rlat)
+    assert ok.sum() > 0.4 * ok.size  # the on-Earth disc is exercised
+    lat_diff = float(np.max(np.abs(lat[ok] - rlat[ok])))
+    lon_diff = _wrapped_deg(lon[ok], rlon[ok])
+    realistic = np.abs(mu[ok]) <= _ECLIPSE_MU_DEG
+    lon_diff_realistic = float(np.max(lon_diff[realistic]))
+    lon_diff_all = float(np.max(lon_diff))
+    assert lat_diff <= _ELL_TOL, lat_diff
+    assert lon_diff_realistic <= _ELL_TOL, lon_diff_realistic
+    assert lon_diff_all <= np.spacing(540.0), lon_diff_all  # 1 ulp of the wrap intermediate
+    print(f"\nfund_to_geo: lat {lat_diff:.3g}, lon {lon_diff_realistic:.3g} (|mu|<=120), "
+          f"lon {lon_diff_all:.3g} (all mu)")
+
+    lats = np.linspace(-89.5, 89.5, 181)
+    lons = np.linspace(-180.0, 180.0, 181)
+    la, lo, d2, mu2 = (a.ravel() for a in np.meshgrid(lats, lons, d_set, mu_set, indexing="ij"))
+    ours = native_pool.geo_to_fund(la, lo, d2, mu2)
+    ref = geography.geo_to_fund(la, lo, d2, mu2)
+    inv_diff = 0.0
+    for name, a, b in zip(("xi", "eta", "zeta"), ours, ref, strict=True):
+        diff = float(np.max(np.abs(a - b)))
+        inv_diff = max(inv_diff, diff)
+        assert diff <= _ELL_TOL, (name, diff)
+    print(f"geo_to_fund: {inv_diff:.3g}")
+
+    # The (P, 1) x (N,) broadcast app.circumstances relies on, through the
+    # dispatching app.geography.geo_to_fund itself.
+    from app import native as native_mod
+
+    obs_lat = np.array([[-40.0], [11.4], [25.3], [37.0]])
+    obs_lon = np.array([[-160.0], [-83.1], [-104.1], [-87.7]])
+    dN, muN = np.linspace(7.5, 7.6, 61), np.linspace(60.0, 120.0, 61)
+    ref = geography.geo_to_fund(obs_lat, obs_lon, dN, muN)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(native_mod, "BACKEND", "native")
+        via_app = geography.geo_to_fund(obs_lat, obs_lon, dN, muN)
+        scalar = geography.geo_to_fund(25.3, -104.1, 7.5862, 89.6)
+    assert all(v.shape == (4, 61) for v in via_app)
+    for a, b in zip(via_app, ref, strict=True):
+        assert np.max(np.abs(a - b)) <= _ELL_TOL
+    assert all(isinstance(v, float) for v in scalar)  # scalars in -> Python floats out
+    for v, r in zip(scalar, geography.geo_to_fund(25.3, -104.1, 7.5862, 89.6), strict=True):
+        assert abs(v - r) <= _ELL_TOL
+
+
+def _central_line_model(oracle, utc0: str):
+    """BesselianModel exactly as /central-line builds it (default window, frame)."""
+    from datetime import datetime, timedelta
+
+    from app.besselian import BesselianModel
+
+    t0 = (datetime.fromisoformat(utc0) + timedelta(hours=3)).isoformat()
+    return BesselianModel(t0_utc=t0, earth_frame=oracle.DEFAULT_EARTH_FRAME,
+                          half_window_hours=2.0)
+
+
+@requires_kernels
+def test_shadow_edge_limits_parity(oracle, native_pool):
+    """shadow_edge_limits_v against the oracle on the three modern reference
+    tracks (241 instants over ±3 h, bearings from central_track as /central-line
+    derives them), umbral (l2, tan_f2, 600 km) and penumbral (l1, tan_f1,
+    10 000 km, terminator-clipped).  Gate 1e-9 deg / 1e-6 km.  Measured on
+    x86-64: NaN masks identical; limit points 1.42e-13 deg, widths 1.09e-11 km
+    -- the same 1-ulp libm-vs-NumPy trig difference that tests/cpp/
+    test_geometry.cpp records (it flips one of the 50 bisection decisions at an
+    exact tie).  Both sides bisect the *same* oracle elements here, so the
+    phase-1 elements residual does not enter; the geometry itself is at the
+    ulp level, four orders below the gate."""
+    from app.geography import central_track, shadow_edge_limits_v
+
+    oracle.load_kernels()
+    worst_deg, worst_km, n_checked = 0.0, 0.0, 0
+    for utc0, _utc1 in _WINDOWS[:3]:
+        model = _central_line_model(oracle, utc0)
+        if not _ephemeris_covers(oracle, model.et0):
+            continue
+        elems, track = central_track(model, np.linspace(-3.0, 3.0, 241))
+        idx = np.array([tp.i for tp in track], dtype=int)
+        brg = np.array([tp.bearing for tp in track])
+        args = tuple(elems[k][idx] for k in ("x", "y", "d", "mu"))
+        for l_key, tf_key, max_km in (("l2", "tan_f2", 600.0), ("l1", "tan_f1", 10_000.0)):
+            shadow = (elems[l_key][idx], elems[tf_key][idx], brg)
+            ours = native_pool.shadow_edge_limits(*args, *shadow, max_km=max_km, sunlit_only=True)
+            ref = shadow_edge_limits_v(*args, *shadow, max_km=max_km)
+            for j, (a, b) in enumerate(zip(ours, ref, strict=True)):
+                assert np.array_equal(np.isnan(a), np.isnan(b)), (utc0, l_key, j)
+                m = ~np.isnan(b)
+                diff = float(np.max(np.abs(a[m] - b[m])))
+                if j == 4:
+                    worst_km = max(worst_km, diff)
+                    assert diff <= _LIMIT_TOL_KM, (utc0, l_key, "width", diff)
+                else:
+                    worst_deg = max(worst_deg, diff)
+                    assert diff <= _LIMIT_TOL_DEG, (utc0, l_key, j, diff)
+            assert np.sum(~np.isnan(ref[0])) > 100  # a real track, not all-NaN
+            n_checked += 1
+    assert n_checked == 6
+    print(f"\nshadow_edge_limits: points {worst_deg:.3g} deg, width {worst_km:.3g} km")
+
+
+@requires_kernels
+def test_global_contacts_parity(oracle, native_pool):
+    """global_contacts at the catalog's greatest-eclipse epochs (+1919 when the
+    SPK covers it): identical keys in the oracle's insertion order (P1, P4, U1,
+    U4, U2, U3) and |dt| <= 1e-9 h.  Measured on x86-64: 0.0 (the elements
+    residual of phase 1 lies below the bisection's 1e-6 h resolution).  Both
+    sides evaluate the elements from (et0, frame); the model itself is not
+    crossed."""
+    from app.besselian import BesselianModel
+    from app.geography import global_contacts
+
+    oracle.load_kernels()
+    epochs = ["2017-08-21T18:25:30", "2023-10-14T17:59:27", "2024-04-08T18:17:15",
+              "1919-05-29T13:08:00"]
+    worst, n_checked = 0.0, 0
+    for t0 in epochs:
+        if not _ephemeris_covers(oracle, oracle.utc_to_et(t0)):
+            continue
+        model = BesselianModel(t0_utc=t0, half_window_hours=2.5)
+        ours = native_pool.global_contacts(model.et0, model.earth_frame, 5.0)
+        ref = global_contacts(model)
+        assert [name for name, _ in ours] == list(ref)  # keys *and* order
+        assert len(ref) >= 2 and list(ref)[:2] == ["P1", "P4"]
+        for name, t in ours:
+            diff = abs(t - ref[name])
+            worst = max(worst, diff)
+            assert diff <= _CONTACT_TOL_H, (t0, name, diff)
+        n_checked += 1
+    assert n_checked >= 3
+    print(f"\nglobal_contacts: {worst:.3g} h")
+
+
+def _diff_paths(a, b, path="$"):
+    """Leaf paths where two parsed-JSON trees differ (for the failure message)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        out = []
+        for k in sorted(set(a) | set(b)):
+            if k not in a or k not in b:
+                out.append(f"{path}.{k} (missing on one side)")
+            else:
+                out.extend(_diff_paths(a[k], b[k], f"{path}.{k}"))
+        return out
+    if isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            return [f"{path} length {len(a)} != {len(b)}"]
+        return [p for i, (x, y) in enumerate(zip(a, b, strict=True))
+                for p in _diff_paths(x, y, f"{path}[{i}]")]
+    return [] if a == b else [f"{path}: {a!r} != {b!r}"]
+
+
+@requires_kernels
+@pytest.mark.parametrize("params", [
+    # test_api.py's request, then the endpoint's default 4-hour track.
+    {"epoch": "2024-04-08T18:17:15", "start_hours": -0.1, "end_hours": 0.1, "step_minutes": 6},
+    {"epoch": "2024-04-08T18:17:15"},
+    {"epoch": "2017-08-21T18:25:30"},
+    {"epoch": "2023-10-14T17:59:27"},
+])
+def test_central_line_identical_through_native(monkeypatch, native_pool, params):
+    """Phase-2 exit: /central-line is unchanged to the last digit.  The same
+    request through the pure-Python backend and through the native one (elements,
+    reduction, limits, contacts all in C++) parses to equal JSON at the endpoint's
+    own rounding (1e-5 deg, 0.01 km, whole seconds).  Measured: identical for the
+    four requests (up to 121 track points each)."""
+    from fastapi.testclient import TestClient
+
+    from app import ephemeris
+    from app import native as native_mod
+    from app.main import app
+
+    client = TestClient(app)
+    monkeypatch.setattr(native_mod, "BACKEND", "python")
+    ephemeris.load_kernels()
+    body_python = client.get("/central-line", params=params).json()
+    monkeypatch.setattr(native_mod, "BACKEND", "native")
+    body_native = client.get("/central-line", params=params).json()
+    assert body_native["count"] == body_python["count"] > 0
+    assert set(body_native["contacts"]) == {"P1", "U1", "U2", "U3", "U4", "P4"}
+    assert body_native == body_python, "\n".join(_diff_paths(body_native, body_python))
+
+
+def test_geography_round_trip_through_native(monkeypatch, native_pool):
+    """tests/test_geography.py::test_geo_to_fund_round_trip with the dispatching
+    geo_to_fund routed to the native core (fund_to_geo stays scalar Python)."""
+    from app import native as native_mod
+    from app.geography import fund_to_geo, geo_to_fund
+
+    monkeypatch.setattr(native_mod, "BACKEND", "native")
+    d_deg, mu_deg = 7.5862, 89.6
+    checked = 0
+    for lat in (-40.0, -10.0, 0.0, 20.0, 45.0):
+        for lon in (-160.0, -104.0, -40.0, 0.0, 80.0):
+            xi, eta, zeta = geo_to_fund(lat, lon, d_deg, mu_deg)
+            assert isinstance(zeta, float)
+            if zeta <= 0.0:
+                continue
+            lon2, lat2 = fund_to_geo(xi, eta, d_deg, mu_deg)
+            assert lat2 == pytest.approx(lat, abs=1e-6), (lat, lon)
+            assert lon2 == pytest.approx(lon, abs=1e-6), (lat, lon)
+            checked += 1
+    assert checked >= 3

@@ -147,7 +147,7 @@ def contact_records(label: str) -> str:
     """``contacts`` record for ``label``: global_contacts at its greatest-eclipse epoch."""
     model = BesselianModel(t0_utc=CONTACT_EPOCHS[label], earth_frame=CONTACT_FRAME,
                            half_window_hours=2.5)
-    contacts = global_contacts(model, CONTACT_HALF_WINDOW_H)  # insertion order = P1 U1 U2 U3 U4 P4
+    contacts = global_contacts(model, CONTACT_HALF_WINDOW_H)  # insertion order = P1 P4 U1 U4 U2 U3
     names = " ".join(f"{name} {t!r}" for name, t in contacts.items())
     return f"contacts {label} {CONTACT_FRAME} {model.et0!r} {CONTACT_HALF_WINDOW_H!r} {names}\n"
 

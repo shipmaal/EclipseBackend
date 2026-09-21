@@ -212,8 +212,33 @@ compares the live Python and native results over dense windows.
    `eraRxp`; before that the vectors differed by 1 ulp (6e-11 km) and the
    oracle itself was CPU-dependent. Fixtures: `tools/dump_oracle.py` →
    `tests/cpp/fixtures/*.txt` (plain text, not JSON — no parser dependency).
-2. **Ellipsoid + limits + contacts.** Exit: widths and P1–P4 through native;
-   `/central-line` unchanged to the last digit.
+2. **Ellipsoid + limits + contacts — DONE.** `numerics.hpp` (exact:
+   `np.arange` fill rule, `np.remainder`, `sign_changes`, `bisect`,
+   `parabolic_minimum` with the same call counts), `ellipsoid.hpp`
+   (`reduction_aux`, `fund_to_geo`, `geo_to_fund`) and `geometry.hpp`
+   (`shadow_radii`, great-circle helpers, `shadow_edge_limits`,
+   `global_contacts`), bound as equal-length 1-D array functions; NumPy
+   broadcasting stays in the `app/geography.py` glue. Six geography functions
+   dispatch under `ECLIPSE_BACKEND=native` (`fund_to_geo_v`, `geo_to_fund`,
+   `shadow_radii`, `bearing`, `shadow_edge_limits_v`, `global_contacts`);
+   `global_contacts` is handed `(et0, frame)` and re-evaluates the elements
+   natively. Exit met: the whole suite passes with `ECLIPSE_BACKEND=native`,
+   so the Espenak widths 114.7 / 197.5 / 187.4 km, the 2017/2024 P1–P4 and the
+   `/central-line` limits/contacts assertions run through C++, and
+   `/central-line` parses to identical JSON through the two backends for four
+   requests (test_api's and the default 4-hour tracks of the three reference
+   eclipses). Measured parity (`tests/test_native.py`, x86-64):
+   `_reduction_aux` and `global_contacts` bit-identical (0 residual, 200 001
+   declinations; 2017/2023/2024/1919 contact sets in identical order);
+   `fund_to_geo_v` lat 2.9e-14 deg, lon 5.7e-14 deg, `geo_to_fund` 2.8e-16
+   over 234 256-point grids; `shadow_edge_limits_v` points 1.4e-13 deg, widths
+   1.1e-11 km over 241-instant umbral and penumbral tracks of the three modern
+   eclipses (gates 1e-9 deg / 1e-6 km). Residuals are 1-ulp libm-vs-NumPy
+   SIMD trig differences, as in phase 1; at |mu| → 180 the longitude wrap's
+   intermediate (~540 deg) makes that ulp 1.14e-13, which the parity test
+   bounds separately from the 1e-13 gate it asserts at eclipse-realistic
+   |mu| ≤ 120. Fixtures: `tests/cpp/fixtures/geometry_cases.txt` (+ the
+   per-eclipse `contacts` records) from `tools/dump_oracle.py`.
 3. **Circumstances.** Exit: durations/magnitudes/horizon flags identical;
    `circumstances_grid` parallel (OpenMP or `par_unseq`) with a benchmark
    test: 0.5° global grid < 0.5 s (Python: 5 s).

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
+from . import native
 from .constants import (
     EARTH_MEAN_RADIUS_KM,
     WGS84_A_KM,
@@ -44,6 +45,25 @@ if TYPE_CHECKING:
 _A_KM = WGS84_A_KM  # semi-major axis [km]
 _F = WGS84_F        # flattening
 _E2 = WGS84_E2      # first eccentricity squared
+
+
+def _native_args(*values) -> tuple[tuple[int, ...], list[np.ndarray]]:
+    """Broadcast ``values`` as float and flatten each for the native core.
+
+    The ``_eclipse`` array functions take equal-length, C-contiguous 1-D float64
+    arrays and do no broadcasting of their own; broadcast views are zero-stride
+    and read-only, so each is copied contiguous before ravelling.  Returns the
+    common broadcast shape (``()`` for all-scalar input) and the flat arrays;
+    the caller reshapes the results back with :func:`_native_shape`.
+    """
+    arrays = np.broadcast_arrays(*(np.asarray(v, dtype=float) for v in values))
+    return arrays[0].shape, [np.ascontiguousarray(a).ravel() for a in arrays]
+
+
+def _native_shape(flat: np.ndarray, shape: tuple[int, ...]):
+    """Restore a flat native result to ``shape``; ``()`` gives a NumPy scalar
+    (``np.float64``), as the NumPy expressions in the Python bodies produce."""
+    return flat.reshape(shape)[()]
 
 
 class _ReductionAux(NamedTuple):
@@ -122,7 +142,12 @@ def fund_to_geo_v(x, y, d_deg, mu_deg) -> tuple[np.ndarray, np.ndarray]:
 
     Broadcasts over its arguments and returns ``(lon, lat)`` arrays in degrees,
     with ``NaN`` where the axis misses the Earth instead of raising.
+    Dispatches to the native core under ``ECLIPSE_BACKEND=native``.
     """
+    if native.is_native():
+        shape, flat = _native_args(x, y, d_deg, mu_deg)
+        lon, lat = native.module().fund_to_geo(*flat)
+        return _native_shape(lon, shape), _native_shape(lat, shape)
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     mu_deg = np.asarray(mu_deg, dtype=float)
@@ -155,7 +180,14 @@ def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float):
     Array-native: every argument may be a scalar or an array and the usual NumPy
     broadcasting applies (e.g. observers of shape ``(P, 1)`` against elements of
     shape ``(N,)`` give ``(P, N)`` results).  Scalars in give Python floats out.
+    Dispatches to the native core under ``ECLIPSE_BACKEND=native``.
     """
+    if native.is_native():
+        shape, flat = _native_args(lat_deg, lon_deg, d_deg, mu_deg)
+        xi, eta, zeta = native.module().geo_to_fund(*flat)
+        if shape == ():
+            return float(xi[0]), float(eta[0]), float(zeta[0])
+        return xi.reshape(shape), eta.reshape(shape), zeta.reshape(shape)
     lat_deg = np.asarray(lat_deg, dtype=float)
     lon_deg = np.asarray(lon_deg, dtype=float)
     mu_deg = np.asarray(mu_deg, dtype=float)
@@ -186,7 +218,12 @@ def shadow_radii(
     distance below the fundamental plane, ``L = l - zeta*tan f`` [ES92] eq. 8.353;
     adequate for visualization, not for precise limit computation (use
     :func:`shadow_edge_limits` for the true limits/width).
+    Dispatches to the native core under ``ECLIPSE_BACKEND=native``.
     """
+    if native.is_native():
+        return native.module().shadow_radii(
+            float(x), float(y), float(d_deg), float(l1), float(l2), float(tan_f1), float(tan_f2)
+        )
     eta1 = y / _reduction_aux(np.radians(d_deg)).rho1
     disc = 1.0 - x**2 - eta1**2
     if disc < 0.0:
@@ -224,7 +261,14 @@ def _haversine_km(lat1, lon1, lat2, lon2):
 
 
 def bearing(lat1, lon1, lat2, lon2):
-    """Initial great-circle bearing (degrees) from point 1 to point 2."""
+    """Initial great-circle bearing (degrees) from point 1 to point 2.
+
+    Broadcasts over its arguments; dispatches to the native core under
+    ``ECLIPSE_BACKEND=native``.
+    """
+    if native.is_native():
+        shape, flat = _native_args(lat1, lon1, lat2, lon2)
+        return _native_shape(native.module().bearing(*flat), shape)
     p1, p2 = np.radians(lat1), np.radians(lat2)
     dl = np.radians(lon2 - lon1)
     y = np.sin(dl) * np.cos(p2)
@@ -248,11 +292,17 @@ def shadow_edge_limits_v(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km
     limit that would fall on the night side is clipped to the terminator --
     the boundary of where the partial eclipse is actually *seen*.  For the
     umbra (``max_km`` ~600) it never engages.
+    Dispatches to the native core under ``ECLIPSE_BACKEND=native``.
     """
     x, y, d_deg, mu_deg, l, tan_f, brg = np.broadcast_arrays(
         *(np.atleast_1d(np.asarray(v, dtype=float))
           for v in (x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg))
     )
+    if native.is_native():
+        return native.module().shadow_edge_limits(
+            *(np.ascontiguousarray(v) for v in (x, y, d_deg, mu_deg, l, tan_f, brg)),
+            max_km=float(max_km), sunlit_only=bool(sunlit_only),
+        )
     n = len(x)
     lon0, lat0 = fund_to_geo_v(x, y, d_deg, mu_deg)
 
@@ -330,7 +380,13 @@ def global_contacts(model: BesselianModel, half_window_hours: float = 5.0) -> di
     eclipse lasts at most ~6 h on Earth), roots bracketed by sign change and
     bisected with one vectorized evaluation per iteration.  Missing contacts
     (no umbra on Earth, or the window too narrow) are omitted from the dict.
+    Dispatches to the native core under ``ECLIPSE_BACKEND=native`` (the
+    elements are re-evaluated there from the model's ``et0`` / frame).
     """
+    if native.is_native():
+        return dict(native.module().global_contacts(
+            model.et0, model.earth_frame, float(half_window_hours)
+        ))
     from .numerics import bisect, sign_changes
 
     def rho_and_radii(t):

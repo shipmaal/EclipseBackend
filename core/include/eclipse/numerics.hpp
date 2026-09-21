@@ -16,6 +16,8 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
+#include <limits>
+#include <numbers>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -73,6 +75,75 @@ inline std::vector<double> arange(double start, double stop, double step) {
     const double delta = t[1] - t[0];
     for (std::size_t i = 2; i < n; ++i) t[i] = start + static_cast<double>(i) * delta;
     return t;
+}
+
+
+/// ``np.maximum(a, b)`` for two floats, NaN-propagating: NumPy's scalar loop
+/// ``(a >= b || isnan(a)) ? a : b`` (``loops_minmax``, ``scalar_max_f``). Only
+/// the sign of an exact zero tie is not pinned: on SIMD hosts NumPy's
+/// ``maxpd`` returns the SECOND operand for ``+-0`` (``np.maximum(0.0, -0.0)
+/// == -0.0`` on AVX-512), which no consumer here can observe (the value is
+/// zero either way). (numerical)
+inline double np_maximum(double a, double b) { return (a >= b || std::isnan(a)) ? a : b; }
+
+/// ``np.minimum(a, b)`` for two floats, NaN-propagating (see ``np_maximum``
+/// for the ``+-0`` tie caveat). (numerical)
+inline double np_minimum(double a, double b) { return (a <= b || std::isnan(a)) ? a : b; }
+
+/// ``np.max(p)`` / ``p.max()``: ``np.maximum.reduce`` left to right, so a NaN
+/// anywhere makes the result NaN. Throws ``std::invalid_argument`` on an empty
+/// span (NumPy raises ``ValueError``). (numerical)
+inline double np_max(std::span<const double> p) {
+    if (p.empty()) throw std::invalid_argument("np_max: zero-size array");
+    double acc = p[0];
+    for (std::size_t i = 1; i < p.size(); ++i) acc = np_maximum(acc, p[i]);
+    return acc;
+}
+
+/// ``np.argmax(p)``: the index of the first NaN if there is one, else of the
+/// first strict maximum (ties -> the earliest). Throws ``std::invalid_argument``
+/// on an empty span (NumPy raises ``ValueError``). (numerical)
+inline std::size_t argmax_first(std::span<const double> p) {
+    if (p.empty()) throw std::invalid_argument("argmax_first: zero-size array");
+    std::size_t best = 0;
+    if (std::isnan(p[0])) return 0;
+    for (std::size_t i = 1; i < p.size(); ++i) {
+        if (std::isnan(p[i])) return i;
+        if (p[i] > p[best]) best = i;
+    }
+    return best;
+}
+
+/// ``np.unwrap(p, discont, period=period)`` for float64, the float branch of
+/// ``numpy/lib/_function_base_impl.py`` (NumPy 2.0.2) EXACTLY, expression by
+/// expression:
+///   dd = diff(p)                                  dd[i] = p[i + 1] - p[i]
+///   interval_high = period / 2; interval_low = -interval_high
+///   ddmod = mod(dd - interval_low, period) + interval_low     (``np_remainder``)
+///   ddmod[(ddmod == interval_low) & (dd > 0)] = interval_high  ("boundary_ambiguous")
+///   ph_correct = ddmod - dd;  ph_correct[abs(dd) < discont] = 0
+///   up[0] = p[0];  up[1:] = p[1:] + cumsum(ph_correct)          (sequential sum)
+/// ``discont`` defaults to ``period / 2`` (NumPy's ``None``). A 0- or 1-element
+/// input is returned unchanged. Used through ``eclipse::unwrap_mu_deg`` for
+/// ``np.degrees(np.unwrap(np.radians(mu)))`` of ``BesselianModel.evaluate_direct``.
+/// (numerical)
+inline std::vector<double> unwrap(std::span<const double> p, double discont = std::numbers::pi,
+                                  double period = 2.0 * std::numbers::pi) {
+    std::vector<double> up(p.begin(), p.end());
+    if (p.size() < 2) return up;
+    const double interval_high = period / 2.0;
+    const double interval_low = -interval_high;
+    double cumsum = 0.0;
+    for (std::size_t i = 0; i + 1 < p.size(); ++i) {
+        const double dd = p[i + 1] - p[i];
+        double ddmod = np_remainder(dd - interval_low, period) + interval_low;
+        if (ddmod == interval_low && dd > 0.0) ddmod = interval_high;
+        double ph_correct = ddmod - dd;
+        if (std::abs(dd) < discont) ph_correct = 0.0;
+        cumsum = cumsum + ph_correct;
+        up[i + 1] = p[i + 1] + cumsum;
+    }
+    return up;
 }
 
 // --- vectorized objectives ----------------------------------------------------------

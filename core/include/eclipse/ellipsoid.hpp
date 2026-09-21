@@ -138,14 +138,20 @@ struct Fund {
 /// ``theta = lon + mu`` east of the axis meridian, then the inverse ellipsoid
 /// reduction [ES92] eq. 8.331 (``eta = eta1 rho1``,
 /// ``zeta = rho2 (zeta1 cos(d1 - d2) - eta1 sin(d1 - d2))``).
-inline Fund geo_to_fund_one(double lat_deg, double lon_deg, double d_deg, double mu_deg) {
+///
+/// This is the ONE home of the formula (CLAUDE.md rule 2): the hoisted
+/// overload below takes the observer's parametric-latitude factors
+/// ``cos_beta``, ``sin_beta`` and the instant's ``reduction_aux`` precomputed
+/// by the caller, so a P-observer x N-instant grid (eclipse/circumstances.hpp)
+/// evaluates ``atan``/``tan``/``cos``/``sin`` of the latitude once per observer
+/// and ``reduction_aux`` once per instant instead of P x N times each; the
+/// per-point body is the same expressions in the same order, so the two
+/// overloads are bit-identical.
+inline Fund geo_to_fund_one(double cos_beta, double sin_beta, double lon_deg,
+                            const ReductionAux& aux, double mu_deg) {
     using constants::DEG_TO_RAD;
-    using constants::WGS84_F;
-    const ReductionAux aux = reduction_aux(d_deg * DEG_TO_RAD);
-
-    const double beta = std::atan((1.0 - WGS84_F) * std::tan(lat_deg * DEG_TO_RAD));
     const double theta = (lon_deg + mu_deg) * DEG_TO_RAD;
-    const double cb = std::cos(beta), sb = std::sin(beta);
+    const double cb = cos_beta, sb = sin_beta;
 
     const double xi = cb * std::sin(theta);
     const double eta1 = sb * aux.cos_d1 - cb * std::cos(theta) * aux.sin_d1;
@@ -153,6 +159,26 @@ inline Fund geo_to_fund_one(double lat_deg, double lon_deg, double d_deg, double
     const double eta = eta1 * aux.rho1;
     const double zeta = aux.rho2 * (zeta1 * aux.cos_d1_d2 - eta1 * aux.sin_d1_d2);
     return Fund{xi, eta, zeta};
+}
+
+/// Parametric (reduced) latitude ``beta`` of geodetic ``lat_deg`` [degrees] on
+/// WGS-84: ``tan(beta) = (1 - f) tan(phi)`` [Meeus98] ch. 11, eq. 11.1 -- the
+/// per-observer half of ``geo_to_fund_one``, exposed so a grid can hoist it.
+/// Returns radians.
+inline double parametric_latitude(double lat_deg) {
+    using constants::DEG_TO_RAD;
+    using constants::WGS84_F;
+    return std::atan((1.0 - WGS84_F) * std::tan(lat_deg * DEG_TO_RAD));
+}
+
+/// Elementwise ``geo_to_fund`` (documented above): the un-hoisted form, which
+/// computes ``reduction_aux`` and the parametric latitude here and delegates
+/// the point itself to the hoisted overload.
+inline Fund geo_to_fund_one(double lat_deg, double lon_deg, double d_deg, double mu_deg) {
+    using constants::DEG_TO_RAD;
+    const ReductionAux aux = reduction_aux(d_deg * DEG_TO_RAD);
+    const double beta = parametric_latitude(lat_deg);
+    return geo_to_fund_one(std::cos(beta), std::sin(beta), lon_deg, aux, mu_deg);
 }
 
 /// Struct-of-arrays result of ``geo_to_fund`` [Earth equatorial radii].

@@ -7,11 +7,16 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cmath>
+#include <cstddef>
 #include <limits>
+#include <numbers>
 #include <span>
 #include <vector>
 
+#include "eclipse/constants.hpp"
+#include "eclipse/elements.hpp"
 #include "eclipse/numerics.hpp"
+#include "fixtures.hpp"
 
 using Catch::Matchers::WithinAbs;
 namespace num = eclipse::numerics;
@@ -201,4 +206,127 @@ TEST_CASE("parabolic_minimum converges on a shifted parabola in 10 calls") {
         return std::vector<double>(t.size(), 5.0);
     }, t0b, 1.0, 3);
     CHECK(rd[0] == 0.0);
+}
+
+TEST_CASE("np_maximum / np_minimum / np_max propagate NaN, argmax_first picks first NaN or max") {
+    // Values checked against np.maximum / np.minimum / np.max / np.argmax (NumPy 2.0.2).
+    CHECK(num::np_maximum(1.0, 2.0) == 2.0);
+    CHECK(num::np_maximum(2.0, 1.0) == 2.0);
+    CHECK(num::np_minimum(1.0, 2.0) == 1.0);
+    CHECK(num::np_minimum(2.0, 1.0) == 1.0);
+    CHECK(std::isnan(num::np_maximum(kNaN, 1.0)));
+    CHECK(std::isnan(num::np_maximum(1.0, kNaN)));
+    CHECK(std::isnan(num::np_minimum(kNaN, 1.0)));
+    CHECK(std::isnan(num::np_minimum(2.0, kNaN)));
+    // _obscuration's r = minimum(q, 1), R = maximum(q, 1) for q on both sides of 1.
+    CHECK(num::np_minimum(0.9, 1.0) == 0.9);
+    CHECK(num::np_maximum(0.9, 1.0) == 1.0);
+    CHECK(num::np_minimum(1.05, 1.0) == 1.0);
+    CHECK(num::np_maximum(1.05, 1.0) == 1.05);
+
+    const double a[] = {1.0, 3.0, 3.0, -2.0};
+    CHECK(num::np_max(a) == 3.0);
+    CHECK(num::argmax_first(a) == 1);  // first of the tie
+    const double b[] = {1.0, kNaN, 3.0, kNaN};
+    CHECK(std::isnan(num::np_max(b)));
+    CHECK(num::argmax_first(b) == 1);  // first NaN wins, as np.argmax
+    const double c[] = {kNaN, 5.0};
+    CHECK(num::argmax_first(c) == 0);
+    const double d[] = {-1.0, -0.5, -0.75};
+    CHECK(num::argmax_first(d) == 1);
+    CHECK(num::np_max(d) == -0.5);
+    const double one[] = {7.0};
+    CHECK(num::np_max(one) == 7.0);
+    CHECK(num::argmax_first(one) == 0);
+    CHECK_THROWS_AS(num::np_max(std::span<const double>{}), std::invalid_argument);
+    CHECK_THROWS_AS(num::argmax_first(std::span<const double>{}), std::invalid_argument);
+}
+
+TEST_CASE("unwrap reproduces np.unwrap bit for bit (crossings, exact +pi step, no-op)") {
+    // Expected values are np.unwrap(...) output printed with repr (NumPy 2.0.2).
+    const double pi = std::numbers::pi;
+    {
+        const double p[] = {3.0, 3.1, -3.1, -3.0, -2.9};  // crosses +pi going up
+        const std::vector<double> u = num::unwrap(p);
+        REQUIRE(u.size() == 5);
+        CHECK(u[0] == 3.0);
+        CHECK(u[1] == 3.1);
+        CHECK(u[2] == 3.183185307179586);
+        CHECK(u[3] == 3.2831853071795862);
+        CHECK(u[4] == 3.3831853071795863);
+    }
+    {
+        const double p[] = {-3.0, -3.1, 3.1, 3.0};  // crosses -pi going down
+        const std::vector<double> u = num::unwrap(p);
+        CHECK(u[2] == -3.183185307179587);
+        CHECK(u[3] == -3.283185307179587);
+    }
+    {
+        // An exact +pi step is the "boundary_ambiguous" case: ddmod lands on
+        // -pi and is corrected to +pi, so no jump is added (dd == discont is
+        // not < discont, so the correction ph_correct = 0 is applied there).
+        const double p[] = {0.0, pi, 2 * pi, 0.0};
+        const std::vector<double> u = num::unwrap(p);
+        CHECK(u[1] == 3.141592653589793);
+        CHECK(u[2] == 6.283185307179586);
+        CHECK(u[3] == 6.283185307179586);  // the -2pi drop is unwrapped
+        const double q[] = {0.0, -pi};  // an exact -pi step: no correction either
+        CHECK(num::unwrap(q)[1] == -3.141592653589793);
+    }
+    {
+        const double p[] = {2.5, -2.5, 2.5, -2.5};  // alternating (non-chronological)
+        const std::vector<double> u = num::unwrap(p);
+        CHECK(u[1] == 3.7831853071795862);
+        CHECK(u[2] == 2.5);
+        CHECK(u[3] == 3.7831853071795862);
+    }
+    {
+        const double p[] = {0.1, 0.2, 0.15};  // nothing to do: identity
+        CHECK(num::unwrap(p) == std::vector<double>{0.1, 0.2, 0.15});
+        const double one[] = {1.5};
+        CHECK(num::unwrap(one) == std::vector<double>{1.5});
+        CHECK(num::unwrap(std::span<const double>{}).empty());
+    }
+    {
+        // A custom period (np.unwrap docstring: period=4 on [0, 1, 2, -1, 0]).
+        const double p[] = {0.0, 1.0, 2.0, -1.0, 0.0};
+        CHECK(num::unwrap(p, 2.0, 4.0) == std::vector<double>{0.0, 1.0, 2.0, 3.0, 4.0});
+    }
+}
+
+TEST_CASE("unwrap_mu_deg is np.degrees(np.unwrap(np.radians(mu))), which is NOT the identity") {
+    // A hour-angle series crossing +180: 170, 179.5, -179.5, -170 -> 170, 179.5, 180.5, 190.
+    eclipse::Elements e;
+    e.mu = {170.0, 179.5, -179.5, -170.0};
+    eclipse::unwrap_mu_deg(e);
+    CHECK(e.mu == std::vector<double>{170.0, 179.5, 180.5, 190.0});
+    // No wrap at all, and still not bit-identity: 30 -> 29.999999999999996
+    // (np.degrees(np.radians(30.0))). Every consumer must use this value.
+    eclipse::Elements f;
+    f.mu = {10.0, 20.0, 30.0};
+    eclipse::unwrap_mu_deg(f);
+    CHECK(f.mu == std::vector<double>{10.0, 20.0, 29.999999999999996});
+    // An exact 180-degree step is left alone.
+    eclipse::Elements g;
+    g.mu = {0.0, 180.0};
+    eclipse::unwrap_mu_deg(g);
+    CHECK(g.mu == std::vector<double>{0.0, 180.0});
+}
+
+TEST_CASE("unwrap_mu_deg parity: the unw records of circumstances_cases.txt, bit-identical",
+          "[parity]") {
+    // unw n v1..vn u1..un: degrees in / out of np.degrees(np.unwrap(np.radians(v))).
+    int checked = 0;
+    for (const auto& r : fixtures::read("circumstances_cases.txt")) {
+        if (r.kind != "unw") continue;
+        const auto n = static_cast<std::size_t>(r.num(0));
+        REQUIRE(r.tokens.size() == 1 + 2 * n);
+        eclipse::Elements e;
+        for (std::size_t i = 0; i < n; ++i) e.mu.push_back(r.num(1 + i));
+        eclipse::unwrap_mu_deg(e);
+        INFO("unw record " << checked << " (" << n << " values)");
+        for (std::size_t i = 0; i < n; ++i) CHECK(e.mu[i] == r.num(1 + n + i));
+        ++checked;
+    }
+    CHECK(checked >= 4);
 }

@@ -18,6 +18,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(ECLIPSE_BUILD_PYTHON "Build the nanobind extension module _eclipse" ON)
 option(ECLIPSE_BUILD_TESTS  "Build the Catch2 test executable"             OFF)
 option(ECLIPSE_SANITIZE     "ASan+UBSan on libeclipse only (never on CSPICE)" OFF)
+option(ECLIPSE_OPENMP       "OpenMP for circumstances_grid (serial fallback when absent)" ON)
 
 # ccache when available (CSPICE is ~2,200 translation units; first build 2-4 min).
 find_program(CCACHE_PROGRAM ccache)
@@ -43,6 +44,7 @@ add_library(eclipse STATIC
   core/src/eop.cpp
   core/src/ephem.cpp
   core/src/geometry.cpp
+  core/src/circumstances.cpp
 )
 target_include_directories(eclipse PUBLIC core/include)
 target_link_libraries(eclipse PUBLIC cspice erfa)
@@ -53,6 +55,25 @@ endif()
 if(ECLIPSE_SANITIZE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(eclipse PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_link_options(eclipse PUBLIC -fsanitize=address,undefined)
+endif()
+
+# OpenMP for the observer loop of circumstances_grid (roadmap §5 phase 3). The
+# elements are evaluated once under the SPICE lock; the per-observer math is
+# pure and lock-free, so the loop parallelizes without touching CSPICE. Never
+# required: Apple Clang without libomp (and any other toolchain lacking it)
+# builds the serial loop, selected in the source by ECLIPSE_HAVE_OPENMP.
+# -fopenmp does not alter ECLIPSE_FP_FLAGS (-ffp-contract=off stays in force).
+if(ECLIPSE_OPENMP)
+  find_package(OpenMP QUIET)
+  if(OpenMP_CXX_FOUND)
+    target_link_libraries(eclipse PUBLIC OpenMP::OpenMP_CXX)
+    target_compile_definitions(eclipse PUBLIC ECLIPSE_HAVE_OPENMP)
+    message(STATUS "libeclipse: OpenMP ${OpenMP_CXX_VERSION} found; circumstances_grid is parallel")
+  else()
+    message(STATUS "libeclipse: OpenMP not found; circumstances_grid builds serial")
+  endif()
+else()
+  message(STATUS "libeclipse: ECLIPSE_OPENMP=OFF; circumstances_grid builds serial")
 endif()
 
 # ------------------------------------------------------------------ bindings
@@ -69,6 +90,7 @@ if(ECLIPSE_BUILD_PYTHON)
     bindings/bind_numerics.cpp
     bindings/bind_ellipsoid.cpp
     bindings/bind_geometry.cpp
+    bindings/bind_circumstances.cpp
   )
   target_link_libraries(_eclipse PRIVATE eclipse)
   target_compile_options(_eclipse PRIVATE ${ECLIPSE_FP_FLAGS})

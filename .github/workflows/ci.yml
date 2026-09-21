@@ -49,6 +49,8 @@ jobs:
           key: ubuntu-latest-ctest
       - name: Install dependencies (nanobind for the bindings target)
         run: uv sync
+      - name: Download SPICE kernels (NAIF if reachable, else mirror)
+        run: uv run python -m kernels.bootstrap
       - name: Configure, build, test
         run: |
           cmake --preset release
@@ -73,3 +75,5 @@ jobs:
         run: uv run python -m kernels.bootstrap --source mirror
       - name: Full validation (reference eclipses + native parity)
         run: uv run pytest -q
+      - name: Full validation through the native core
+        run: ECLIPSE_BACKEND=native uv run pytest -q

@@ -28,7 +28,8 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 ```
 
 Environment: `SPICE_EARTH_FRAME` overrides the default frame (`ITRS`);
-`SPICE_METAKERNEL` overrides the kernel path.
+`SPICE_METAKERNEL` overrides the kernel path; `ECLIPSE_BACKEND=native` routes
+the ephemeris layer through the C++ core (`app/native.py`; default `python`).
 
 ## Architecture (`app/`)
 
@@ -92,7 +93,7 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
    observers × instants) rather than looping; the scalar functions are thin
    wrappers over the array ones.
 
-## Native core (`libeclipse`, phase 0 done)
+## Native core (`libeclipse`, phases 0–1 done)
 
 `docs/CPP_ROADMAP.md` is the plan for the C++20 `libeclipse` core: the Python
 `app/` stays the API *and the oracle*; every C++ unit is parity-tested
@@ -106,6 +107,17 @@ structural, not stylistic:
 - Only `core/src/ephem.cpp` includes `SpiceUsr.h`/`erfa.h`; every CSPICE call
   goes through its `spice_call` (global mutex + RETURN mode + `failed_c()` →
   `eclipse::spice_error`). Everything else is pure math and lock-free.
+- **Port, don't improve.** C++ bodies keep the Python's operation order
+  (left-to-right as NumPy evaluates; `np.polyval` = Horner; `np.interp`
+  semantics in `eop.cpp`; `np.remainder` in `wrap_180`). A change to a
+  formula goes into both languages in the same PR, then
+  `uv run python tools/dump_oracle.py` regenerates `tests/cpp/fixtures/`.
+- Parity is checked live in `tests/test_native.py` (Python vs native over
+  dense windows) and offline in `tests/cpp/test_elements.cpp` (fixtures).
+  Residuals are documented there; do not widen a tolerance to make a test
+  pass.
+- The EOP table is injected from `app.eop` (`set_eop_table`); the C++ never
+  parses `finals2000A.all`.
 - No `-ffast-math`; `-ffp-contract=off` is set. Keep the Python's operation
   order so parity is bit-level, not "close".
 - `_eclipse` links its own CSPICE statically: its kernel pool is separate from

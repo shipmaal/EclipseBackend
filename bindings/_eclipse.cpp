@@ -1,11 +1,12 @@
 // nanobind module ``_eclipse`` — the Python face of libeclipse.
 //
 // Phase 1 (docs/CPP_ROADMAP.md §5): kernel management, time scales, EOP
-// injection, Besselian elements and sub-solar points. Arrays cross the
-// boundary as NumPy float64 (spans in, fresh ndarrays out); the SPICE-touching
-// calls release the GIL and the C++ side holds its own lock.
-#include <nanobind/nanobind.h>
-#include <nanobind/ndarray.h>
+// injection, Besselian elements and sub-solar points, bound here. Arrays
+// cross the boundary as NumPy float64 (spans in, fresh ndarrays out); the
+// SPICE-touching calls release the GIL and the C++ side holds its own lock.
+// Phase 2 units are bound one translation unit per core header
+// (bind_numerics / bind_ellipsoid / bind_geometry, see common.hpp) and
+// assembled at the end of NB_MODULE.
 #include <nanobind/stl/array.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
@@ -15,27 +16,14 @@
 #include <utility>
 #include <vector>
 
+#include "common.hpp"
 #include "eclipse/deltat.hpp"
 #include "eclipse/eop.hpp"
 #include "eclipse/ephem.hpp"
 
-namespace nb = nanobind;
 using namespace nb::literals;
 
 namespace {
-
-using In1D = nb::ndarray<const double, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
-using Out1D = nb::ndarray<nb::numpy, double, nb::ndim<1>>;
-
-std::span<const double> as_span(const In1D& a) { return {a.data(), a.shape(0)}; }
-
-// Hand a std::vector to NumPy without copying: the capsule owns the vector.
-Out1D to_numpy(std::vector<double>&& v) {
-    auto* heap = new std::vector<double>(std::move(v));
-    nb::capsule owner(heap, [](void* p) noexcept { delete static_cast<std::vector<double>*>(p); });
-    const size_t n = heap->size();
-    return Out1D(heap->data(), {n}, owner);
-}
 
 eclipse::Frame frame_arg(std::string_view s) { return eclipse::frame_from_string(s); }
 
@@ -199,4 +187,9 @@ NB_MODULE(_eclipse, m) {
             return nb::make_tuple(to_numpy(std::move(s.lon_deg)), to_numpy(std::move(s.lat_deg)));
         },
         "et"_a, "earth_frame"_a = "ITRS", "(lon_deg, lat_deg) of the sub-solar point at each et.");
+
+    // ---- phase 2 units (one binding TU per core header)
+    bind_numerics(m);
+    bind_ellipsoid(m);
+    bind_geometry(m);
 }

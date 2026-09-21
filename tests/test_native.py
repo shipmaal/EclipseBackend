@@ -274,3 +274,72 @@ def test_native_backend_raises_spiceypy_exception_types(monkeypatch, native_pool
 def test_unknown_frame_is_a_value_error(native_pool):
     with pytest.raises(ValueError, match="earth_frame"):
         native_pool.besselian_instants(np.array([0.0]), "GCRS")
+
+
+# ---------------------------------------------------------------- phase 2: numerics
+def test_numerics_parity(native_pool):
+    """eclipse/numerics.hpp against app.numerics and NumPy: exact (roadmap §4 —
+    same algorithm, same iteration count), driven by the SAME Python objective so
+    the C++ loop's arithmetic is the only variable."""
+    from app import numerics
+
+    # np.arange's fill rule (t[i] = start + i*((start+step)-start), not start + i*step).
+    assert np.array_equal(native_pool.np_arange(-5, 5 + 1e-9, 1 / 60),
+                          np.arange(-5, 5 + 1e-9, 1 / 60))
+    assert np.array_equal(native_pool.np_arange(-2.0, 2.0 + 1e-9, 2.0 / 60.0),
+                          np.arange(-2.0, 2.0 + 1e-9, 2.0 / 60.0))
+    assert np.array_equal(native_pool.np_arange(-90.0, 90.0 + 1e-9, 0.5),
+                          np.arange(-90.0, 90.0 + 1e-9, 0.5))
+    assert native_pool.np_arange(3.0, 1.0, 1.0).size == 0
+
+    # np.remainder on a grid with negatives, exact multiples and signed zeros.
+    a = np.concatenate([np.linspace(-1080.0, 1080.0, 4321), [-0.0, 0.0, 360.0, -360.0, 1e-300]])
+    for b in (360.0, -360.0, 24.0):
+        ours = np.array([native_pool.np_remainder(float(v), b) for v in a])
+        ref = np.remainder(a, b)
+        assert np.array_equal(ours, ref), b
+        assert np.array_equal(np.signbit(ours), np.signbit(ref)), b  # +0 / -0 too
+
+    # sign_changes: exact zero (direction from the next sample) and a NaN pair.
+    t = np.arange(8.0)
+    f = np.array([1.0, 0.0, 2.0, -1.0, np.nan, -3.0, 4.0, 0.0])
+    assert native_pool.sign_changes(t, f) == numerics.sign_changes(t, f)
+    assert native_pool.sign_changes(t, f) == [(1, True), (2, False), (5, True)]
+
+    # bisect: 200 brackets of cos(t) - t, bit-identical, 31 objective calls each.
+    calls = {"py": 0, "cc": 0}
+
+    def make(key):
+        def g(x):
+            calls[key] += 1
+            return np.cos(x) - x
+        return g
+
+    lo = np.linspace(-0.5, 0.7, 200)
+    hi = lo + np.linspace(1.3, 2.0, 200)  # every bracket holds the root 0.739...
+    ours = native_pool.bisect(make("cc"), lo, hi)
+    ref = numerics.bisect(make("py"), lo, hi)
+    assert np.array_equal(ours, ref)
+    assert calls == {"py": 31, "cc": 31}
+    assert np.max(np.abs(ours - 0.7390851332151607)) < 1e-8
+
+    # parabolic_minimum: shifted parabolas plus a non-polynomial bowl, 10 calls each.
+    calls = {"py": 0, "cc": 0}
+    centres = np.linspace(-1.0, 1.0, 50)
+
+    def make2(key):
+        def g(x):
+            calls[key] += 1
+            xx = x.reshape(3, -1)
+            return ((xx - centres) ** 2 + 0.1 * np.cos(3.0 * xx)).ravel()
+        return g
+
+    t0 = centres + 0.3
+    ours = native_pool.parabolic_minimum(make2("cc"), t0, 2.0)
+    ref = numerics.parabolic_minimum(make2("py"), t0, 2.0)
+    assert np.array_equal(ours, ref)
+    assert calls == {"py": 10, "cc": 10}
+    # An objective with a flat (denom == 0 -> NaN step) region does not move t0.
+    ours = native_pool.parabolic_minimum(lambda x: np.full_like(x, 2.0), t0, 1.0)
+    ref = numerics.parabolic_minimum(lambda x: np.full_like(x, 2.0), t0, 1.0)
+    assert np.array_equal(ours, ref) and np.array_equal(ours, t0)

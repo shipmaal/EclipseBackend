@@ -21,7 +21,7 @@ Four Earth-orientation frames are supported (``earth_frame``):
   UT1-UTC from :mod:`app.eop`).  Most accurate, and needs only PyPI data (no
   binary PCK).
 * ``"TOD"``   -- true equator & equinox of date (ERFA ``pnm06a`` + ``gst06a``),
-  UT1 approximated by UTC (no EOP).  Differs from ITRS only by the EOP terms.
+  no polar motion.  Differs from ITRS only by the EOP terms.
 * ``"ITRF93"`` -- SPICE Earth body-fixed frame from the high-precision binary
   Earth PCK (``earth_latest_high_prec.bpc``); equivalent accuracy to ITRS.
   Verified interchangeable with ITRS across the three reference eclipses --
@@ -41,15 +41,36 @@ How ``mu`` and the fundamental-plane coordinates stay consistent
   ``mu = -a``; equivalently, using ``mu = GST - a`` with ``GST = 0`` for the
   body-fixed vectors and ``GST = GAST`` for true-of-date unifies both cases.
 
-The input epoch is **UTC**; ``str2et`` converts it to TDB, so delta-T is handled
-by construction rather than as an afterthought.  (Note: the dominant historical
-error here was not the frame but the parametric->geodetic latitude conversion in
-``geography.py`` -- the frame contributes only a few km.)
+Time scales and delta-T
+-----------------------
+The input epoch is a **UTC** string.  Inside the IERS era (the Bulletin A table,
+1973 to ~1 year ahead) ``str2et`` converts it to TDB through the leap-second
+kernel, and UT1 = UTC + (UT1-UTC) from :mod:`app.eop`; delta-T is therefore the
+measured value.  Outside that era UTC is undefined (before 1972) or leap seconds
+are unknown (future), and SPICE would silently hold the first/last leap-second
+count -- e.g. ET-UTC = 41.18 s in 1900 against a true delta-T of -2.8 s.  There
+the epoch string is read as **UT1** and TT = UT1 + delta-T from the [Espenak]
+polynomial model (:mod:`app.deltat`), with polar motion set to zero.  The same
+rule is applied in both directions so :func:`utc_to_et` and the Earth-rotation
+angle stay consistent; see :func:`earth_rotation_times`.
+
+Published Besselian tables quote ``mu`` as the *ephemeris hour angle* (Earth
+rotation evaluated as if TT were UT); ours is the true Greenwich hour angle, so
+``mu_published = mu_ours + delta-T * 1.002738 * 15"/s`` [ES92] sec. 8.36 (see
+``tests/test_besselian_integration.py``).
+
+Thread safety
+-------------
+CSPICE keeps one global kernel pool and is **not** thread-safe.  Every function
+here that touches SPICE takes :data:`SPICE_LOCK` (a re-entrant lock), so callers
+running in a thread pool (FastAPI ``def`` endpoints) are serialized around the
+SPICE calls while the pure-NumPy geometry stays parallel.
 """
 
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -59,24 +80,30 @@ import numpy as np
 import spiceypy as spice
 
 from .constants import EARTH_EQUATORIAL_RADIUS_KM
-from .eop import eop
+from .deltat import decimal_year_from_jd, delta_t_seconds
+from .eop import eop, iers_mjd_range
 
 # Julian date of J2000.0, for two-part TT/UT1 dates passed to ERFA.
 _J2000_JD = 2451545.0
+_MJD_OFFSET = 2400000.5  # JD - MJD
 
 # Ratio of the lunar radius to Earth's equatorial radius.  The standard eclipse
 # predictions (Fred Espenak; Explanatory Supplement) use TWO values: a larger
 # constant for the penumbra and a smaller one for the umbra/antumbra (the umbral
 # value is reduced to allow for the mean effect of the lunar limb profile /
 # valleys).  Using a single value biases the umbral width.
-K_PENUMBRA = 0.2725076  # penumbral contacts (IAU mean lunar radius)
-K_UMBRA = 0.2722810     # umbral / antumbral contacts (Espenak)
+K_PENUMBRA = 0.2725076  # penumbral contacts (IAU mean lunar radius)  [Espenak]
+K_UMBRA = 0.2722810     # umbral / antumbral contacts                 [Espenak]
 
 # Default Earth-orientation frame.  "ITRS" (ERFA IAU 2006/2000A + IERS EOP) is the
 # most accurate and needs no binary PCK -- only PyPI data -- so it is the default.
 # "TOD" drops the EOP correction; "ITRF93" uses the SPICE binary Earth PCK;
 # "IAU_EARTH" is a coarse fallback.  Override with $SPICE_EARTH_FRAME.
 DEFAULT_EARTH_FRAME = os.environ.get("SPICE_EARTH_FRAME", "ITRS")
+
+# Serializes every CSPICE call (global, non-thread-safe kernel pool); see the
+# module docstring.  Re-entrant so nested helpers can take it freely.
+SPICE_LOCK = threading.RLock()
 
 _KERNELS_LOADED = False
 
@@ -92,22 +119,24 @@ def load_kernels(metakernel: str | os.PathLike | None = None) -> None:
     repo default ``kernels/eclipse.tm``.
     """
     global _KERNELS_LOADED
-    if _KERNELS_LOADED:
-        return
-    mk = Path(metakernel or os.environ.get("SPICE_METAKERNEL") or default_metakernel())
-    if not mk.exists():
-        raise FileNotFoundError(
-            f"SPICE metakernel not found at {mk}. Run `python -m kernels.bootstrap` "
-            "to download the required kernels (needs network access to NAIF)."
-        )
-    spice.furnsh(str(mk))
-    _KERNELS_LOADED = True
+    with SPICE_LOCK:
+        if _KERNELS_LOADED:
+            return
+        mk = Path(metakernel or os.environ.get("SPICE_METAKERNEL") or default_metakernel())
+        if not mk.exists():
+            raise FileNotFoundError(
+                f"SPICE metakernel not found at {mk}. Run `python -m kernels.bootstrap` "
+                "to download the required kernels (needs network access to NAIF)."
+            )
+        spice.furnsh(str(mk))
+        _KERNELS_LOADED = True
 
 
 def unload_kernels() -> None:
     global _KERNELS_LOADED
-    spice.kclear()
-    _KERNELS_LOADED = False
+    with SPICE_LOCK:
+        spice.kclear()
+        _KERNELS_LOADED = False
 
 
 def earth_equatorial_radius_km() -> float:
@@ -124,12 +153,81 @@ def earth_equatorial_radius_km() -> float:
 
 @lru_cache(maxsize=1)
 def sun_radius_km() -> float:
-    return float(spice.bodvrd("SUN", "RADII", 3)[1][0])
+    """Solar radius [km] from the PCK (696 000 km, IAU 1976 value).
+
+    This is the radius the [Espenak] predictions and the ``K_PENUMBRA``/``K_UMBRA``
+    lunar radii are paired with; it must not be swapped for the IAU 2015 nominal
+    695 700 km without re-deriving the k's, since the shadow-cone angles
+    ``sin f = (d_s +/- k) / G`` [ES92] eq. 8.323-1 depend on the pair.
+    """
+    with SPICE_LOCK:
+        return float(spice.bodvrd("SUN", "RADII", 3)[1][0])
+
+
+# --- Time scales ----------------------------------------------------------------
+
+def _in_iers_era(mjd) -> np.ndarray:
+    """True where ``mjd`` (any scale; the boundary tolerance is a day) has IERS EOP."""
+    lo, hi = iers_mjd_range()
+    m = np.asarray(mjd, dtype=float)
+    return (m >= lo) & (m <= hi)
 
 
 def utc_to_et(utc: str) -> float:
-    """Convert a UTC time string to ephemeris time (TDB seconds past J2000)."""
-    return spice.str2et(utc)
+    """Convert an epoch string to ephemeris time (TDB seconds past J2000).
+
+    Inside the IERS era the string is UTC and ``str2et`` applies the leap-second
+    kernel.  Outside it the string is read as UT1 and TT = UT1 + delta-T from
+    the [Espenak] polynomial (module docstring, "Time scales and delta-T");
+    TDB - TT (< 1.7 ms) is neglected there.
+    """
+    with SPICE_LOCK:
+        formal = spice.tparse(utc)[0]  # seconds past J2000 on the leap-second-free calendar
+        mjd = _J2000_JD - _MJD_OFFSET + formal / 86400.0
+        if _in_iers_era(mjd):
+            return float(spice.str2et(utc))
+    return float(formal + delta_t_seconds(decimal_year_from_jd(formal / 86400.0 + _J2000_JD)))
+
+
+def earth_rotation_times(et):
+    """Time arguments for Earth orientation at TDB ``et`` (scalar or 1-D array).
+
+    Returns ``(tt2, ut1_frac, xp, yp)``: TT and UT1 as fractional days past
+    J2000 (two-part JD second halves, first half ``_J2000_JD``) and polar motion
+    in radians.  Inside the IERS era UT1 = UTC + (UT1-UTC) with UTC from the
+    leap-second kernel [IERS2010]; outside it UT1 = TT - delta-T([Espenak]
+    polynomial) and xp = yp = 0.  TDB is used for TT (<= 1.7 ms, sub-mas; A4).
+    """
+    et = np.atleast_1d(np.asarray(et, dtype=float))
+    tt2 = et / 86400.0
+    with SPICE_LOCK:
+        delta_et = np.array([spice.deltet(e, "ET") for e in et])  # ET - UTC [s]
+    utc2 = (et - delta_et) / 86400.0
+    mjd_utc = _J2000_JD - _MJD_OFFSET + utc2
+
+    in_era = _in_iers_era(mjd_utc)
+    xp, yp, dut1 = eop(mjd_utc)
+    ut1_frac = np.where(in_era, utc2 + dut1 / 86400.0, np.nan)
+    if not in_era.all():
+        dt_model = delta_t_seconds(decimal_year_from_jd(_J2000_JD + tt2))
+        ut1_frac = np.where(in_era, ut1_frac, tt2 - dt_model / 86400.0)
+        xp = np.where(in_era, xp, 0.0)
+        yp = np.where(in_era, yp, 0.0)
+    return tt2, ut1_frac, xp, yp
+
+
+def tt_minus_ut1(et) -> np.ndarray:
+    """Delta-T = TT - UT1 [s] as actually used at ``et`` (measured or modelled)."""
+    tt2, ut1, _, _ = earth_rotation_times(et)
+    return (tt2 - ut1) * 86400.0
+
+
+# --- Geometry -------------------------------------------------------------------
+
+def _reclat(v: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorized ``spice.reclat``: (radius, longitude, latitude) of (..., 3) vectors."""
+    x, y, z = v[..., 0], v[..., 1], v[..., 2]
+    return np.linalg.norm(v, axis=-1), np.arctan2(y, x), np.arctan2(z, np.hypot(x, y))
 
 
 @dataclass(frozen=True)
@@ -150,68 +248,76 @@ class BesselianInstant:
     tan_f2: float
 
 
-def _geocentric_vectors(et: float, earth_frame: str):
+def _geocentric_vectors(et: np.ndarray, earth_frame: str):
     """Apparent geocentric Moon and Sun (Earth radii) plus the sidereal offset.
 
-    Returns ``(moon, sun, gast)`` where ``gast`` is 0 for a SPICE body-fixed
-    frame (longitudes are already Earth-fixed) and the Greenwich apparent
-    sidereal time (radians) for the ``"TOD"`` true-of-date frame; either way
-    ``mu = gast - a`` gives the axis' Greenwich hour angle.
+    ``et`` is a 1-D array of TDB seconds.  Returns ``(moon, sun, gast)`` with
+    ``moon``/``sun`` of shape (n, 3) and ``gast`` of shape (n,): 0 for an
+    Earth-fixed frame (longitudes are already Earth-fixed) and the Greenwich
+    apparent sidereal time (radians) for the ``"TOD"`` true-of-date frame;
+    either way ``mu = gast - a`` gives the axis' Greenwich hour angle.
     """
     a_e = earth_equatorial_radius_km()
+    n = len(et)
 
     if earth_frame in ("ITRS", "TOD"):
-        moon, _ = spice.spkpos("MOON", et, "J2000", "LT+S", "EARTH")
-        sun, _ = spice.spkpos("SUN", et, "J2000", "LT+S", "EARTH")
-        # TDB is used where ERFA expects TT: they differ by <= 1.7 ms, i.e. sub-mas
-        # in Earth orientation, well below our accuracy ceiling (item A4).
-        tt2 = et / 86400.0  # TT ~ TDB to < 2 ms
-        utc_jd = _J2000_JD + (et - spice.deltet(et, "ET")) / 86400.0
+        with SPICE_LOCK:
+            moon, _ = spice.spkpos("MOON", et, "J2000", "LT+S", "EARTH")
+            sun, _ = spice.spkpos("SUN", et, "J2000", "LT+S", "EARTH")
+        moon = np.asarray(moon).reshape(n, 3)
+        sun = np.asarray(sun).reshape(n, 3)
+        tt2, ut1_frac, xp, yp = earth_rotation_times(et)
 
         if earth_frame == "ITRS":
             # ERFA c2t06a: the full IAU 2006/2000A celestial-to-terrestrial rotation
             # matrix [SOFA] (Wallace & Capitaine 2006), driven by IERS polar motion
             # (xp, yp) and UT1-UTC [IERS2010] from :mod:`app.eop`.  Most accurate
             # Earth-fixed frame; needs no binary PCK.
-            xp, yp, dut1 = eop(utc_jd - 2400000.5)
-            ut1_frac = (utc_jd - _J2000_JD) + dut1 / 86400.0
-            rc2t = erfa.c2t06a(_J2000_JD, tt2, _J2000_JD, ut1_frac, xp, yp)
-            return (rc2t @ np.asarray(moon)) / a_e, (rc2t @ np.asarray(sun)) / a_e, 0.0
+            rc2t = erfa.c2t06a(_J2000_JD, tt2, _J2000_JD, ut1_frac, xp, yp)  # (n, 3, 3)
+            moon = np.einsum("nij,nj->ni", rc2t, moon)
+            sun = np.einsum("nij,nj->ni", rc2t, sun)
+            return moon / a_e, sun / a_e, np.zeros(n)
 
-        # TOD: true equator & equinox of date, GAST with UT1 ~ UTC (no EOP).
+        # TOD: true equator & equinox of date, GAST from UT1 (no polar motion).
         # ERFA pnm06a = IAU 2006/2000A precession-nutation matrix; gst06a = Greenwich
         # apparent sidereal time, both [SOFA] (Wallace & Capitaine 2006).
-        rbpn = erfa.pnm06a(_J2000_JD, tt2)  # GCRS -> true-of-date
-        moon = rbpn @ np.asarray(moon)
-        sun = rbpn @ np.asarray(sun)
-        gast = float(erfa.gst06a(utc_jd, 0.0, _J2000_JD, tt2))
-        return moon / a_e, sun / a_e, gast
+        rbpn = erfa.pnm06a(_J2000_JD, tt2)  # GCRS -> true-of-date, (n, 3, 3)
+        moon = np.einsum("nij,nj->ni", rbpn, moon)
+        sun = np.einsum("nij,nj->ni", rbpn, sun)
+        gast = np.asarray(erfa.gst06a(_J2000_JD, ut1_frac, _J2000_JD, tt2), dtype=float)
+        return moon / a_e, sun / a_e, gast.reshape(n)
 
-    moon, _ = spice.spkpos("MOON", et, earth_frame, "LT+S", "EARTH")
-    sun, _ = spice.spkpos("SUN", et, earth_frame, "LT+S", "EARTH")
-    return np.asarray(moon) / a_e, np.asarray(sun) / a_e, 0.0
+    with SPICE_LOCK:
+        moon, _ = spice.spkpos("MOON", et, earth_frame, "LT+S", "EARTH")
+        sun, _ = spice.spkpos("SUN", et, earth_frame, "LT+S", "EARTH")
+    return (np.asarray(moon).reshape(n, 3) / a_e, np.asarray(sun).reshape(n, 3) / a_e,
+            np.zeros(n))
 
 
-def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> BesselianInstant:
-    """Compute the Besselian elements at ephemeris time ``et``.
+def besselian_instants(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> dict[str, np.ndarray]:
+    """Besselian elements at each TDB ``et`` of a 1-D array, as arrays.
 
-    All quantities are geocentric and apparent (``LT+S``); ``earth_frame`` selects
-    the Earth-orientation model (``"ITRS"`` (default), ``"TOD"``, ``"ITRF93"`` or
-    ``"IAU_EARTH"``) -- see the module docstring.
+    Returns a dict with keys ``x, y, d, mu, l1, l2, tan_f1, tan_f2`` (same units
+    as :class:`BesselianInstant`: ``d, mu`` in degrees, lengths in Earth radii),
+    each an array of ``len(et)``.  This is the vectorized core; the whole
+    computation is a few array-valued SPICE/ERFA calls, so evaluating a
+    thousand instants costs about the same as evaluating one in a loop did.
+    ``mu`` is returned wrapped to (-180, 180]; callers that fit or difference it
+    should ``np.unwrap``.
     """
+    et = np.atleast_1d(np.asarray(et, dtype=float))
     a_e = earth_equatorial_radius_km()
 
     moon, sun, gast = _geocentric_vectors(et, earth_frame)
 
     # Moon geocentric spherical coordinates.
-    r_moon, alpha, delta = spice.reclat(moon)
+    r_moon, alpha, delta = _reclat(moon)
 
     # Shadow-axis direction: from the Moon toward the Sun (S - M), matching the
     # Explanatory Supplement sign convention [ES92] ch. 8.  Its longitude is ``a``
     # and its latitude is the axis declination ``d``; its length is the Sun-Moon
     # distance used by the shadow-cone geometry.
-    axis = sun - moon
-    g_dist, a, d = spice.reclat(axis)
+    g_dist, a, d = _reclat(sun - moon)
 
     mu = gast - a  # Greenwich hour angle of the axis [ES92] ch. 8
 
@@ -226,34 +332,51 @@ def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> Bess
     d_s = sun_radius_km() / a_e  # solar radius in Earth radii
     sin_f1 = (d_s + K_PENUMBRA) / g_dist
     sin_f2 = (d_s - K_UMBRA) / g_dist
-    tan_f1 = float(np.tan(np.arcsin(sin_f1)))
-    tan_f2 = float(np.tan(np.arcsin(sin_f2)))
+    tan_f1 = np.tan(np.arcsin(sin_f1))
+    tan_f2 = np.tan(np.arcsin(sin_f2))
 
-    c1 = z + K_PENUMBRA / sin_f1
-    c2 = z - K_UMBRA / sin_f2
-    l1 = c1 * tan_f1
-    l2 = c2 * tan_f2
+    l1 = (z + K_PENUMBRA / sin_f1) * tan_f1
+    l2 = (z - K_UMBRA / sin_f2) * tan_f2
 
-    return BesselianInstant(
-        x=float(x),
-        y=float(y),
-        d=float(np.degrees(d)),
-        mu=float(np.degrees(mu)),
-        l1=float(l1),
-        l2=float(l2),
-        tan_f1=tan_f1,
-        tan_f2=tan_f2,
-    )
+    return {
+        "x": x,
+        "y": y,
+        "d": np.degrees(d),
+        "mu": (np.degrees(mu) + 180.0) % 360.0 - 180.0,
+        "l1": l1,
+        "l2": l2,
+        "tan_f1": tan_f1,
+        "tan_f2": tan_f2,
+    }
+
+
+def besselian_instant(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> BesselianInstant:
+    """Compute the Besselian elements at ephemeris time ``et`` (scalar form).
+
+    All quantities are geocentric and apparent (``LT+S``); ``earth_frame`` selects
+    the Earth-orientation model (``"ITRS"`` (default), ``"TOD"``, ``"ITRF93"`` or
+    ``"IAU_EARTH"``) -- see the module docstring.  Thin wrapper over
+    :func:`besselian_instants`.
+    """
+    e = besselian_instants(np.array([float(et)]), earth_frame)
+    return BesselianInstant(**{k: float(v[0]) for k, v in e.items()})
+
+
+def sub_solar_points(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> tuple[np.ndarray, np.ndarray]:
+    """Geographic (lon, lat) arrays [deg] of the sub-solar point at each ``et``.
+
+    Latitude is the Sun's declination in the Earth-fixed frame, which equals the
+    geodetic latitude of the point where the Sun is at the zenith (the zenith is
+    the ellipsoid normal); longitude is east-positive in (-180, 180].
+    """
+    et = np.atleast_1d(np.asarray(et, dtype=float))
+    _moon, sun, gast = _geocentric_vectors(et, earth_frame)
+    _r, lon, lat = _reclat(sun)
+    lon_deg = (np.degrees(lon - gast) + 180.0) % 360.0 - 180.0
+    return lon_deg, np.degrees(lat)
 
 
 def sub_solar_point(et: float, earth_frame: str = DEFAULT_EARTH_FRAME) -> tuple[float, float]:
-    """Geographic (lon, lat) in degrees of the point where the Sun is at zenith.
-
-    Latitude is the Sun's declination-of-date (which equals the geodetic latitude
-    of the sub-solar point); longitude is east-positive in (-180, 180].  Used to
-    place the frontend's sunlight and render the day/night terminator.
-    """
-    _moon, sun, gast = _geocentric_vectors(et, earth_frame)
-    _r, lon, lat = spice.reclat(sun)
-    lon_deg = (np.degrees(lon - gast) + 180.0) % 360.0 - 180.0
-    return float(lon_deg), float(np.degrees(lat))
+    """Scalar form of :func:`sub_solar_points`: ``(lon, lat)`` in degrees."""
+    lon, lat = sub_solar_points(np.array([float(et)]), earth_frame)
+    return float(lon[0]), float(lat[0])

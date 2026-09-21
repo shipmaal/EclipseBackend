@@ -239,9 +239,48 @@ compares the live Python and native results over dense windows.
    bounds separately from the 1e-13 gate it asserts at eclipse-realistic
    |mu| ≤ 120. Fixtures: `tests/cpp/fixtures/geometry_cases.txt` (+ the
    per-eclipse `contacts` records) from `tools/dump_oracle.py`.
-3. **Circumstances.** Exit: durations/magnitudes/horizon flags identical;
-   `circumstances_grid` parallel (OpenMP or `par_unseq`) with a benchmark
-   test: 0.5° global grid < 0.5 s (Python: 5 s).
+3. **Circumstances — DONE.** `circumstances.hpp` (`series`, `roots`,
+   `bracketed_series`, `refine_contacts`, `refine_maximum`, `overlap_area`,
+   `obscuration`, `sun_altaz` / `sun_alt_grid`, `local_circumstances`,
+   `circumstances_grid`), every expression in the Python's operation order;
+   the ephemeris enters through an injected `Model` so the grid's observer
+   loop runs OpenMP-parallel after one serial element evaluation under the
+   SPICE lock (`ECLIPSE_OPENMP`, serial fallback without libomp; identical
+   results for any thread count — no cross-observer reductions). Bound as
+   `local_circumstances(et0, frame, hw, lat, lon)` → the `_LocalRaw` tuple
+   and `circumstances_grid(et0, frame, hw, lats, lons, step_minutes,
+   threads)` → the oracle's dict (`to_numpy_bool` for `visible` /
+   `central`), GIL released; `app/circumstances.py` dispatches
+   `local_circumstances` (numbers native, `_format_local` Python) and
+   `circumstances_grid` (`chunk` ignored natively). Exit met: the whole suite
+   passes with `ECLIPSE_BACKEND=native`, so the Espenak durations 160 / 268 /
+   317 s, the magnitudes, the NYC partial, the night-side `eclipse False`,
+   the Irish sunset `["max", "C4"]`, the grid-vs-scalar and the 1919
+   duration assertions run through C++, and `/circumstances` and `/map` parse
+   to identical JSON through the two backends for twelve requests
+   (test_api's, the seven reference sites, the 10° map and the default 2°
+   maps of the three eclipses). Measured parity (`tests/test_native.py`,
+   x86-64, 39 sites × 3 eclipses incl. poles, antimeridian, a 1-hour window
+   that forces the bracketing to widen): flags and NaN masks identical,
+   contacts C1–C4 bit-identical (0.0), t_max 2.55e-12 h (the parabolic
+   step amplifies 1 ulp of the magnitude samples), magnitude / obscuration /
+   L2_x 1.5e-14, altitude 2.1e-14 deg, azimuth 5.7e-14 deg (gates 1e-9 h /
+   1e-12 / 1e-11 deg); grid over 3 × 684 cells: `visible` / `central`
+   identical, t_max_hours 0.0, magnitude 7.3e-14, obscuration 6.3e-14,
+   sun_alt 5.7e-14 deg (gate 1e-12), `threads=1` equal to the OpenMP default.
+   Benchmark (`test_circumstances_grid_benchmark`, `ECLIPSE_BENCH=1`; the
+   0.5° grid exceeds `MAX_MAP_CELLS`, so it calls the function directly):
+   361 × 720 observers × 181 instants in 0.38 s at the OpenMP default on
+   the 4-core development host (1.39 s serial) against 4.0 s for the Python
+   `circumstances_grid` (which it matches: bools identical, floats ≤ 9.4e-14
+   on that grid too); gate 0.5 s there, 2.0 s in CI as a regression guard
+   on shared 2–4 vCPU runners (`ECLIPSE_BENCH_MAX_S`). Offline fixtures:
+   `tests/cpp/fixtures/*.txt` `local` / `grid` records from
+   `tools/dump_oracle.py` (`tests/cpp/test_circumstances.cpp`). Operational
+   note: libgomp is not fork-safe after its pool has started, so a forking
+   server (gunicorn) must not `--preload` and warm the native grid in the
+   parent. The oracle's ValueError (partial roots all one-signed) maps to
+   ValueError natively; no site of a 5° global scan reaches it.
 4. **Catalog + batch.** Exit: 2019–2024 canon identical; a century scan
    with `detail=True` < 10 s; `/eclipses` and `/map` default to native.
    This is the payoff phase.

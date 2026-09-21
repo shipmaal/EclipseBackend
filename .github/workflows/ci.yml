@@ -75,5 +75,8 @@ jobs:
         run: uv run python -m kernels.bootstrap --source mirror
       - name: Full validation (reference eclipses + native parity)
         run: uv run pytest -q
-      - name: Full validation through the native core
-        run: ECLIPSE_BACKEND=native uv run pytest -q
+      # The 0.5-degree grid benchmark (roadmap §5 phase 3) is gated at 0.5 s on
+      # the developer host (4 cores); here it is a regression guard on shared
+      # 2-4 vCPU runners, so the gate is 2.0 s.
+      - name: Full validation through the native core (+ grid benchmark)
+        run: ECLIPSE_BACKEND=native ECLIPSE_BENCH=1 ECLIPSE_BENCH_MAX_S=2.0 uv run pytest -q

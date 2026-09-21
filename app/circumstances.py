@@ -32,6 +32,7 @@ from typing import NamedTuple, TypedDict
 
 import numpy as np
 
+from . import native
 from .ephemeris import sub_solar_points
 from .geography import bearing, format_clock, geo_to_fund
 from .numerics import bisect, sign_changes
@@ -377,7 +378,15 @@ def local_circumstances(model, lat: float, lon: float) -> LocalCircumstances:
     event is, ``eclipse`` is ``False`` (module docstring, "Horizon").
 
     The numbers are :func:`_local_raw`; the dict shape is :func:`_format_local`.
+    Dispatches the numbers to the native core under ``ECLIPSE_BACKEND=native``
+    (the elements are re-evaluated there from the model's ``et0`` / frame /
+    fit half-window; formatting stays here).
     """
+    if native.is_native():
+        raw = native.module().local_circumstances(
+            model.et0, model.earth_frame, model.half_window_hours, float(lat), float(lon)
+        )
+        return _format_local(model.t0_utc, lat, lon, _LocalRaw(*raw))
     return _format_local(model.t0_utc, lat, lon, _local_raw(model, lat, lon))
 
 
@@ -402,9 +411,21 @@ def circumstances_grid(
     above ``HORIZON_ALT_DEG`` at maximum) and ``central`` (inside the
     umbra/antumbra at maximum).  Same geometry as :func:`local_circumstances`,
     minus the contact times and refinement.
+
+    Dispatches to the native core under ``ECLIPSE_BACKEND=native`` (same keys,
+    dtypes and shapes; the observer loop runs in parallel there).  ``chunk``
+    only bounds the Python path's memory and is ignored natively.
     """
     lats = np.atleast_1d(np.asarray(lats, dtype=float))
     lons = np.atleast_1d(np.asarray(lons, dtype=float))
+    if native.is_native():
+        g = native.module().circumstances_grid(
+            model.et0, model.earth_frame, model.half_window_hours,
+            np.ascontiguousarray(lats, dtype=float), np.ascontiguousarray(lons, dtype=float),
+            float(step_minutes),
+        )
+        return {k: g[k] for k in ("magnitude", "obscuration", "t_max_hours", "sun_alt",
+                                  "visible", "central")}
     hw = model.half_window_hours
     t = np.arange(-hw, hw + 1e-9, step_minutes / 60.0)
     ss_lon, ss_lat = sub_solar_points(model.et0 + t * 3600.0, model.earth_frame)

@@ -10,8 +10,12 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <span>
+#include <string_view>
 #include <vector>
+
+#include "eclipse/elements.hpp"
 
 namespace eclipse::limb {
 
@@ -26,6 +30,12 @@ inline constexpr double FLOOR_KM = 20.0;
 
 /// More empty bins than this fraction is an error (app.limb.MAX_EMPTY_FRACTION).
 inline constexpr double MAX_EMPTY_FRACTION = 0.1;
+/// One lunar radius for both cones in profile mode: the LOLA sphere in Earth
+/// equatorial radii (``app.limb.K_REF``; [LOLA], [WGS84] a).
+inline constexpr double K_REF = R_REF_KM / 6378.137;
+/// Profile time lattice [s of TDB] (``app.limb.LATTICE_S``).
+inline constexpr double LATTICE_S = 300.0;
+inline constexpr double INF_DISTANCE = std::numeric_limits<double>::infinity();
 
 /// Install the limb band (``app.limb.install_native``): per run ``line``,
 /// ``first`` sample and ``count``; DN per point in run order; each point's
@@ -43,13 +53,40 @@ void set_band(std::span<const std::int32_t> line, std::span<const std::int32_t> 
 bool has_band();
 
 /// ``app.limb.silhouette``: delta_rho per bin for the view ``axes`` (row-major
-/// rows x^, y^, z^ in the DEM frame, ``ephem::limb_axes``): the max over the
-/// projected points and grid edges (``app.limb._edge_crossings``). Throws
+/// rows x^, y^, z^ in the DEM frame, ``ephem::limb_axes``) in perspective from
+/// ``distance_km`` along -z^ (apparent radius ``|q| / (1 + w / D)``,
+/// ``w = p . z^``; infinity = orthographic): the max over the projected points
+/// and grid edges (``app.limb._edge_crossings``), minus ``sphere_radius(D)``. Throws
 /// ``std::invalid_argument`` if z^ leaves the band's coverage or more than
 /// MAX_EMPTY_FRACTION of the bins are empty (fewer are filled by periodic
 /// linear interpolation, app.limb._fill_empty).
 /// OpenMP-parallel (per-thread maxima merged; identical for any thread count).
-std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins = N_BINS);
+std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins = N_BINS,
+                               double distance_km = INF_DISTANCE);
+
+/// ``app.limb.sphere_radius``: ``R / sqrt(1 - (R / D)^2)``, the LOLA sphere's
+/// apparent radius in km at distance ``D`` (tangent cone).
+double sphere_radius(double distance_km);
+
+/// ``app.limb.profiles_at``: n profiles (row-major n x N_BINS) at TDB ``et``,
+/// linear in time between cached ``LATTICE_S`` nodes (each node the
+/// silhouette along ``ephem::limb_axes`` of ``node * LATTICE_S``). The cache
+/// is keyed by node, frames and the installed band, and thread-safe.
+std::vector<double> profiles_at(std::span<const double> et, Frame frame,
+                                std::string_view moon_frame = "MOON_ME");
+
+/// ``app.limb.g_total``: per instant i, ``max_phi |Q| - r_M(arg Q)`` with
+/// ``Q = P + R_s e(phi)`` at the bin centres; ``profiles`` row-major n x
+/// ``n_bins``. Totality <=> negative (docs/LIMB_PROFILE.md sec. 3.3).
+std::vector<double> g_total(std::span<const double> px, std::span<const double> py,
+                            std::span<const double> r_s, std::span<const double> r_m,
+                            std::span<const double> profiles, int n_bins = N_BINS);
+
+/// ``app.limb.g_annular``: per instant, ``max_psi |M(psi) - P| - R_s``,
+/// ``M = r_M(psi) e(psi)`` at the bin centres. Annularity <=> negative.
+std::vector<double> g_annular(std::span<const double> px, std::span<const double> py,
+                              std::span<const double> r_s, std::span<const double> r_m,
+                              std::span<const double> profiles, int n_bins = N_BINS);
 
 /// ``app.limb.delta_rho_at``: periodic linear interpolation at bin centres.
 std::vector<double> delta_rho_at(std::span<const double> profile, std::span<const double> psi);

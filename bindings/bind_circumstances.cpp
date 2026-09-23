@@ -47,20 +47,37 @@ void bind_circumstances(nb::module_& m) {
     m.def(
         "local_circumstances",
         [](double et0, std::string_view earth_frame, double half_window_hours, double lat_deg,
-           double lon_deg) {
+           double lon_deg, bool profile) {
             const eclipse::Frame f = eclipse::frame_from_string(earth_frame);
             circ::LocalRaw r;
             {
                 nb::gil_scoped_release nogil;
-                r = circ::local_circumstances(et0, f, half_window_hours, lat_deg, lon_deg);
+                r = circ::local_circumstances(et0, f, half_window_hours, lat_deg, lon_deg, profile);
             }
             return local_raw_tuple(r);
         },
         "et0"_a, "earth_frame"_a, "half_window_hours"_a, "lat_deg"_a, "lon_deg"_a,
+        "profile"_a = false,
         "app.circumstances._local_raw for a model at et0 [TDB s] in earth_frame with the\n"
         "given fit half-window [h]: the _LocalRaw fields, in order, as a tuple (geometric,\n"
         "central, c1, c4, c2, c3, t_max, magnitude, obscuration, L2_x, alt_deg[5], az_deg[5],\n"
-        "below[5], eclipse). Times in hours from T0; NaN / False in absent slots.");
+        "below[5], eclipse). Times in hours from T0; NaN / False in absent slots.\n"
+        "profile=True is limb=\"profile\" (the band must be installed: set_limb_band).");
+    m.def(
+        "profile_g",
+        [](double et0, std::string_view earth_frame, double half_window_hours, double lat_deg,
+           double lon_deg, In1D t_hours) {
+            const eclipse::Frame f = eclipse::frame_from_string(earth_frame);
+            std::vector<double> g;
+            {
+                nb::gil_scoped_release nogil;
+                g = circ::profile_g(circ::model_from_ephem(et0, f, half_window_hours), lat_deg,
+                                    lon_deg, as_span(t_hours));
+            }
+            return to_numpy(std::move(g));
+        },
+        "et0"_a, "earth_frame"_a, "half_window_hours"_a, "lat_deg"_a, "lon_deg"_a, "t_hours"_a,
+        "app.circumstances._profile_g: the limb-profile contact function at t_hours.");
     m.def(
         "circumstances_grid",
         [](double et0, std::string_view earth_frame, double half_window_hours, In1D lat_deg,

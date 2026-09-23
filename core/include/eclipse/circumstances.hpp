@@ -23,7 +23,8 @@
 // rise/set altitude ``h0 = -0 deg 50'`` [Meeus98] ch. 15 is flagged ``below``,
 // and an observer for whom C1, maximum and C4 are all below it sees no eclipse
 // (``eclipse = false``). Geometric only otherwise: no refraction on the
-// contacts, mean lunar limb (folded into k2).
+// contacts; the mean lunar limb (folded into k2), or with ``profile`` the
+// central phase from the LOLA limb profile (docs/LIMB_PROFILE.md).
 //
 // Every expression is written in the Python's exact floating-point operation
 // order (NumPy evaluates left to right; ``np.hypot`` is ``std::hypot``), so a
@@ -89,14 +90,22 @@ using geometry::ElementsAt;
 /// ``sub_solar_points(et0 + t * 3600.0, frame)`` (``app.ephemeris``).
 using SubSolarAt = std::function<ephem::SubSolar(std::span<const double> t_hours)>;
 
+/// Limb profiles at offsets ``t_hours`` from T0 [hours]: row-major n x
+/// ``limb::N_BINS`` (``app.limb.profiles_at(et0 + t * 3600, frame)``).
+using ProfilesAt = std::function<std::vector<double>(std::span<const double> t_hours)>;
+
 /// The slice of ``BesselianModel`` the circumstances read: direct element
 /// evaluation, the sub-solar point (for the horizon check) and the fit
 /// half-window [hours] that seeds ``bracketed_series`` and bounds the grid.
-/// The polynomial fit itself stays in Python (roadmap §4).
+/// The polynomial fit itself stays in Python (roadmap §4). The limb-profile
+/// mode also reads ``elements_ref_at`` (the elements with ``limb::K_REF``
+/// for both cones, ``evaluate_direct(t, K_REF, K_REF)``) and ``profiles_at``.
 struct Model {
     ElementsAt elements_at;
     SubSolarAt sub_solar_at;
     double half_window_hours;
+    ElementsAt elements_ref_at = nullptr;
+    ProfilesAt profiles_at = nullptr;
 };
 
 /// A ``Model`` bound to the ephemeris exactly as ``BesselianModel`` at
@@ -253,6 +262,29 @@ struct LocalRaw {
     bool eclipse;
 };
 
+/// Profile-mode search constants (``app.circumstances._PROFILE_*``) [hours, km].
+inline constexpr double PROFILE_STEP_H = 0.5 / 3600.0;
+inline constexpr double PROFILE_MARGIN_H = 30.0 / 3600.0;
+inline constexpr double PROFILE_GRAZE_H = 3.0 / 60.0;
+inline constexpr double PROFILE_NEAR_KM = 12.0;
+inline constexpr int PROFILE_MAX_WIDEN = 10;
+
+/// ``_profile_g``: the limb-profile contact function at offsets ``t_hours``
+/// (``G_T`` where ``L2' < 0``, else ``G_A``; negative = central phase), from
+/// ``model.elements_ref_at`` and ``model.profiles_at``.
+std::vector<double> profile_g(const Model& model, double lat_deg, double lon_deg,
+                              std::span<const double> t_hours);
+
+/// ``_profile_contacts``: ``(central, c2, c3)`` [hours] in ``[t_lo, t_hi]``,
+/// a central window end pushed out by ``PROFILE_MARGIN_H`` up to
+/// ``PROFILE_MAX_WIDEN`` times.
+struct ProfileContacts {
+    bool central;
+    double c2, c3;
+};
+ProfileContacts profile_contacts(const Model& model, double lat_deg, double lon_deg, double t_lo,
+                                 double t_hi);
+
 /// ``_local_raw``: local circumstances of the observer ``(lat_deg, lon_deg)``
 /// [deg]. T0 should be near the observer's maximum. ``bracketed_series``,
 /// ``roots`` of ``m - L1'`` (first falling -> C1, last rising -> C4),
@@ -261,13 +293,16 @@ struct LocalRaw {
 /// -> C2, first exiting at or after -> C3), ``refine_contacts`` of all
 /// brackets together, ``refine_maximum``, the series re-evaluated at the
 /// refined maximum, and ``sun_altaz`` at every event.
-LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg);
+/// ``profile`` (``limb="profile"``) takes the central phase from
+/// ``profile_contacts`` as the Python does.
+LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg,
+                             bool profile = false);
 
 /// ``local_circumstances`` through ``model_from_ephem(et0, frame,
 /// half_window_hours)`` — what ``/circumstances`` computes for a
 /// ``BesselianModel`` at ``et0`` [TDB s].
 LocalRaw local_circumstances(double et0, Frame frame, double half_window_hours, double lat_deg,
-                             double lon_deg);
+                             double lon_deg, bool profile = false);
 
 // --------------------------------------------------------------------- grid
 

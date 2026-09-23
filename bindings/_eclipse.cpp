@@ -154,12 +154,12 @@ NB_MODULE(_eclipse, m) {
     // ---- geometry
     m.def(
         "besselian_instants",
-        [](In1D et, std::string_view earth_frame) {
+        [](In1D et, std::string_view earth_frame, double k1, double k2) {
             const eclipse::Frame f = frame_arg(earth_frame);
             eclipse::Elements e;
             {
                 nb::gil_scoped_release nogil;
-                e = eclipse::ephem::besselian_instants(as_span(et), f);
+                e = eclipse::ephem::besselian_instants(as_span(et), f, k1, k2);
             }
             nb::dict out;
             out["x"] = to_numpy(std::move(e.x));
@@ -173,8 +173,10 @@ NB_MODULE(_eclipse, m) {
             out["tan_f2"] = to_numpy(std::move(e.tan_f2));
             return out;
         },
-        "et"_a, "earth_frame"_a = "ITRS",
-        "Besselian elements at each et: dict of arrays as app.ephemeris.besselian_instants.");
+        "et"_a, "earth_frame"_a = "ITRS", "k1"_a = eclipse::constants::K_PENUMBRA,
+        "k2"_a = eclipse::constants::K_UMBRA,
+        "Besselian elements at each et: dict of arrays as app.ephemeris.besselian_instants\n"
+        "(k1 / k2: the penumbral / umbral cones' lunar radii [Earth radii]).");
     m.def(
         "axis_separation",
         [](In1D et) {

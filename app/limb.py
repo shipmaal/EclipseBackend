@@ -51,6 +51,15 @@ VISIBLE_DEG = 8.0
 # -- every bin keeps a point above it, which silhouette() checks.
 FLOOR_KM = 20.0
 
+# One lunar radius for both cones in profile mode: the LOLA sphere in Earth
+# equatorial radii ([LOLA] / [WGS84] a); the valleys come from the DEM, not a
+# reduced k (docs/LIMB_PROFILE.md sec. 3.3).
+K_REF = R_REF_KM / 6378.137
+
+# Time lattice of cached profiles [s of TDB]: nodes at multiples of 300 s,
+# linear in time between them (<= 22 m, docs sec. 9.3).
+LATTICE_S = 300.0
+
 # More empty bins than this fraction (before :func:`_fill_empty`) is an error.
 MAX_EMPTY_FRACTION = 0.1
 
@@ -173,19 +182,37 @@ def install_native(band: LimbBand) -> None:
     _native_band = band
 
 
-def silhouette(band: LimbBand, axes, n_bins: int = N_BINS) -> np.ndarray:
+def ensure_native_band(path: str | None = None) -> LimbBand:
+    """Load the default (or ``path``) band and make sure the native core holds it."""
+    band = load_band(path)
+    with native.PARALLEL_LOCK:
+        if _native_band is not band:
+            install_native(band)
+    return band
+
+
+def silhouette(band: LimbBand, axes, n_bins: int = N_BINS,
+               distance_km: float = math.inf) -> np.ndarray:
     """``delta_rho`` [km] per bin: the DEM's silhouette seen along ``axes[2]``.
 
     ``axes`` is one ``(3, 3)`` block of :func:`app.ephemeris.limb_axes` (rows
     ``x^, y^, z^`` in the DEM's frame).  Each band point ``p = r n`` (``n``
     from the pixel-centre latitude/longitude, ``r = offset + DN * scale``) is
-    projected onto the plane, ``q = (p . x^, p . y^)``; a bin's radius is the
-    largest ``|q|`` of the points falling in it and of the grid edges crossing
-    it (:func:`_edge_crossings`) -- the orthographic silhouette of the
-    piecewise-linear DEM surface (design note sec. 3.2), the view distance
-    being ~220 lunar radii.  Only points above ``R_REF_KM - FLOOR_KM`` and
-    edges between two of them take part.  Bins still empty are filled by
-    :func:`_fill_empty`.  Raises ``ValueError`` if the view axis
+    projected onto the plane, ``q = (p . x^, p . y^)``, and seen in
+    perspective from ``distance_km`` along ``-z^`` (:func:`app.ephemeris.
+    limb_axes`): its apparent radius, in km at that distance, is
+    ``|q| / (1 + w / D)`` with ``w = p . z^`` (a point in front of the limb
+    plane looks larger by ``R^2 sin(alpha) / D``, up to ~0.9 km at 6 deg --
+    the orthographic silhouette was 0.2-0.6 s off the 3D oracle, sec. 9.6).
+    A bin's radius is the largest of the points falling in it and of the grid
+    edges crossing it (:func:`_edge_crossings`): the silhouette of the
+    piecewise-linear DEM surface (design note sec. 3.2).  ``delta_rho`` is
+    measured from the LOLA sphere's own apparent radius at that distance,
+    ``R / sqrt(1 - (R / D)^2)`` (the tangent cone, i.e. what the cone
+    elements' ``k`` describes), so a smooth sphere gives 0 for any ``D``;
+    ``D = inf`` is the orthographic silhouette.  Only points above
+    ``R_REF_KM - FLOOR_KM`` and edges between two of them take part.  Bins
+    still empty are filled by :func:`_fill_empty`.  Raises ``ValueError`` if the view axis
     leaves the band's coverage or too many bins are empty.  Dispatches to
     the native core.
     """
@@ -199,8 +226,9 @@ def silhouette(band: LimbBand, axes, n_bins: int = N_BINS) -> np.ndarray:
         with native.PARALLEL_LOCK:  # one OpenMP team per process (review item C9)
             if _native_band is not band:
                 install_native(band)
-            return native.module().limb_silhouette(np.ascontiguousarray(axes), int(n_bins))
-    x, y = axes[0], axes[1]
+            return native.module().limb_silhouette(np.ascontiguousarray(axes), int(n_bins),
+                                                   float(distance_km))
+    x, y, z = axes[0], axes[1], axes[2]
     r = band.offset_km + band.dn * band.scale_km
     cl = band.cos_lat[band.line_idx]
     px = r * (cl * band.cos_lon[band.col_idx])
@@ -208,7 +236,9 @@ def silhouette(band: LimbBand, axes, n_bins: int = N_BINS) -> np.ndarray:
     pz = r * band.sin_lat[band.line_idx]
     qx = (px * x[0] + py * x[1]) + pz * x[2]
     qy = (px * y[0] + py * y[1]) + pz * y[2]
-    s = np.sqrt(qx * qx + qy * qy)  # not np.hypot: SIMD, differs from libm by 1 ulp
+    w = (px * z[0] + py * z[1]) + pz * z[2]
+    # Perspective from distance D along -z^; not np.hypot: SIMD, 1 ulp off libm.
+    s = np.sqrt(qx * qx + qy * qy) / (1.0 + w / distance_km)
     floor_km = R_REF_KM - FLOOR_KM
     near = s > floor_km
     # Continuous bin coordinate: bin k spans u in [k, k + 1).
@@ -222,7 +252,14 @@ def silhouette(band: LimbBand, axes, n_bins: int = N_BINS) -> np.ndarray:
         b = nb[a]
         a, b = a[near[b]], b[near[b]]
         _edge_crossings(rho, u[a], u[b], s[a], s[b], n_bins)
-    return _fill_empty(rho) - R_REF_KM
+    return _fill_empty(rho) - sphere_radius(distance_km)
+
+
+def sphere_radius(distance_km: float) -> float:
+    """Apparent radius of the LOLA sphere seen from ``distance_km``, in km at
+    that distance: ``D tan(asin(R / D)) = R / sqrt(1 - (R / D)^2)`` (the
+    tangent cone of a sphere); ``R_REF_KM`` for ``D = inf``."""
+    return R_REF_KM / math.sqrt(1.0 - (R_REF_KM / distance_km) * (R_REF_KM / distance_km))
 
 
 def _atan2(y: np.ndarray, x: np.ndarray) -> np.ndarray:
@@ -300,7 +337,96 @@ def delta_rho_at(profile, psi) -> np.ndarray:
 
 def limb_profiles(et, earth_frame: str = DEFAULT_EARTH_FRAME, moon_frame: str = "MOON_ME",
                   n_bins: int = N_BINS, band: LimbBand | None = None) -> np.ndarray:
-    """``(n, n_bins)`` limb profiles [km] at each TDB ``et`` (see :func:`silhouette`)."""
+    """``(n, n_bins)`` limb profiles [km] at each TDB ``et`` (see :func:`silhouette`),
+    in perspective from the Moon's distance to the fundamental plane."""
     band = band if band is not None else load_band()
-    axes = limb_axes(et, earth_frame, moon_frame)
-    return np.stack([silhouette(band, a, n_bins) for a in axes])
+    axes, dist = limb_axes(et, earth_frame, moon_frame)
+    return np.stack([silhouette(band, a, n_bins, float(d)) for a, d in zip(axes, dist,
+                                                                           strict=True)])
+
+
+# ------------------------------------------------------------ time lattice
+
+
+@lru_cache(maxsize=256)
+def _node_profile(node: int, earth_frame: str, moon_frame: str, band_path: str) -> np.ndarray:
+    """The profile at lattice node ``node`` (TDB ``node * LATTICE_S``), cached."""
+    band = load_band(band_path)
+    axes, dist = limb_axes(np.array([node * LATTICE_S]), earth_frame, moon_frame)
+    prof = silhouette(band, axes[0], N_BINS, float(dist[0]))
+    prof.setflags(write=False)
+    return prof
+
+
+def profiles_at(et, earth_frame: str = DEFAULT_EARTH_FRAME, moon_frame: str = "MOON_ME",
+                band_path: str | None = None) -> np.ndarray:
+    """``(n, N_BINS)`` profiles [km] at TDB ``et``, linear in time between the
+    cached ``LATTICE_S`` nodes: ``p0 + w (p1 - p0)``, ``w = q - floor(q)``,
+    ``q = et / LATTICE_S`` (docs/LIMB_PROFILE.md sec. 3.2, 9.3)."""
+    path = str(band_path or default_band_path())
+    et = np.atleast_1d(np.asarray(et, dtype=float))
+    out = np.empty((len(et), N_BINS))
+    for i, t in enumerate(et):
+        q = t / LATTICE_S
+        k0 = math.floor(q)
+        w = q - k0
+        p0 = _node_profile(k0, earth_frame, moon_frame, path)
+        p1 = _node_profile(k0 + 1, earth_frame, moon_frame, path)
+        out[i] = p0 + w * (p1 - p0)
+    return out
+
+
+# ------------------------------------------------------- contact functions
+# docs/LIMB_PROFILE.md sec. 3.3.  In the fundamental plane at the observer
+# [ES92] eq. 8.353-8.354 (L1', L2' reduced cone radii, both from the LOLA
+# sphere K_REF): the Sun's disk has radius R_s = (L1' + L2') / 2, the Moon's
+# R_m = (L1' - L2') / 2, and P = (xi - x, eta - y) is the Sun's centre
+# relative to the Moon's.  The Moon's silhouette is r_M(psi) = R_m (1 +
+# delta_rho(psi) / R_REF_KM).  Totality: the whole solar disk inside the
+# silhouette; annularity: the whole silhouette inside the solar disk -- the
+# geometric definition of the central contacts [NASA-limb].  For delta_rho = 0
+# both reduce to m - |L2'|.
+
+
+@lru_cache(maxsize=4)
+def _unit_circle(n: int) -> tuple[np.ndarray, np.ndarray]:
+    """cos/sin of the n bin centres ``-pi + (k + 0.5) 2 pi / n`` through libm
+    (``math``), as the native core computes them."""
+    step = 2.0 * math.pi / n
+    phi = [-math.pi + (k + 0.5) * step for k in range(n)]
+    c = np.array([math.cos(v) for v in phi])
+    s = np.array([math.sin(v) for v in phi])
+    c.setflags(write=False)
+    s.setflags(write=False)
+    return c, s
+
+
+def g_total(px, py, r_s, r_m, profiles) -> np.ndarray:
+    """``G_T = max_phi |Q| - r_M(arg Q)``, ``Q = P + R_s e(phi)``, per instant
+    (arrays of n; ``profiles`` (n, n_bins)); totality <=> ``G_T < 0``.  The
+    solar limb is sampled at the profile's bin centres."""
+    px, py, r_s, r_m = (np.atleast_1d(np.asarray(v, dtype=float)) for v in (px, py, r_s, r_m))
+    profiles = np.atleast_2d(profiles)
+    c, s = _unit_circle(profiles.shape[1])
+    out = np.empty(len(px))
+    for i in range(len(px)):
+        qx = px[i] + r_s[i] * c
+        qy = py[i] + r_s[i] * s
+        rho = delta_rho_at(profiles[i], _atan2(qy, qx))
+        out[i] = np.max(np.sqrt(qx * qx + qy * qy) - r_m[i] * (1.0 + rho / R_REF_KM))
+    return out
+
+
+def g_annular(px, py, r_s, r_m, profiles) -> np.ndarray:
+    """``G_A = max_psi |M(psi) - P| - R_s``, ``M(psi) = r_M(psi) e(psi)`` at the
+    profile's bin centres, per instant; annularity <=> ``G_A < 0``."""
+    px, py, r_s, r_m = (np.atleast_1d(np.asarray(v, dtype=float)) for v in (px, py, r_s, r_m))
+    profiles = np.atleast_2d(profiles)
+    c, s = _unit_circle(profiles.shape[1])
+    out = np.empty(len(px))
+    for i in range(len(px)):
+        rad = r_m[i] * (1.0 + profiles[i] / R_REF_KM)
+        dx = rad * c - px[i]
+        dy = rad * s - py[i]
+        out[i] = np.max(np.sqrt(dx * dx + dy * dy)) - r_s[i]
+    return out

@@ -714,7 +714,7 @@ def write_limb_cases(path: Path) -> int:
         band = limb.band_from_file(limb_band.read(tmp / "s.bin"))
 
     with open(path, "w") as fh:
-        header(fh, "app.limb / app.ephemeris.limb_axes oracle (lunar limb profile, PR 1)")
+        header(fh, "app.limb / app.ephemeris.limb_axes oracle (lunar limb profile, PRs 1-2)")
         fh.write(f"lband {row(band.offset_km, band.scale_km, band.band_deg)}\n")
         fh.write("lcoslat " + row(*band.cos_lat) + "\n")
         fh.write("lsinlat " + row(*band.sin_lat) + "\n")
@@ -727,7 +727,7 @@ def write_limb_cases(path: Path) -> int:
         fh.write("ldown " + " ".join(str(int(v)) for v in band.down) + "\n")
         n_rec += 9 + len(band.runs)
 
-        fh.write("# lsil <n_bins> <9 axes> <n_bins delta_rho>\n")
+        fh.write("# lsil <n_bins> <distance_km> <9 axes> <n_bins delta_rho>\n")
         rng = np.random.default_rng(5)
         for _ in range(4):
             z = np.array([-1.0, *rng.uniform(-0.14, 0.14, 2)])
@@ -736,9 +736,10 @@ def write_limb_cases(path: Path) -> int:
             y /= np.linalg.norm(y)
             axes = np.stack([np.cross(y, z), y, z])
             for n_bins in (90, 360):
-                prof = limb.silhouette(band, axes, n_bins)
-                fh.write(f"lsil {n_bins} {row(*axes.ravel(), *prof)}\n")
-                n_rec += 1
+                for dist in (np.inf, 370000.0):
+                    prof = limb.silhouette(band, axes, n_bins, dist)
+                    fh.write(f"lsil {n_bins} {row(dist, *axes.ravel(), *prof)}\n")
+                    n_rec += 1
 
         fh.write("# ldra <n> <profile..> <m> <psi..> <out..>\n")
         prof = np.random.default_rng(9).normal(size=16)
@@ -746,6 +747,18 @@ def write_limb_cases(path: Path) -> int:
         out = limb.delta_rho_at(prof, psi)
         fh.write(f"ldra {len(prof)} {row(*prof)} {len(psi)} {row(*psi)} {row(*out)}\n")
         n_rec += 1
+
+        fh.write("# lg <total|annular> <n_bins> <px> <py> <r_s> <r_m> <profile..> <G>\n")
+        rng = np.random.default_rng(13)
+        for kind in ("total", "annular"):
+            for _ in range(4):
+                px, py = rng.normal(scale=0.005, size=2)
+                r_s = rng.uniform(0.26, 0.28)
+                r_m = r_s + rng.uniform(-0.01, 0.01)
+                prof = rng.normal(scale=2.0, size=90)
+                g = getattr(limb, f"g_{kind}")([px], [py], [r_s], [r_m], prof[None, :])[0]
+                fh.write(f"lg {kind} 90 {row(px, py, r_s, r_m, *prof, g)}\n")
+                n_rec += 1
 
         try:
             spiceypy.pxform("J2000", "MOON_ME", 0.0)
@@ -755,16 +768,16 @@ def write_limb_cases(path: Path) -> int:
         if not have_moon:
             fh.write("# lax: skipped (MOON_ME not loaded; kernels.bootstrap --limb)\n")
             return n_rec
-        fh.write("# lax <et> <earth_frame> <moon_frame> <9 axes, rows x^ y^ z^>\n")
+        fh.write("# lax <et> <earth_frame> <moon_frame> <9 axes, rows x^ y^ z^> <distance_km>\n")
         for label, utc0, utc1 in ECLIPSES:
             if label not in CONTACT_EPOCHS:
                 continue
             et = np.linspace(ep.utc_to_et(utc0), ep.utc_to_et(utc1), 3)
             for frame in ("ITRS", "TOD", "IAU_EARTH"):
                 for moon_frame in ("MOON_ME", "IAU_MOON"):
-                    ax = ep.limb_axes(et, frame, moon_frame)
+                    ax, dist = ep.limb_axes(et, frame, moon_frame)
                     for i in range(len(et)):
-                        vals = row(*ax[i].ravel())
+                        vals = row(*ax[i].ravel(), dist[i])
                         fh.write(f"lax {float(et[i])!r} {frame} {moon_frame} {vals}\n")
                         n_rec += 1
     return n_rec

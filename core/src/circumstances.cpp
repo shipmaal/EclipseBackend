@@ -32,6 +32,7 @@
 #include "eclipse/constants.hpp"
 #include "eclipse/ellipsoid.hpp"
 #include "eclipse/ephem.hpp"
+#include "eclipse/limb.hpp"
 #include "eclipse/numerics.hpp"
 
 namespace eclipse::circumstances {
@@ -162,7 +163,17 @@ Model model_from_ephem(double et0, Frame frame, double half_window_hours) {
     const SubSolarAt sub_solar_at = [et0, frame](std::span<const double> t_hours) {
         return ephem::sub_solar_points(et_of(et0, t_hours), frame);
     };
-    return Model{elements_at, sub_solar_at, half_window_hours};
+    // Profile mode: evaluate_direct(t, K_REF, K_REF) and profiles_at(et0 + t * 3600).
+    const ElementsAt elements_ref_at = [et0, frame](std::span<const double> t_hours) {
+        Elements e = ephem::besselian_instants(et_of(et0, t_hours), frame, limb::K_REF,
+                                               limb::K_REF);
+        unwrap_mu_deg(e);
+        return e;
+    };
+    const ProfilesAt profiles_at = [et0, frame](std::span<const double> t_hours) {
+        return limb::profiles_at(et_of(et0, t_hours), frame);
+    };
+    return Model{elements_at, sub_solar_at, half_window_hours, elements_ref_at, profiles_at};
 }
 
 // ------------------------------------------------------------------- series
@@ -320,7 +331,67 @@ double refine_maximum(std::span<const double> t, std::span<const double> mag, st
 
 // -------------------------------------------------------- local circumstances
 
-LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg) {
+std::vector<double> profile_g(const Model& model, double lat_deg, double lon_deg,
+                              std::span<const double> t_hours) {
+    if (!model.elements_ref_at || !model.profiles_at)
+        throw std::invalid_argument("profile_g: the model has no limb-profile hooks");
+    const std::size_t n = t_hours.size();
+    const Elements e = model.elements_ref_at(t_hours);
+    check_elements(e, n, "profile_g");
+    const std::vector<double> prof = model.profiles_at(t_hours);
+    const auto nb = static_cast<std::size_t>(limb::N_BINS);
+    if (prof.size() != n * nb) throw std::invalid_argument("profile_g: profiles_at returned a wrong size");
+    const double beta = ellipsoid::parametric_latitude(lat_deg);
+    const double cb = std::cos(beta), sb = std::sin(beta);
+    const std::vector<ellipsoid::ReductionAux> aux = instant_aux(e);
+    // Per instant: the Python's masked g_total / g_annular calls, one at a time
+    // (each instant is independent, so the grouping does not change a bit).
+    std::vector<double> out(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const ellipsoid::Fund f = ellipsoid::geo_to_fund_one(cb, sb, lon_deg, aux[i], e.mu[i]);
+        const double px = f.xi - e.x[i];
+        const double py = f.eta - e.y[i];
+        const double L1p = e.l1[i] - f.zeta * e.tan_f1[i];
+        const double L2p = e.l2[i] - f.zeta * e.tan_f2[i];
+        const double r_s[1] = {(L1p + L2p) / 2.0};
+        const double r_m[1] = {(L1p - L2p) / 2.0};
+        const double pxs[1] = {px}, pys[1] = {py};
+        const std::span<const double> p(prof.data() + i * nb, nb);
+        out[i] = L2p < 0.0 ? limb::g_total(pxs, pys, r_s, r_m, p)[0]
+                           : limb::g_annular(pxs, pys, r_s, r_m, p)[0];
+    }
+    return out;
+}
+
+ProfileContacts profile_contacts(const Model& model, double lat_deg, double lon_deg, double t_lo,
+                                 double t_hi) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> t, g;
+    for (int k = 0; k <= PROFILE_MAX_WIDEN; ++k) {
+        t = numerics::arange(t_lo, t_hi + 1e-12, PROFILE_STEP_H);
+        g = profile_g(model, lat_deg, lon_deg, t);
+        if (!(g.front() < 0.0 || g.back() < 0.0)) break;
+        if (g.front() < 0.0) t_lo = t_lo - PROFILE_MARGIN_H;
+        if (g.back() < 0.0) t_hi = t_hi + PROFILE_MARGIN_H;
+    }
+    bool any_neg = false;
+    for (const double v : g) any_neg = any_neg || v < 0.0;
+    if (!any_neg || g.front() < 0.0 || g.back() < 0.0) return {false, nan, nan};
+    const std::vector<numerics::SignChange> ch = numerics::sign_changes(t, g);
+    std::size_t i2 = t.size(), i3 = 0;
+    bool have2 = false, have3 = false;
+    for (const auto& c : ch) {
+        if (!c.rising && (!have2 || c.i < i2)) i2 = c.i, have2 = true;
+        if (c.rising && (!have3 || c.i > i3)) i3 = c.i, have3 = true;
+    }
+    if (!have2 || !have3) return {false, nan, nan};
+    const double lo[2] = {t[i2], t[i3]}, hi[2] = {t[i2 + 1], t[i3 + 1]};
+    const std::vector<double> c = numerics::bisect(
+        [&](std::span<const double> tt) { return profile_g(model, lat_deg, lon_deg, tt); }, lo, hi);
+    return {true, c[0], c[1]};
+}
+
+LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg, bool profile) {
     const Bracketed b = bracketed_series(model, lat_deg, lon_deg);
     const std::vector<double>& t = b.t;
     const Series& s = b.s;
@@ -373,6 +444,32 @@ LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg)
     const std::vector<double> times = refine_contacts(model, lat_deg, lon_deg, t_lo, t_hi, is_central);
     const double c1 = times[0], c4 = times[1];
     const double tmax = refine_maximum(t, s.mag, imax);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    double c2 = central_phase ? times[2] : nan;
+    double c3 = central_phase ? times[3] : nan;
+
+    if (profile) {
+        bool search;
+        double lo, hi;
+        if (central_phase) {
+            lo = c2 - PROFILE_MARGIN_H;
+            hi = c3 + PROFILE_MARGIN_H;
+            search = true;
+        } else {
+            search = s.m[imax] - std::abs(s.L2p[imax]) <
+                     PROFILE_NEAR_KM / constants::EARTH_EQUATORIAL_RADIUS_KM;
+            lo = t[imax] - PROFILE_GRAZE_H;
+            hi = t[imax] + PROFILE_GRAZE_H;
+        }
+        if (search) {
+            const ProfileContacts pc = profile_contacts(model, lat_deg, lon_deg, lo, hi);
+            central_phase = pc.central;
+            c2 = pc.c2;
+            c3 = pc.c3;
+        } else {
+            central_phase = false;
+        }
+    }
 
     // Quantities at the refined maximum: a fresh 1-instant series.
     const double t1[1] = {tmax};
@@ -387,8 +484,8 @@ LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg)
     const std::size_t n_events = central_phase ? 5 : 3;
     std::vector<double> ev_times{c1, tmax, c4};
     if (central_phase) {
-        ev_times.push_back(times[2]);
-        ev_times.push_back(times[3]);
+        ev_times.push_back(c2);
+        ev_times.push_back(c3);
     }
     const ephem::SubSolar ss = model.sub_solar_at(ev_times);
     check_sub_solar(ss, n_events, "local_circumstances");
@@ -408,8 +505,8 @@ LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg)
     r.c1 = c1;
     r.c4 = c4;
     if (central_phase) {
-        r.c2 = times[2];
-        r.c3 = times[3];
+        r.c2 = c2;
+        r.c3 = c3;
     }
     r.t_max = tmax;
     r.magnitude = magnitude;
@@ -422,8 +519,9 @@ LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg)
 }
 
 LocalRaw local_circumstances(double et0, Frame frame, double half_window_hours, double lat_deg,
-                             double lon_deg) {
-    return local_circumstances(model_from_ephem(et0, frame, half_window_hours), lat_deg, lon_deg);
+                             double lon_deg, bool profile) {
+    return local_circumstances(model_from_ephem(et0, frame, half_window_hours), lat_deg, lon_deg,
+                               profile);
 }
 
 // --------------------------------------------------------------------- grid

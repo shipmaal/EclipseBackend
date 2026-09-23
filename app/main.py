@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .besselian import BesselianModel, normalize_utc
 from .catalog import find_eclipses
-from .circumstances import circumstances_grid, local_circumstances
+from .circumstances import LIMB_MODES, circumstances_grid, local_circumstances
 from .ephemeris import (
     DEFAULT_EARTH_FRAME,
     EARTH_FRAMES,
@@ -239,6 +239,7 @@ def circumstances(
     lon: float = Query(..., ge=-180.0, le=180.0, description="Observer longitude (deg, east +)"),
     window_hours: float = Query(2.5, ge=1.0, le=6.0, description="Half-window sampled around T0"),
     frame: str = Query(DEFAULT_EARTH_FRAME),
+    limb: str = Query("mean", description="Lunar limb: 'mean' (k2) or 'profile' (LRO LOLA)"),
 ) -> dict:
     """Local eclipse circumstances at an observer: contacts, duration, magnitude.
 
@@ -247,9 +248,23 @@ def circumstances(
     central-phase duration when the observer is inside the umbra/antumbra, and
     ``below_horizon`` listing the events the observer cannot see.  ``epoch``
     should be near the observer's maximum (e.g. the greatest-eclipse time).
+    ``limb=profile`` takes C2/C3 from the lunar limb profile
+    (docs/LIMB_PROFILE.md); it needs ``kernels.bootstrap --limb`` (503 without).
     """
+    if limb not in LIMB_MODES:
+        raise HTTPException(status_code=400, detail=f"limb must be one of {LIMB_MODES}")
     model = _build_model(epoch, window_hours, frame)
-    return local_circumstances(model, lat, lon)
+    try:
+        return local_circumstances(model, lat, lon, limb)
+    except FileNotFoundError as exc:  # the limb band is not installed
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except spiceypy.utils.exceptions.SpiceyError as exc:
+        if limb == "profile":  # MOON_ME undefined: the lunar kernels are not loaded
+            raise HTTPException(
+                status_code=503,
+                detail=f"lunar limb profile unavailable (kernels.bootstrap --limb): {exc}",
+            ) from exc
+        raise
 
 
 @app.get("/map")

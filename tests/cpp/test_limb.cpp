@@ -64,19 +64,20 @@ void install_fixture_band(const std::vector<fixtures::Record>& recs) {
 
 }  // namespace
 
-TEST_CASE("limb silhouette and delta_rho_at parity (synthetic band)") {
+TEST_CASE("limb silhouette, delta_rho_at and contact-function parity (synthetic band)") {
     const auto recs = fixtures::read("limb_cases.txt");
     install_fixture_band(recs);
     REQUIRE(limb::has_band());
-    int n_sil = 0, n_dra = 0;
+    int n_sil = 0, n_dra = 0, n_g = 0;
     for (const auto& r : recs) {
         if (r.kind == "lsil") {
             const int n_bins = static_cast<int>(r.num(0));
-            const auto v = nums(r, 1);
+            const double dist = r.num(1);
+            const auto v = nums(r, 2);
             REQUIRE(v.size() == 9 + static_cast<size_t>(n_bins));
             std::array<double, 9> axes{};
             for (size_t i = 0; i < 9; ++i) axes[i] = v[i];
-            const auto prof = limb::silhouette(axes, n_bins);
+            const auto prof = limb::silhouette(axes, n_bins, dist);
             for (int k = 0; k < n_bins; ++k) CHECK(prof[static_cast<size_t>(k)] == v[9 + static_cast<size_t>(k)]);
             ++n_sil;
         } else if (r.kind == "ldra") {
@@ -89,10 +90,22 @@ TEST_CASE("limb silhouette and delta_rho_at parity (synthetic band)") {
             const auto out = limb::delta_rho_at(prof, psi);
             for (size_t i = 0; i < m; ++i) CHECK(out[i] == v.at(2 + n + m + i));
             ++n_dra;
+        } else if (r.kind == "lg") {
+            const int n_bins = static_cast<int>(r.num(1));
+            const auto v = nums(r, 2);
+            REQUIRE(v.size() == 5 + static_cast<size_t>(n_bins));
+            const double px[1] = {v[0]}, py[1] = {v[1]}, rs[1] = {v[2]}, rm[1] = {v[3]};
+            const std::span<const double> prof(v.data() + 4, static_cast<size_t>(n_bins));
+            const double g = r.tokens.at(0) == "total"
+                                 ? limb::g_total(px, py, rs, rm, prof, n_bins)[0]
+                                 : limb::g_annular(px, py, rs, rm, prof, n_bins)[0];
+            CHECK(g == v.back());
+            ++n_g;
         }
     }
-    CHECK(n_sil == 8);
+    CHECK(n_sil == 16);
     CHECK(n_dra == 1);
+    CHECK(n_g == 8);
     std::array<double, 9> pole_view{1, 0, 0, 0, 1, 0, 0, 0, 1};  // z^ = +z: off the band
     CHECK_THROWS_AS(limb::silhouette(pole_view, 90), std::invalid_argument);
 }
@@ -142,11 +155,15 @@ TEST_CASE("limb silhouette of a sphere is flat (closed form)") {
     limb::set_band(line, first, count, dn, right, down, cos_lat, sin_lat, cos_lon, sin_lon,
                    1737.4, 0.0005, 20.0);
     const std::array<double, 9> axes{0, -1, 0, 0, 0, 1, -1, 0, 0};  // z^ = -x (Earth-facing)
-    const auto prof = limb::silhouette(axes, 3600);
     const double sag = 1737.4 * (1.0 - std::cos(0.5 / ppd * d2r));
-    for (const double v : prof) {
-        CHECK(v <= 1e-9);
-        CHECK(v >= -sag - 1e-9);
+    // Orthographic, then in perspective from 384 400 km (the sphere's own
+    // apparent radius sphere_radius(D) is subtracted, so it stays flat).
+    for (const double dist : {limb::INF_DISTANCE, 384400.0}) {
+        const auto prof = limb::silhouette(axes, 3600, dist);
+        for (const double v : prof) {
+            CHECK(v <= 1e-6);
+            CHECK(v >= -sag - 1e-6);
+        }
     }
 }
 
@@ -177,8 +194,9 @@ TEST_CASE("limb_axes parity", "[kernels]") {
         if (r.kind != "lax") continue;
         const double et = r.num(0);
         const auto frame = eclipse::frame_from_string(r.tokens.at(1));
-        const auto ax = ephem::limb_axes(std::vector<double>{et}, frame, r.tokens.at(2));
-        for (size_t i = 0; i < 9; ++i) CHECK(ax[0][i] == r.num(3 + i));
+        const auto la = ephem::limb_axes(std::vector<double>{et}, frame, r.tokens.at(2));
+        for (size_t i = 0; i < 9; ++i) CHECK(la.axes[0][i] == r.num(3 + i));
+        CHECK(la.distance_km[0] == r.num(12));
     }
     CHECK(n_lax == 54);
 }

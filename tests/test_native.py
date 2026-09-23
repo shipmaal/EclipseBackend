@@ -1439,10 +1439,11 @@ def test_limb_axes_parity(oracle, native_pool):
             if frame == "ITRF93" and utc0 < "1950":
                 continue
             for moon_frame in ("MOON_ME", "IAU_MOON"):
-                ours = native_pool.limb_axes(et, frame, moon_frame)
-                ref = oracle.limb_axes(et, frame, moon_frame)
+                ours, d_ours = native_pool.limb_axes(et, frame, moon_frame)
+                ref, d_ref = oracle.limb_axes(et, frame, moon_frame)
                 assert ours.shape == ref.shape == (len(et), 3, 3)
                 assert np.array_equal(ours, ref), (utc0, frame, moon_frame)
+                assert np.array_equal(d_ours, d_ref), (utc0, frame, moon_frame)
 
 
 def _synthetic_band(tmp_path):
@@ -1481,9 +1482,11 @@ def test_limb_silhouette_parity_synthetic(monkeypatch, native_pool, tmp_path):
         y /= np.linalg.norm(y)
         axes = np.stack([np.cross(y, z), y, z])
         for n_bins in (720, 7200):
-            ref = limb.silhouette(band, axes, n_bins)
-            ours = native_pool.limb_silhouette(np.ascontiguousarray(axes), n_bins)
-            assert np.array_equal(ours, ref), float(np.max(np.abs(ours - ref)))
+            for dist in (np.inf, 370000.0):
+                ref = limb.silhouette(band, axes, n_bins, dist)
+                ours = native_pool.limb_silhouette(np.ascontiguousarray(axes), n_bins, dist)
+                assert np.array_equal(ours, ref), float(np.max(np.abs(ours - ref)))
+    assert native_pool.limb_sphere_radius(370000.0) == limb.sphere_radius(370000.0)
     psi = np.linspace(-7.0, 7.0, 2001)
     assert np.array_equal(native_pool.limb_delta_rho_at(ref, psi), limb.delta_rho_at(ref, psi))
     with pytest.raises(ValueError, match="coverage"):
@@ -1543,3 +1546,76 @@ def _zero_band_file(tmp_path):
         'COORDINATE_SYSTEM_NAME = "SYN"\n')
     limb_band.cut(tmp_path / "z.img", tmp_path / "z.lbl", tmp_path / "z.bin")
     return limb_band.read(tmp_path / "z.bin")
+
+
+def test_limb_contact_functions_parity(native_pool):
+    """eclipse::limb::g_total / g_annular = app.limb's, bit for bit, on random
+    Sun/Moon geometry and rough profiles (docs/LIMB_PROFILE.md PR 2)."""
+    from app import limb
+
+    rng = np.random.default_rng(4)
+    n = 40
+    px, py = rng.normal(scale=0.005, size=(2, n))
+    r_s = rng.uniform(0.26, 0.28, n)
+    r_m = r_s + rng.uniform(-0.01, 0.01, n)
+    prof = rng.normal(scale=2.0, size=(n, 720))
+    for name in ("g_total", "g_annular"):
+        ours = getattr(native_pool, f"limb_{name}")(px, py, r_s, r_m, prof)
+        assert np.array_equal(ours, getattr(limb, name)(px, py, r_s, r_m, prof)), name
+
+
+_PROFILE_SITES = [  # (T0, lat, lon): mid-path, ~1 km from a limit, annular, a miss
+    ("2024-04-08T19:08:00", 39.77, -86.15),
+    ("2024-04-08T19:03:38", 39.12, -88.55),
+    ("2023-10-14T17:59:27", 11.4, -83.1),
+    ("2024-04-08T19:03:38", 39.00, -88.55),
+]
+
+
+@requires_kernels
+def test_profile_local_circumstances_parity(monkeypatch, oracle, native_pool):
+    """limb="profile": the native core's profiles_at / profile_g / local
+    circumstances against the Python oracle, at the local-circumstances gates
+    (_LOCAL_*).  The profiles are bit-identical (libm atan2 on both sides);
+    the elements under them carry the usual ~1-ulp NumPy-vs-libm residual
+    (_XY_TOL), so profile_g is gated at _XY_TOL and the contacts at
+    _LOCAL_TIME_TOL_H, as the mean-limb contacts are.  Measured: identical
+    on the NAIF set (DE440s); on the mirror's DE432s profile_g within
+    9.5e-15 and the contacts within 5.4e-14 h."""
+    from app import circumstances as circ
+    from app import limb
+    from app import native as native_mod
+    from app.besselian import BesselianModel
+
+    if not (_moon_me_loaded(oracle) and limb.default_band_path().exists()):
+        pytest.skip("limb band / MOON_ME not installed (python -m kernels.bootstrap --limb)")
+    limb.ensure_native_band()
+    times = ("c1", "c4", "c2", "c3", "t_max")
+    for t0, lat, lon in _PROFILE_SITES:
+        if not _ephemeris_covers(oracle, oracle.utc_to_et(t0)):
+            continue
+        model = BesselianModel(t0_utc=t0)
+        et = model.et0 + np.array([-1234.5, 0.0, 777.0])
+        assert np.array_equal(native_pool.limb_profiles_at(et, "ITRS", "MOON_ME"),
+                              limb.profiles_at(et, "ITRS"))
+        t = np.array([-0.01, 0.0, 0.003])
+        g_n = native_pool.profile_g(model.et0, "ITRS", model.half_window_hours, lat, lon, t)
+        g_p = circ._profile_g(model, lat, lon, t)
+        assert np.allclose(g_n, g_p, rtol=0, atol=_XY_TOL), (t0, lat, g_n - g_p)
+        ref = circ._local_raw(model, lat, lon, "profile")
+        monkeypatch.setattr(native_mod, "BACKEND", "native")
+        ours = circ.local_raw(model, lat, lon, "profile")
+        monkeypatch.setattr(native_mod, "BACKEND", "python")
+        site = (t0, lat, lon)
+        assert (ours.geometric, ours.central, ours.below, ours.eclipse) == (
+            ref.geometric, ref.central, ref.below, ref.eclipse), site
+        for name in times:
+            a, b = getattr(ours, name), getattr(ref, name)
+            assert np.isnan(a) == np.isnan(b), (site, name)
+            if not np.isnan(a):
+                assert abs(a - b) <= _LOCAL_TIME_TOL_H, (site, name, a - b)
+        for name in ("magnitude", "obscuration", "L2_x"):
+            assert abs(getattr(ours, name) - getattr(ref, name)) <= _LOCAL_MAG_TOL, (site, name)
+        for name in ("alt_deg", "az_deg"):
+            assert np.allclose(getattr(ours, name), getattr(ref, name), rtol=0,
+                               atol=_LOCAL_ALT_TOL_DEG, equal_nan=True), (site, name)

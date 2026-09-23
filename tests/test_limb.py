@@ -186,7 +186,7 @@ def test_axes_are_orthonormal_and_follow_the_elements(python_backend):
     if not _moon_frames_loaded(eph):
         pytest.skip("MOON_ME not defined: rerun kernels.bootstrap --limb")
     et = eph.utc_to_et("2024-04-08T18:17:20") + np.linspace(-7200, 7200, 5)
-    ax = eph.limb_axes(et)
+    ax, dist = eph.limb_axes(et)
     for a in ax:
         assert np.allclose(a @ a.T, np.eye(3), atol=1e-14)
         assert np.linalg.det(a) == pytest.approx(1.0, abs=1e-14)
@@ -198,6 +198,8 @@ def test_axes_are_orthonormal_and_follow_the_elements(python_backend):
     import spiceypy
 
     e = eph.besselian_instants(et, "ITRS")
+    # The viewing distance is the element z [ES92] eq. 8.322-6, in km.
+    assert dist == pytest.approx(e["z"] * eph.earth_equatorial_radius_km(), rel=1e-12)
     for i, t in enumerate(et):
         moon, lt = spiceypy.spkpos("MOON", float(t), "J2000", "LT+S", "EARTH")
         rot = spiceypy.pxform("J2000", "MOON_ME", float(t) - lt)
@@ -230,3 +232,78 @@ def test_empty_bins_are_filled_by_periodic_linear_interpolation():
     assert np.array_equal(out[np.isfinite(rho)], rho[np.isfinite(rho)])
     with pytest.raises(ValueError, match="too many empty bins"):
         limb._fill_empty(np.r_[rho, np.full(3, -np.inf)])
+
+
+def test_perspective_silhouette(tmp_path, python_backend):
+    """A peak in front of the limb plane looks larger in perspective by the
+    factor 1 / (1 + w / D), w = p . z^ (docs/LIMB_PROFILE.md sec. 3.2, 9.6);
+    a smooth sphere stays flat for any distance (its own perspective radius
+    ``sphere_radius(D)`` is subtracted)."""
+    lines, samples, lat, lon = _grid()
+    dn = np.zeros((lines, samples), dtype=np.int16)
+    la, lo = np.meshgrid(lat, lon, indexing="ij")
+    # A 10-km plateau 5 deg in front of the limb (toward the observer, +x),
+    # 1 deg across, on the equator.
+    dn[np.hypot(la, lo - 85.0) < 0.5] = 20000
+    band, _ = _band(tmp_path, dn)
+    D = 384400.0
+    ortho = limb.silhouette(band, AXES)
+    persp = limb.silhouette(band, AXES, distance_km=D)
+    # Closed form over the plateau's pixels: orthographic |q|, perspective
+    # |q| / (1 + w / D), minus the sphere's own apparent radius.
+    sel = dn > 0
+    r = limb.R_REF_KM + 10.0
+    lat_r, lon_r = np.radians(la[sel]), np.radians(lo[sel])
+    p = r * np.stack([np.cos(lat_r) * np.cos(lon_r), np.cos(lat_r) * np.sin(lon_r),
+                      np.sin(lat_r)], axis=-1)
+    q = np.hypot(p @ AXES[0], p @ AXES[1])
+    w = p @ AXES[2]
+    assert ortho.max() == pytest.approx(q.max() - limb.R_REF_KM, abs=1e-6)
+    assert persp.max() == pytest.approx((q / (1.0 + w / D)).max() - limb.sphere_radius(D),
+                                        abs=1e-6)
+    # The plateau sits 4.5-5.5 deg in front of the limb; seen in perspective
+    # its highest point shows 0.61 km taller than orthographically.
+    assert persp.max() - ortho.max() == pytest.approx(0.608, abs=0.005)
+    (tmp_path / "flat").mkdir()
+    flat, _ = _band(tmp_path / "flat", np.zeros((lines, samples), dtype=np.int16))
+    assert np.all(np.abs(limb.silhouette(flat, AXES, distance_km=D)) < 1e-3)
+
+
+def test_contact_functions_reduce_to_the_mean_limb():
+    """With a smooth Moon (delta_rho = 0), G_T = m + L2' and G_A = m - L2'
+    (docs sec. 3.3), up to the limb sampling's R_s (1 - cos(pi / n)) bias."""
+    rng = np.random.default_rng(2)
+    n = 50
+    px, py = rng.normal(scale=0.004, size=(2, n))
+    r_s = rng.uniform(0.26, 0.28, n)
+    r_m = r_s + rng.uniform(-0.01, 0.01, n)
+    prof = np.zeros((n, limb.N_BINS))
+    m = np.hypot(px, py)
+    L2p = r_s - r_m
+    bias = 0.28 * (1 - np.cos(np.pi / limb.N_BINS))
+    assert np.allclose(limb.g_total(px, py, r_s, r_m, prof), m + L2p, atol=bias + 1e-15)
+    assert np.allclose(limb.g_annular(px, py, r_s, r_m, prof), m - L2p, atol=bias + 1e-15)
+    # A valley exactly where the Sun's limb touches opens the contact: G_T grows.
+    i = 0
+    psi = np.arctan2(py[i], px[i])
+    k = int(np.floor((psi + np.pi) / (2 * np.pi) * limb.N_BINS))
+    prof[i, k - 3:k + 4] = -1.0
+    assert limb.g_total(px[:1], py[:1], r_s[:1], r_m[:1], prof[:1])[0] > m[0] + L2p[0]
+
+
+@requires_limb
+def test_profile_search_window_widens_until_its_ends_are_outside():
+    """A window whose ends are both inside totality is pushed out until they
+    are not, and finds the same contacts as the normal search."""
+    from app import ephemeris as eph
+    from app.besselian import BesselianModel
+    from app.circumstances import _profile_contacts, local_raw
+
+    if not _moon_frames_loaded(eph):
+        pytest.skip("MOON_ME not defined: rerun kernels.bootstrap --limb")
+    model = BesselianModel(t0_utc="2024-04-08T19:08:00")
+    ref = local_raw(model, 39.77, -86.15, "profile")
+    central, c2, c3 = _profile_contacts(model, 39.77, -86.15, ref.c2 + 20 / 3600,
+                                        ref.c3 - 20 / 3600)
+    assert central
+    assert c2 == pytest.approx(ref.c2, abs=1e-8) and c3 == pytest.approx(ref.c3, abs=1e-8)

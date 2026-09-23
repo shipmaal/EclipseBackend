@@ -335,7 +335,7 @@ def find_eclipses(
     """Every solar eclipse with greatest eclipse in ``[start_utc, end_utc]``.
 
     Epoch strings follow :func:`~app.besselian.normalize_utc`.  Coverage is
-    that of the loaded SPK (DE432s mirror: 1949-2050; DE440s: 1550-2650).
+    that of the loaded SPK (DE432s mirror: 1949-2050; DE440s: 1849-2150).
     The numbers are :func:`_catalog_raw`, or under ``ECLIPSE_BACKEND=native``
     the core's ``find_eclipses`` (the same ``_EventRaw`` tuples, its ``local``
     rebuilt as :class:`~app.circumstances._LocalRaw`); the row shape is

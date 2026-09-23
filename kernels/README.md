@@ -13,7 +13,7 @@ The generated `eclipse.tm` metakernel loads the set below. The engine
 | Kernel | Type | Why it's needed |
 | --- | --- | --- |
 | `naif0012.tls` | LSK (leapseconds) | UTC ↔ ET (TDB) conversion in `str2et`. |
-| `de440s.bsp` | SPK (ephemeris) | Apparent positions of Sun, Moon and Earth (JPL DE440s, 1550–2650). Use `de440.bsp` for a wider span. |
+| `de440s.bsp` | SPK (ephemeris) | Apparent positions of Sun, Moon and Earth (JPL DE440s, 1849–2150). Use `de440.bsp` (1550–2650) for a wider span. |
 | `pck00011.tpc` | text PCK | Body radii (`bodvrd`) and the low-precision `IAU_EARTH` frame. |
 | `earth_latest_high_prec.bpc` | binary PCK | High-precision Earth orientation — defines the **ITRF93** frame with precession, nutation and true (UT1/EOP) rotation. Optional: the default **`TOD`** frame (pyerfa true-of-date) is already high precision without it. |
 

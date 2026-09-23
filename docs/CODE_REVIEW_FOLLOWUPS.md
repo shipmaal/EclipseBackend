@@ -206,3 +206,53 @@ deg against a 1e-11 gate). The offline fixtures were dumped with an older
 `TOD` / `IAU_EARTH` rows pass. Regenerate the fixtures
 (`tools/dump_oracle.py`) against the current kernel, or pin the binary PCK
 that the fixtures were dumped with.
+
+## 6. Reference-eclipse coverage and two width findings
+
+Four reference eclipses added to `tests/test_besselian_integration.py`, each
+checked against F. Espenak's Canon values (`SEsearch/SEdata.php`) [Espenak]:
+the 2023-04-20 hybrid, the 2021-12-04 polar grazing total (γ −0.95, Sun 17°),
+and two outside the IERS era, 1919-05-29 and 1868-08-18. The latter two
+exercise the `deltat.py` model path. The 1919 case replaces the old smoke test.
+Measured agreement:
+
+| quantity | gate | worst new case |
+| --- | --- | --- |
+| x, y at t0 | 1e-3 | 1e-5 |
+| d at t0 | 1e-3 deg | 9.3e-5 deg |
+| μ (ephemeris hour angle via ΔT) | 1e-4 deg | 1.9e-5 deg |
+| greatest-eclipse lat / lon | 0.12 deg | 0.049 deg |
+| central duration | 3 s | +2.4 s (all +1.7 to +2.4) |
+| magnitude | 0.003 | +0.0005 |
+
+The cases are anchored on Espenak's published TD instant, not the Canon's UT:
+the Canon's UT uses its own ΔT (73.4 s in 2023, against 69.2 s measured). The
+1868/1919 cases skip on the mirror kernel set (DE432s covers 1949–2050).
+DE440s covers 1849–2150, not "1550–2650" (that is DE440); fixed in
+`kernels/bootstrap.py`, `kernels/README.md` and `app/catalog.py`. A 2186 case
+was dropped for the same reason.
+
+Path widths are a new parametrized test over all seven eclipses at the
+existing 2 km gate. They surfaced two real discrepancies, recorded as
+**strict xfails**; the gate was not widened.
+
+- **W1 — The umbral cone is ~0.04% wider than Espenak's (open, medium).**
+  Signed width residuals (ours − Espenak): 2017 +1.64, 2024 +1.37,
+  2023-04 hybrid +1.51, 1919 +2.70, 1868 +2.30 km, and the 2023-10 annular
+  −1.63 km. Every total is wider and the annular narrower. The source is
+  `tan f1` / `tan f2`, both ~1.9e-6 (0.04%) below Espenak's for every eclipse;
+  via `l2 = z tan f2 − k / cos f2` [ES92] eq. 8.323-7 with z ≈ 60, that alone
+  puts `l2` ~0.7 km more negative. `k2` is identical (0.272281), so the
+  difference is in `sin f = (d_s ± k) / G`. It corresponds to ~0.39″ of solar
+  semi-diameter or a G convention (apparent vs geometric Sun–Moon distance)
+  and needs its own investigation before any formula changes (both languages,
+  per the port rule). xfail: 1919, 1868 (> 2 km on ~245-km paths).
+- **W2 — Limits and width are the instantaneous shadow section, not the path
+  envelope (open, high for low-Sun eclipses).** `shadow_edge_limits` bisects
+  the shadow edge perpendicular to the track *at one instant*. The path limits
+  are the envelope of the shadow over time. For 2021-12-04 the points ever
+  inside the umbra along the same perpendicular span 420.8 km (Espenak 418.7);
+  our instantaneous width is 412.0 km (−6.7 km). For the high-Sun cases the two
+  measures agree to ≤ 0.4 km, which is why this went unnoticed. It affects
+  `/central-line`'s N/S limits and widths for grazing / low-Sun paths. The
+  fix is a formula change in both languages. xfail: 2021-12-04.

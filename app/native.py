@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import functools
 import os
+import threading
 import warnings
 from functools import lru_cache
 
@@ -65,7 +66,19 @@ def _resolve(requested: str) -> str:
     return "python"
 
 
-BACKEND = _resolve(os.environ.get("ECLIPSE_BACKEND", "auto").lower())
+# A set-but-empty variable (``ECLIPSE_BACKEND=`` in a .env template) means
+# unset, i.e. ``auto``, not a startup failure (review item C4).
+BACKEND = _resolve((os.environ.get("ECLIPSE_BACKEND") or "").strip().lower() or "auto")
+
+
+# Serializes the two long OpenMP-parallel entry points (``circumstances_grid``,
+# ``find_eclipses``) within a process.  Each already uses every core it is
+# given, and libgomp starts a separate team -- sized ``OMP_NUM_THREADS``,
+# default the host's core count -- for every calling thread, so K concurrent
+# requests on FastAPI's thread pool would run K x cores threads.  Holding this
+# lock bounds one worker process to one team; the Docker CMD sizes that team
+# to cores / workers (review item C9).  Results do not depend on it.
+PARALLEL_LOCK = threading.Lock()
 
 
 def is_native() -> bool:
@@ -106,7 +119,13 @@ def _as_spiceypy_error(err) -> spice_exc.SpiceyError:
 
 
 class _Translating:
-    """Proxy over ``_eclipse`` that re-raises ``SpiceError`` as spiceypy's classes."""
+    """Proxy over ``_eclipse`` that re-raises ``SpiceError`` as spiceypy's classes.
+
+    Each wrapped function is built once and cached on the instance, so later
+    lookups are plain attribute hits and never reach ``__getattr__`` (hot
+    scalar dispatches such as ``shadow_radii`` / ``bearing`` per track point;
+    review item C10).
+    """
 
     def __init__(self, mod):
         self._mod = mod
@@ -123,6 +142,7 @@ class _Translating:
             except self._mod.SpiceError as err:
                 raise _as_spiceypy_error(err) from err
 
+        setattr(self, name, call)
         return call
 
 

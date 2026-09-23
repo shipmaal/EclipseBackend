@@ -138,7 +138,8 @@ structural, not stylistic:
   identical for any thread count). libgomp is **not fork-safe once it has
   started its thread pool**, so a forking server must not warm the native
   grid in the parent: run gunicorn without `--preload` (the Dockerfile's CMD
-  does not).
+  does not).  `native.PARALLEL_LOCK` holds one grid/catalog OpenMP team per process;
+  the Docker CMD sizes it with `OMP_NUM_THREADS` = cores / `WEB_CONCURRENCY`.
 - Phase 4, in `app/catalog.py`: `find_eclipses` takes the core's `_EventRaw`
   tuples (`_eclipse.find_eclipses`, `local` rebuilt as `_LocalRaw`) in place
   of `_catalog_raw` and formats them with the same `_format_event`; the

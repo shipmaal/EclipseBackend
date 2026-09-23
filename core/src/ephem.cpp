@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -38,6 +40,15 @@ using numerics::wrap_180;
 std::mutex& spice_mutex() {
     static std::mutex m;
     return m;
+}
+
+// Kernel-pool generation, bumped by every ``furnish`` / ``kclear``; read and
+// written only under ``spice_mutex``. ``spkpos_both`` releases the lock between
+// batches, so it checks this to refuse a vector whose batches would come from
+// different kernel sets (review item C6).
+std::uint64_t& pool_generation() {
+    static std::uint64_t g = 0;
+    return g;
 }
 
 // Put the toolkit in RETURN mode with no device output, exactly as spiceypy
@@ -118,7 +129,8 @@ struct Geocentric {
 // Instants per SPICE-lock acquisition in ``spkpos_both``: bounds how long a
 // long vector (a century catalog scan is ~4e5 instants) holds the pool lock.
 // Each spkpos_c call is independent of its neighbours, so the batching cannot
-// change a bit of the result.
+// change a bit of the result -- provided the kernel pool does not change
+// between batches, which ``pool_generation`` enforces.
 constexpr size_t kSpkposBatch = 2048;
 
 // Apparent (LT+S) Moon and Sun in ``frame`` for each et, km, the lock taken
@@ -128,9 +140,18 @@ void spkpos_both(std::span<const double> et, const char* frame, std::vector<Vec3
     const size_t n = et.size();
     moon.resize(n);
     sun.resize(n);
+    std::uint64_t generation = 0;
     for (size_t b = 0; b < n; b += kSpkposBatch) {
         const size_t end = std::min(n, b + kSpkposBatch);
         spice_call([&] {
+            if (b == 0) {
+                generation = pool_generation();
+            } else if (pool_generation() != generation) {
+                // A furnish/kclear ran between two batches: the vector would
+                // mix kernel sets. A server-side condition, not a bad request.
+                throw std::runtime_error(
+                    "spkpos_both: the SPICE kernel pool changed during a batched evaluation");
+            }
             SpiceDouble lt;
             for (size_t i = b; i < end; ++i) {
                 spkpos_c("MOON", et[i], frame, "LT+S", "EARTH", moon[i].data(), &lt);
@@ -252,11 +273,17 @@ std::string sofa_version() { return eraSofaVersion(); }
 
 void furnish(std::string_view path) {
     const std::string p(path);
-    spice_call([&] { furnsh_c(p.c_str()); });
+    spice_call([&] {
+        ++pool_generation();  // even a failed furnsh may have loaded part of the set
+        furnsh_c(p.c_str());
+    });
 }
 
 void kclear() {
-    spice_call([] { kclear_c(); });
+    spice_call([] {
+        ++pool_generation();
+        kclear_c();
+    });
 }
 
 int kernel_count(std::string_view kind) {
@@ -314,14 +341,18 @@ double utc_to_et(std::string_view utc) {
     // tparse_c: seconds past J2000 on the leap-second-free calendar. A parse
     // failure is reported as a message, not a SPICE error; spiceypy ignores it
     // (formal = 0 -> "in era") and lets str2et raise the proper error, so do
-    // the same.
+    // the same. A SPICE error proper (e.g. SPICE(EMPTYSTRING) from the
+    // wrapper's string check, which returns before writing ``errmsg``) goes
+    // through ``spice_call`` like every other call -- thrown and reset, never
+    // left pending in the global error state -- as spiceypy's
+    // ``@spice_error_check`` does for ``tparse`` (review item C5).
     SpiceChar errmsg[256];
-    SpiceDouble formal = 0.0;
-    {
-        std::scoped_lock lock(spice_mutex());
-        ensure_return_mode();
-        tparse_c(s.c_str(), sizeof errmsg, &formal, errmsg);
-    }
+    errmsg[0] = '\0';
+    const double formal = spice_call([&] {
+        SpiceDouble sp2000 = 0.0;
+        tparse_c(s.c_str(), sizeof errmsg, &sp2000, errmsg);
+        return static_cast<double>(sp2000);
+    });
     const double mjd = J2000_JD - MJD_OFFSET + formal / SECONDS_PER_DAY;
     if (errmsg[0] != '\0' || eop::in_iers_era(mjd)) return str_to_et(s);
     return formal + deltat::delta_t_seconds(deltat::decimal_year_from_jd(formal / SECONDS_PER_DAY + J2000_JD));

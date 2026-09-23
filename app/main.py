@@ -14,6 +14,7 @@ back to ``async def`` (the whole event loop blocks) and do not bypass the lock.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict
 from pathlib import Path
 from typing import TypedDict
@@ -27,7 +28,13 @@ from fastapi.staticfiles import StaticFiles
 from .besselian import BesselianModel, normalize_utc
 from .catalog import find_eclipses
 from .circumstances import circumstances_grid, local_circumstances
-from .ephemeris import DEFAULT_EARTH_FRAME, EARTH_FRAMES, sub_solar_point, utc_to_et
+from .ephemeris import (
+    DEFAULT_EARTH_FRAME,
+    EARTH_FRAMES,
+    load_kernels,
+    sub_solar_point,
+    utc_to_et,
+)
 from .geography import (
     central_track,
     format_clock,
@@ -43,6 +50,17 @@ MAX_TRACK_POINTS = 5000
 MAX_MAP_CELLS = 150_000
 MAX_ABS_HOURS = 12.0
 MAX_CATALOG_YEARS = {True: 10.0, False: 100.0}  # by `detail`
+
+
+def _arange_len(start: float, stop: float, step: float) -> float:
+    """``len(np.arange(start, stop, step))`` for ``step > 0``, without allocating.
+
+    NumPy's length is ``ceil((stop - start) / step)``; returned as a float that
+    is ``inf`` when the quotient overflows (a subnormal ``step``), so the size
+    guards below compare it before any array exists (review item C3/C8).
+    """
+    n = (stop - start) / step
+    return float(math.ceil(n)) if math.isfinite(n) else math.inf
 
 
 class LimitPoint(TypedDict):
@@ -137,11 +155,11 @@ def central_line(
     """Geographic track of the shadow axis (central line) over a time range."""
     if end_hours <= start_hours:
         raise HTTPException(status_code=400, detail="end_hours must exceed start_hours")
-    n_points = int((end_hours - start_hours) * 60.0 / step_minutes) + 1
+    n_points = _arange_len(start_hours, end_hours + 1e-9, step_minutes / 60.0)
     if n_points > MAX_TRACK_POINTS:
         raise HTTPException(
             status_code=400,
-            detail=f"{n_points} samples requested; at most {MAX_TRACK_POINTS} allowed "
+            detail=f"{n_points:.3g} samples requested; at most {MAX_TRACK_POINTS} allowed "
                    "(increase step_minutes or narrow the range)",
         )
 
@@ -244,13 +262,15 @@ def eclipse_map(
     ``visible`` is false where the Sun is below the horizon at the cell's
     maximum.  Computed by :func:`app.circumstances.circumstances_grid`.
     """
-    lats = np.arange(-90.0, 90.0 + 1e-9, lat_step)
-    lons = np.arange(-180.0, 180.0, lon_step)
-    if len(lats) * len(lons) > MAX_MAP_CELLS:
+    # Size the grid before allocating it (review item C3).
+    n_cells = _arange_len(-90.0, 90.0 + 1e-9, lat_step) * _arange_len(-180.0, 180.0, lon_step)
+    if n_cells > MAX_MAP_CELLS:
         raise HTTPException(
             status_code=400,
-            detail=f"{len(lats) * len(lons)} cells requested; at most {MAX_MAP_CELLS} allowed",
+            detail=f"{n_cells:.3g} cells requested; at most {MAX_MAP_CELLS} allowed",
         )
+    lats = np.arange(-90.0, 90.0 + 1e-9, lat_step)
+    lons = np.arange(-180.0, 180.0, lon_step)
     model = _build_model(epoch, window_hours, frame)
     la, lo = np.meshgrid(lats, lons, indexing="ij")
     g = circumstances_grid(model, la.ravel(), lo.ravel(), step_minutes=step_minutes)
@@ -284,21 +304,33 @@ def eclipses(
     if frame not in EARTH_FRAMES:
         raise HTTPException(status_code=400, detail=f"frame must be one of {EARTH_FRAMES}")
     try:
-        span_years = (utc_to_et(normalize_utc(end)) - utc_to_et(normalize_utc(start))) / 3.15576e7
-        if span_years <= 0:
-            raise HTTPException(status_code=400, detail="end must be after start")
-        if span_years > MAX_CATALOG_YEARS[detail]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"range of {span_years:.1f} years exceeds {MAX_CATALOG_YEARS[detail]:.0f} "
-                       f"(detail={detail})",
-            )
-        events = find_eclipses(start, end, earth_frame=frame, detail=detail)
+        # The range guard converts the epochs before find_eclipses would load
+        # the kernels, so load them here (both pools) first (review item C1).
+        load_kernels()
+        et_start = utc_to_et(normalize_utc(start))
+        et_end = utc_to_et(normalize_utc(end))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
+        # normalize_utc: not an ISO-8601 epoch.  Only the parsing is caught as
+        # ValueError: one from the computation below is a bug and must be a
+        # 500, not "invalid epoch" (review item C7).
         raise HTTPException(status_code=400, detail=f"invalid epoch: {exc}") from exc
     except spiceypy.utils.exceptions.SpiceyError as exc:
+        raise HTTPException(status_code=400, detail=f"SPICE error: {exc}") from exc
+    span_years = (et_end - et_start) / 3.15576e7
+    if span_years <= 0:
+        raise HTTPException(status_code=400, detail="end must be after start")
+    if span_years > MAX_CATALOG_YEARS[detail]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"range of {span_years:.1f} years exceeds {MAX_CATALOG_YEARS[detail]:.0f} "
+                   f"(detail={detail})",
+        )
+    try:
+        events = find_eclipses(start, end, earth_frame=frame, detail=detail)
+    except spiceypy.utils.exceptions.SpiceyError as exc:
+        # E.g. a range outside the SPK's coverage.
         raise HTTPException(status_code=400, detail=f"SPICE error: {exc}") from exc
     return {"start": start, "end": end, "frame": frame, "count": len(events), "eclipses": events}
 

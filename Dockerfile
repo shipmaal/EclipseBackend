@@ -56,4 +56,12 @@ USER appuser
 # wheel above). Do NOT add `--preload` to gunicorn: libgomp is not fork-safe
 # once its thread pool has started, and a preloaded parent that warmed the
 # native grid or catalog would hand forked workers a dead pool.
-CMD ["sh", "-c", "python -m kernels.bootstrap || true; exec gunicorn -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 app.main:app"]
+#
+# OpenMP team size: libgomp defaults to the host's core count (it ignores a
+# cgroup CPU quota) and every worker runs its own team, so split the cores
+# between the workers unless OMP_NUM_THREADS is set (at least 1). Idle teams
+# sleep rather than spin (OMP_WAIT_POLICY). WEB_CONCURRENCY is gunicorn's own
+# worker-count variable. See app/native.py PARALLEL_LOCK.
+ENV WEB_CONCURRENCY=4 \
+    OMP_WAIT_POLICY=PASSIVE
+CMD ["sh", "-c", "python -m kernels.bootstrap || true; : \"${OMP_NUM_THREADS:=$(( $(nproc) / WEB_CONCURRENCY > 0 ? $(nproc) / WEB_CONCURRENCY : 1 ))}\"; export OMP_NUM_THREADS; exec gunicorn -w \"$WEB_CONCURRENCY\" -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 app.main:app"]

@@ -88,3 +88,52 @@ def test_eclipses_endpoint_and_range_cap(client):
     assert [e["type"] for e in r.json()["eclipses"]] == ["total", "annular"]
     r = client.get("/eclipses", params={"start": "2000-01-01", "end": "2024-12-31"})
     assert r.status_code == 400 and "exceeds" in r.json()["detail"]
+
+
+# ------------------------- review items C1, C3, C7, C8 (docs/CODE_REVIEW_FOLLOWUPS.md §5)
+def test_map_tiny_step_is_a_400_before_any_allocation(client):
+    # Previously np.arange ran first: 1e-6 allocated GBs, 1e-300 raised a 500.
+    for step in (1e-6, 1e-300):
+        r = client.get("/map",
+                       params={"epoch": "2024-04-08T18:17:15", "lat_step": step, "lon_step": step})
+        assert r.status_code == 400 and "cells" in r.json()["detail"], step
+
+
+def test_central_line_subnormal_step_is_a_400(client):
+    # (4 h * 60) / 1e-310 overflows to inf; int(inf) used to be a 500.
+    r = client.get("/central-line",
+                   params={"epoch": "2024-04-08T18:17:15", "step_minutes": 1e-310})
+    assert r.status_code == 400 and "samples" in r.json()["detail"]
+
+
+def test_eclipses_on_a_fresh_worker_loads_the_kernels(client):
+    # The range guard converts the epochs before find_eclipses loads the kernels;
+    # on a fresh worker (empty pools) that was a 400 "SPICE error".
+    from app.ephemeris import load_kernels, unload_kernels
+
+    unload_kernels()
+    try:
+        r = client.get("/eclipses",
+                       params={"start": "2024-01-01", "end": "2024-12-31", "detail": False})
+        assert r.status_code == 200, r.text
+        assert r.json()["count"] == 2
+    finally:
+        load_kernels()
+
+
+def test_eclipses_compute_value_error_is_a_500_not_invalid_epoch(monkeypatch):
+    # Only epoch parsing maps to 400; a ValueError from the computation (e.g. a
+    # native invariant check) is a bug and must surface as a 500.
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    def broken(*args, **kwargs):
+        raise ValueError("local_circumstances: partial roots are all one-signed")
+
+    monkeypatch.setattr(main, "find_eclipses", broken)
+    c = TestClient(main.app, raise_server_exceptions=False)
+    r = c.get("/eclipses", params={"start": "2024-01-01", "end": "2024-12-31"})
+    assert r.status_code == 500
+    r = c.get("/eclipses", params={"start": "2024 JAN 01", "end": "2024-12-31"})
+    assert r.status_code == 400 and "invalid epoch" in r.json()["detail"]

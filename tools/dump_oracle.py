@@ -25,6 +25,10 @@ radii / km as the Python signatures say::
     gc  lat lon brg dist lat2 lon2 hav brg12                   # _destination/_haversine_km/bearing
     lim x y d mu l tan_f bearing max_km sunlit n_lat n_lon s_lat s_lon width
                                                                # shadow_edge_limits_v (sunlit 0/1)
+    limr x y d mu l tan_f bearing dx dy dd dmu dl n_lat n_lon s_lat s_lon width
+                                                               # ... with element rates (per hour):
+                                                               #   the umbral path envelope (W2)
+    geod lat1 lon1 lat2 lon2 km                                # geodesic_km (Andoyer)
     rad x y d l1 l2 tf1 tf2 pen umb is_total                   # shadow_radii (is_total 0/1)
 
 and, in ``circumstances_cases.txt`` (phase 3: app.circumstances helpers at
@@ -134,8 +138,10 @@ from app.geography import (  # noqa: E402
     _reduction_aux,
     bearing,
     central_track,
+    element_rates,
     fund_to_geo_v,
     geo_to_fund,
+    geodesic_km,
     global_contacts,
     shadow_edge_limits_v,
     shadow_radii,
@@ -201,6 +207,10 @@ OFF_EARTH = [  # |x| or |y/rho1| > 1: fund_to_geo_v -> NaN, limits -> NaN / widt
 ]
 G2F_LATS = np.array([-90.0, -60.0, -30.0, 0.0, 30.0, 60.0, 90.0])
 G2F_LONS = np.array([-180.0, -120.0, -60.0, 0.0, 60.0, 120.0, 180.0])
+GEOD_CASES = [  # (lat1, lon1, lat2, lon2): Andoyer geodesic_km, incl. the antimeridian
+    (-75.0, -46.0, -78.5, -46.5), (4.4, -16.7, 6.5, -17.3), (25.3, -104.1, 26.2, -105.3),
+    (0.0, 179.5, 0.5, -179.8), (48.8, 2.35, 52.5, 13.4), (-10.0, 125.0, -9.8, 125.3),
+]
 GC_CASES = [  # (lat, lon, bearing, dist_km): equator, mid-latitudes, poles, antimeridian
     (0.0, 0.0, 0.0, 100.0),
     (0.0, 0.0, 90.0, 100.0),
@@ -572,12 +582,15 @@ def write_geometry_cases(path: Path) -> int:
     ellipsoid / shadow_edge_limits_v / great-circle helpers). Returns the record count."""
     n_rec = 0
     tracks = {}  # label -> (elems, track) from central_track over TRACK_T_HOURS
+    track_rates = {}  # label -> element_rates at the track points (the W2 envelope)
     for label, utc0, _utc1 in ECLIPSES:
         if label not in CONTACT_EPOCHS:
             continue  # modern eclipses only (the 1919 SPK coverage is not needed here)
         t0 = (datetime.fromisoformat(utc0) + timedelta(hours=3)).isoformat()
         model = BesselianModel(t0_utc=t0, earth_frame=CONTACT_FRAME)
         tracks[label] = central_track(model, TRACK_T_HOURS)
+        track_rates[label] = element_rates(
+            model, np.array([tp.t_hours for tp in tracks[label][1]]))
 
     with open(path, "w") as fh:
         header(fh, "app.geography oracle at literal inputs (phase 2 ellipsoid + geometry parity)")
@@ -638,6 +651,26 @@ def write_geometry_cases(path: Path) -> int:
                     inputs = (x[k], y[k], d[k], mu[k], l[k], tf[k], brg[k], max_km, sunlit)
                     fh.write(f"lim {row(*inputs, *(o[k] for o in out))}\n")
                     n_rec += 1
+        fh.write("# limr x y d mu l tan_f bearing dx dy dd dmu dl n_lat n_lon s_lat s_lon width  "
+                 "(shadow_edge_limits_v with rates: the umbral path envelope, 600 km, sunlit)\n")
+        for label, (elems, track) in tracks.items():
+            idx = np.array([tp.i for tp in track], dtype=int)
+            brg = np.array([tp.bearing for tp in track])
+            x, y, d, mu = (elems[k][idx] for k in ("x", "y", "d", "mu"))
+            l, tf = elems["l2"][idx], elems["tan_f2"][idx]
+            r = track_rates[label]
+            rates = (r["x"], r["y"], r["d"], r["mu"], r["l2"])
+            out = shadow_edge_limits_v(x, y, d, mu, l, tf, brg, rates=rates)
+            for k in range(len(idx)):
+                inputs = (x[k], y[k], d[k], mu[k], l[k], tf[k], brg[k], *(v[k] for v in rates))
+                fh.write(f"limr {row(*inputs, *(o[k] for o in out))}\n")
+                n_rec += 1
+
+        fh.write("# geod lat1 lon1 lat2 lon2 km  (geodesic_km)\n")
+        for lat1, lon1, lat2, lon2 in GEOD_CASES:
+            fh.write(f"geod {row(lat1, lon1, lat2, lon2, geodesic_km(lat1, lon1, lat2, lon2))}\n")
+            n_rec += 1
+
         x, y, d, mu = OFF_EARTH[0]
         l, tf, brg = -0.0106, 0.00464, 45.0
         out = shadow_edge_limits_v(x, y, d, mu, l, tf, brg)

@@ -227,8 +227,21 @@ Detail add_detail(double et_g, Frame frame, bool central, double lat_g_deg, doub
         const std::size_t i = tp.i;
         const double x[] = {e.x[i]}, y[] = {e.y[i]}, dd[] = {e.d[i]}, mu[] = {e.mu[i]};
         const double l[] = {e.l2[i]}, tf[] = {e.tan_f2[i]}, b[] = {brg};
-        const geometry::EdgeLimits lim =
-            geometry::shadow_edge_limits(x, y, dd, mu, l, tf, b, UMBRA_LIMIT_MAX_KM, true);
+        // element_rates(model, [0.0]): evaluate_direct at [0 - dt, 0 + dt]
+        // (mu unwrapped), central differences, the mu difference wrapped.
+        const double dt = geometry::RATE_DT_H;
+        const std::vector<double> et_r = {d.et0 + (0.0 - dt) * 3600.0, d.et0 + (0.0 + dt) * 3600.0};
+        Elements er = ephem::besselian_instants(et_r, frame);
+        unwrap_mu_deg(er);
+        const double rx[] = {(er.x[1] - er.x[0]) / (2.0 * dt)};
+        const double ry[] = {(er.y[1] - er.y[0]) / (2.0 * dt)};
+        const double rd[] = {(er.d[1] - er.d[0]) / (2.0 * dt)};
+        const double rmu[] = {(numerics::np_remainder(er.mu[1] - er.mu[0] + 180.0, 360.0) - 180.0) /
+                              (2.0 * dt)};
+        const double rl[] = {(er.l2[1] - er.l2[0]) / (2.0 * dt)};
+        const geometry::EdgeRates rates{rx, ry, rd, rmu, rl};
+        const geometry::EdgeLimits lim = geometry::shadow_edge_limits(
+            x, y, dd, mu, l, tf, b, UMBRA_LIMIT_MAX_KM, true, &rates);
         d.width_km = std::isnan(lim.north_lat[0]) ? 0.0 : lim.width_km[0];
         break;
     }

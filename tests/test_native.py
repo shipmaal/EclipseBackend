@@ -623,15 +623,17 @@ def _central_line_model(oracle, utc0: str):
 def test_shadow_edge_limits_parity(oracle, native_pool):
     """shadow_edge_limits_v against the oracle on the three modern reference
     tracks (241 instants over ±3 h, bearings from central_track as /central-line
-    derives them), umbral (l2, tan_f2, 600 km) and penumbral (l1, tan_f1,
-    10 000 km, terminator-clipped).  Gate 1e-9 deg / 1e-6 km.  Measured on
+    derives them), umbral (l2, tan_f2, 600 km) both as the outline at each
+    instant and as the path envelope from the element rates (item W2), and
+    penumbral (l1, tan_f1, 10 000 km, terminator-clipped).  Gate 1e-9 deg /
+    1e-6 km.  Measured on
     x86-64: NaN masks identical; limit points 1.42e-13 deg, widths 1.09e-11 km
     -- the same 1-ulp libm-vs-NumPy trig difference that tests/cpp/
     test_geometry.cpp records (it flips one of the 50 bisection decisions at an
     exact tie).  Both sides bisect the *same* oracle elements here, so the
     phase-1 elements residual does not enter; the geometry itself is at the
     ulp level, four orders below the gate."""
-    from app.geography import central_track, shadow_edge_limits_v
+    from app.geography import central_track, element_rates, shadow_edge_limits_v
 
     oracle.load_kernels()
     worst_deg, worst_km, n_checked = 0.0, 0.0, 0
@@ -643,10 +645,19 @@ def test_shadow_edge_limits_parity(oracle, native_pool):
         idx = np.array([tp.i for tp in track], dtype=int)
         brg = np.array([tp.bearing for tp in track])
         args = tuple(elems[k][idx] for k in ("x", "y", "d", "mu"))
-        for l_key, tf_key, max_km in (("l2", "tan_f2", 600.0), ("l1", "tan_f1", 10_000.0)):
+        r = element_rates(model, np.array([tp.t_hours for tp in track]))
+        umbral_rates = (r["x"], r["y"], r["d"], r["mu"], r["l2"])
+        # Umbral as the outline at each instant and as the path envelope (the
+        # rates, item W2; what /central-line and the catalog width use), and
+        # the penumbral outline.
+        for l_key, tf_key, max_km, rates in (("l2", "tan_f2", 600.0, None),
+                                             ("l2", "tan_f2", 600.0, umbral_rates),
+                                             ("l1", "tan_f1", 10_000.0, None)):
             shadow = (elems[l_key][idx], elems[tf_key][idx], brg)
-            ours = native_pool.shadow_edge_limits(*args, *shadow, max_km=max_km, sunlit_only=True)
-            ref = shadow_edge_limits_v(*args, *shadow, max_km=max_km)
+            extra = {} if rates is None else {"rates": rates}
+            ours = native_pool.shadow_edge_limits(*args, *shadow, max_km=max_km, sunlit_only=True,
+                                                  **extra)
+            ref = shadow_edge_limits_v(*args, *shadow, max_km=max_km, rates=rates)
             for j, (a, b) in enumerate(zip(ours, ref, strict=True)):
                 assert np.array_equal(np.isnan(a), np.isnan(b)), (utc0, l_key, j)
                 m = ~np.isnan(b)
@@ -659,7 +670,7 @@ def test_shadow_edge_limits_parity(oracle, native_pool):
                     assert diff <= _LIMIT_TOL_DEG, (utc0, l_key, j, diff)
             assert np.sum(~np.isnan(ref[0])) > 100  # a real track, not all-NaN
             n_checked += 1
-    assert n_checked == 6
+    assert n_checked == 9
     print(f"\nshadow_edge_limits: points {worst_deg:.3g} deg, width {worst_km:.3g} km")
 
 

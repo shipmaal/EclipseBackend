@@ -74,6 +74,12 @@ LatLon destination(double lat_deg, double lon_deg, double bearing_deg, double di
 /// ``(lat1, lon1)`` and ``(lat2, lon2)`` [degrees].
 double haversine_km(double lat1_deg, double lon1_deg, double lat2_deg, double lon2_deg);
 
+/// Mirrors ``app.geography.geodesic_km``: distance [km] on the WGS-84 ellipsoid
+/// between ``(lat1, lon1)`` and ``(lat2, lon2)`` [geodetic degrees], Andoyer's
+/// formula with its first-order flattening term [Meeus98] ch. 11; NaN for
+/// coincident points. The path-width metric (review item W2).
+double geodesic_km(double lat1_deg, double lon1_deg, double lat2_deg, double lon2_deg);
+
 /// Mirrors ``app.geography.bearing``: initial great-circle bearing [degrees,
 /// [0, 360)] from point 1 to point 2 [degrees].
 double bearing_deg(double lat1_deg, double lon1_deg, double lat2_deg, double lon2_deg);
@@ -105,11 +111,29 @@ struct EdgeLimits {
 /// (width 0) where the central point is outside the shadow, the axis misses the
 /// Earth, or an edge is not found within ``max_km``; the northern point is the
 /// one with the greater latitude.
+///
+/// With ``rates`` (the per-hour ``dx, dy, dd_deg, dmu_deg, dl`` at each
+/// instant, ``app.geography.element_rates``) the limits are the path's — the
+/// envelope of the shadow over time: a point is inside when it is inside at
+/// the instant ``tau`` [h] of the axis' closest approach, found by
+/// ``ENVELOPE_ITERATIONS`` Newton steps on the squared separation with central
+/// differences of step ``ENVELOPE_H`` and the iterate clamped to
+/// ``+/- ENVELOPE_MAX_TAU_H`` (the elements linear in ``tau``; review item W2).
+/// The width is ``geodesic_km`` between the two points.
+struct EdgeRates {
+    std::span<const double> dx, dy, dd_deg, dmu_deg, dl;
+};
+/// Half-step [h] of ``app.geography.element_rates``' central differences.
+inline constexpr double RATE_DT_H = 1.0 / 60.0;
+inline constexpr double ENVELOPE_H = 1e-3;
+inline constexpr int ENVELOPE_ITERATIONS = 3;
+inline constexpr double ENVELOPE_MAX_TAU_H = 0.25;
+
 EdgeLimits shadow_edge_limits(std::span<const double> x, std::span<const double> y,
                               std::span<const double> d_deg, std::span<const double> mu_deg,
                               std::span<const double> l, std::span<const double> tan_f,
                               std::span<const double> path_bearing_deg, double max_km = 600.0,
-                              bool sunlit_only = true);
+                              bool sunlit_only = true, const EdgeRates* rates = nullptr);
 
 // ---------------------------------------------------------- global contacts
 

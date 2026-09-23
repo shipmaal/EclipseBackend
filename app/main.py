@@ -37,6 +37,7 @@ from .ephemeris import (
 )
 from .geography import (
     central_track,
+    element_rates,
     format_clock,
     format_offset,
     global_contacts,
@@ -171,13 +172,18 @@ def central_line(
 
     # Per-point umbral limits + accurate width (perpendicular to the along-track
     # bearing carried by each TrackPoint), all points bisected at once; then the
-    # penumbral limits the same way (the partial-eclipse region, up to a quarter
-    # circumference away and clipped to the terminator).
+    # penumbral limits (the partial-eclipse region, up to a quarter
+    # circumference away and clipped to the terminator) as the shadow outline at
+    # each instant -- a visualization bound, not the time envelope.
     idx = np.array([tp.i for tp in track], dtype=int)
     bearings = np.array([tp.bearing for tp in track])
+    # The umbral limits are the path's: the envelope of the shadow over time,
+    # from the element rates at each point (item W2).
+    rates = element_rates(model, np.array([tp.t_hours for tp in track]))
     n_lat, n_lon, s_lat, s_lon, widths = shadow_edge_limits_v(
         elems["x"][idx], elems["y"][idx], elems["d"][idx], elems["mu"][idx],
         elems["l2"][idx], elems["tan_f2"][idx], bearings,
+        rates=(rates["x"], rates["y"], rates["d"], rates["mu"], rates["l2"]),
     )
     pn_lat, pn_lon, ps_lat, ps_lon, _pw = shadow_edge_limits_v(
         elems["x"][idx], elems["y"][idx], elems["d"][idx], elems["mu"][idx],

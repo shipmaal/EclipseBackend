@@ -78,7 +78,10 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
    total, and pre-IERS 1919-05-29 / 1868-08-18 totals). Add a reference eclipse
    when you add a capability; state the achieved agreement in the test comment.
    Known, open discrepancies are strict xfails, never widened gates
-   (`docs/CODE_REVIEW_FOLLOWUPS.md` §6).
+   (`docs/CODE_REVIEW_FOLLOWUPS.md` §6). Path limits/widths are the time
+   envelope of the shadow (`shadow_edge_limits_v(..., rates=element_rates(...))`),
+   measured with `geodesic_km`; the solar radius is the constant
+   `constants.SUN_RADIUS_KM` (IAU 1976), never the PCK's.
 
 5. **Frames & epochs.** Input epochs are **UTC** and must be ISO-8601
    (`besselian.normalize_utc` is the single parser). ΔT = TT − UT1 is measured

@@ -8,12 +8,16 @@
 // (name, t_hours) pairs in the oracle's insertion order (P1, P4, U1, U4, U2,
 // U3, absent ones omitted) so ``dict(...)`` on the Python side reproduces the
 // oracle's dict exactly — never a mapping here, which would lose the order.
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/string_view.h>
 #include <nanobind/stl/vector.h>
 
+#include <optional>
 #include <string>
+#include <tuple>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -63,23 +67,29 @@ void bind_geometry(nb::module_& m) {
     m.def(
         "shadow_edge_limits",
         [](In1D x, In1D y, In1D d_deg, In1D mu_deg, In1D l, In1D tan_f, In1D path_bearing_deg,
-           double max_km, bool sunlit_only) {
+           double max_km, bool sunlit_only, std::optional<std::tuple<In1D, In1D, In1D, In1D, In1D>> rates) {
             geo::EdgeLimits e;
+            std::optional<geo::EdgeRates> r;
+            if (rates) {
+                auto& [dx, dy, dd, dmu, dl] = *rates;
+                r = geo::EdgeRates{as_span(dx), as_span(dy), as_span(dd), as_span(dmu), as_span(dl)};
+            }
             {
                 nb::gil_scoped_release nogil;
                 e = geo::shadow_edge_limits(as_span(x), as_span(y), as_span(d_deg), as_span(mu_deg),
                                             as_span(l), as_span(tan_f), as_span(path_bearing_deg),
-                                            max_km, sunlit_only);
+                                            max_km, sunlit_only, r ? &*r : nullptr);
             }
             return nb::make_tuple(to_numpy(std::move(e.north_lat)), to_numpy(std::move(e.north_lon)),
                                   to_numpy(std::move(e.south_lat)), to_numpy(std::move(e.south_lon)),
                                   to_numpy(std::move(e.width_km)));
         },
         "x"_a, "y"_a, "d_deg"_a, "mu_deg"_a, "l"_a, "tan_f"_a, "path_bearing_deg"_a,
-        "max_km"_a = 600.0, "sunlit_only"_a = true,
+        "max_km"_a = 600.0, "sunlit_only"_a = true, "rates"_a = nb::none(),
         "app.geography.shadow_edge_limits_v on equal-length 1-D arrays:\n"
         "(north_lat, north_lon, south_lat, south_lon, width_km); NaN / 0 where no edge.\n"
-        "x, y, l in Earth equatorial radii; d, mu, bearing in degrees; max_km in km.");
+        "x, y, l in Earth equatorial radii; d, mu, bearing in degrees; max_km in km.\n"
+        "rates: optional (dx, dy, dd_deg, dmu_deg, dl) per hour -> the path envelope.");
     m.def(
         "global_contacts",
         [](double et0, std::string_view earth_frame, double half_window_hours) {

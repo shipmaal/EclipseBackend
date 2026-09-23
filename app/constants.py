@@ -41,3 +41,15 @@ EARTH_EQUATORIAL_RADIUS_KM = WGS84_A_KM
 # root-finding the shadow-edge limits; the ellipsoidal reduction itself uses the
 # full WGS-84 ellipsoid above.
 EARTH_MEAN_RADIUS_KM = (2.0 * WGS84_A_KM + WGS84_B_KM) / 3.0
+
+# --- Solar radius --------------------------------------------------------------
+# The IAU (1976) solar radius, 696 000 km, the value the [Espenak] predictions
+# pair with the lunar radii k1/k2 (``app.ephemeris.K_PENUMBRA``/``K_UMBRA``) in
+# the shadow-cone angles ``sin f = (d_s +/- k) / G`` [ES92] eq. 8.323-1.  It is
+# a constant, NOT read from the loaded PCK: NAIF's pck00011 carries the IAU 2015
+# nominal 695 700 km, and reading it made the cones -- and every umbral width --
+# depend on which kernel set was loaded (review item W1: tan f 0.04% low, l2
+# ~0.7 km too negative, totals ~1% wide).  Espenak's published tan f1 / tan f2
+# imply 695 982 - 695 995 km for six reference eclipses (rounding of the 7th
+# decimal), i.e. this value.
+SUN_RADIUS_KM = 696000.0

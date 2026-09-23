@@ -127,7 +127,7 @@ def _greatest_model(g):
 
 def _greatest_edges(g):
     """(track point at greatest eclipse, north, south, width_km, is_total)."""
-    from app.geography import central_track, shadow_edge_limits, shadow_radii
+    from app.geography import central_track, element_rates, shadow_edge_limits, shadow_radii
 
     model, _frame = _greatest_model(g)
     dt = 0.02
@@ -136,9 +136,11 @@ def _greatest_edges(g):
     elems, track = central_track(model, np.array([-dt, 0.0, dt]))
     tp = next(p for p in track if abs(p.t_hours) < 1e-9)  # central instant t=0
     i = tp.i
+    r = element_rates(model, np.array([0.0]))
     north, south, width = shadow_edge_limits(
         elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i],
         elems["l2"][i], elems["tan_f2"][i], tp.bearing,
+        rates=(r["x"], r["y"], r["d"], r["mu"], r["l2"]),
     )
     _pen, _umb, is_total = shadow_radii(
         elems["x"][i], elems["y"][i], elems["d"][i],
@@ -232,8 +234,11 @@ def _check_circumstances(g):
 
     assert c["eclipse"] is True
     assert c["type"] == ("total" if g["is_total"] else "annular")
-    assert c["central_duration_s"] == pytest.approx(g["duration_s"], abs=3.0)
-    assert c["magnitude"] == pytest.approx(g["magnitude"], abs=0.003)
+    # Measured over all seven cases: duration -0.4 .. +0.4 s (published to 1 s),
+    # magnitude within 1e-4 -- since the solar radius stopped following the
+    # PCK (item W1; it was +1.7 .. +2.4 s / +0.0005 with pck00011's 695 700 km).
+    assert c["central_duration_s"] == pytest.approx(g["duration_s"], abs=1.0)
+    assert c["magnitude"] == pytest.approx(g["magnitude"], abs=1e-3)
 
 
 def test_circumstances_2017():
@@ -396,54 +401,30 @@ def test_reference_greatest_eclipse_point(name):
 @pytest.mark.parametrize("name", sorted(_REF_ECLIPSES))
 def test_reference_circumstances(name):
     """Duration and magnitude at the greatest-eclipse point.  Measured: duration
-    +1.7 to +2.4 s (the mean limb in K_UMBRA; Espenak quotes ~1-3 s for the
-    limb profile), magnitude +0.0004 to +0.0005."""
+    within +/-0.4 s, magnitude within 1e-4 (see _check_circumstances)."""
     _check_circumstances(_REF_ECLIPSES[name])
 
 
-# Every case with a published path width at greatest eclipse.  Measured
-# (ours - Espenak, km): 2017 +1.64, 2023-10 annular -1.63, 2024 +1.37,
-# 2023-04 hybrid +1.51 -- and the three marked below, each with its cause.
-# Pattern: every total is WIDER and the annular NARROWER, i.e. our umbral
-# cone is systematically larger.  Its source is tan f1 / tan f2, both
-# ~1.9e-6 (0.04%) below Espenak's for every eclipse; through
-# l2 = z tan f2 - k / cos f2 [ES92] eq. 8.323-7 with z ~ 60 that alone puts
-# l2 ~0.7 km more negative.  (docs/CODE_REVIEW_FOLLOWUPS.md section 6.)
+# Every case with a published path width at greatest eclipse: the umbral path
+# width as the envelope of the shadow over time, measured on the WGS-84
+# ellipsoid (items W1/W2, docs/CODE_REVIEW_FOLLOWUPS.md section 6).  Measured
+# (ours - Espenak, km): 2017 -0.01, 2023-10 annular +0.12, 2024 -0.03,
+# 2023-04 hybrid -0.10, 1919 -0.10, 1868 -0.12, and the polar grazing
+# 2021-12-04 -0.86 (0.2%).  Before W1/W2 these were +1.64, -1.63, +1.37,
+# +1.51, +2.70, +2.30 and -6.71.
 _WIDTH_CASES = {
     "2017-08-21T": _2017_GREATEST,
     "2023-10-14A": _2023_GREATEST,
     "2024-04-08T": _2024_GREATEST,
     **_REF_ECLIPSES,
 }
-_CONE_EXCESS = pytest.mark.xfail(
-    strict=True,
-    reason="umbral cone ~0.04% wider than Espenak's (tan f): totals ~1% wide, here > 2 km",
-)
-_WIDTH_XFAIL = {
-    # +2.70 and +2.30 km: the systematic cone excess above, on ~245-km paths.
-    "1919-05-29T": _CONE_EXCESS,
-    "1868-08-18T": _CONE_EXCESS,
-    # -6.71 km: shadow_edge_limits measures the shadow's cross-section at ONE
-    # instant, perpendicular to the track; the path limits are the envelope of
-    # the shadow over time.  The two agree to <= 0.4 km for the high-Sun
-    # cases, but for this grazing, low-Sun path the set of points ever inside
-    # the umbra along the same perpendicular spans 420.8 km (Espenak 418.7)
-    # against our instantaneous 412.0 km.
-    "2021-12-04T": pytest.mark.xfail(
-        strict=True,
-        reason="width/limits are the instantaneous shadow section, not the time "
-               "envelope: -6.7 km on this grazing polar path",
-    ),
-}
 
 
-@pytest.mark.parametrize(
-    "name", [pytest.param(n, marks=_WIDTH_XFAIL.get(n, ())) for n in sorted(_WIDTH_CASES)]
-)
+@pytest.mark.parametrize("name", sorted(_WIDTH_CASES))
 def test_path_width_at_greatest_eclipse(name):
     g = _WIDTH_CASES[name]
     _tp, _north, _south, width, _is_total = _greatest_edges(g)
-    assert width == pytest.approx(g["width_km"], abs=2.0)
+    assert width == pytest.approx(g["width_km"], abs=1.0)
 
 
 # --- Delta-T outside the IERS era (review item 2) ----------------------------

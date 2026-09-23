@@ -69,7 +69,7 @@ NB_MODULE(_eclipse, m) {
     m.def("kernel_count", &eclipse::ephem::kernel_count, "kind"_a = "ALL",
           nb::call_guard<nb::gil_scoped_release>(), "ktotal_c.");
     m.def("sun_radius_km", &eclipse::ephem::sun_radius_km,
-          nb::call_guard<nb::gil_scoped_release>(), "bodvrd_c('SUN', 'RADII')[0].");
+          nb::call_guard<nb::gil_scoped_release>(), "Solar radius [km]: the IAU 1976 constant 696000 (app.ephemeris.sun_radius_km).");
 
     // ---- raw SPICE
     m.def("str_to_et", &eclipse::ephem::str_to_et, "time_string"_a,

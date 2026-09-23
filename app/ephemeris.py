@@ -82,7 +82,6 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
 
@@ -91,7 +90,7 @@ import numpy as np
 import spiceypy as spice
 
 from . import native
-from .constants import EARTH_EQUATORIAL_RADIUS_KM
+from .constants import EARTH_EQUATORIAL_RADIUS_KM, SUN_RADIUS_KM
 from .deltat import decimal_year_from_jd, delta_t_seconds
 from .eop import eop, iers_mjd_range
 
@@ -168,17 +167,17 @@ def earth_equatorial_radius_km() -> float:
     return EARTH_EQUATORIAL_RADIUS_KM
 
 
-@lru_cache(maxsize=1)
 def sun_radius_km() -> float:
-    """Solar radius [km] from the PCK (696 000 km, IAU 1976 value).
+    """Solar radius [km]: :data:`app.constants.SUN_RADIUS_KM`, 696 000 km (IAU 1976).
 
     This is the radius the [Espenak] predictions and the ``K_PENUMBRA``/``K_UMBRA``
     lunar radii are paired with; it must not be swapped for the IAU 2015 nominal
     695 700 km without re-deriving the k's, since the shadow-cone angles
-    ``sin f = (d_s +/- k) / G`` [ES92] eq. 8.323-1 depend on the pair.
+    ``sin f = (d_s +/- k) / G`` [ES92] eq. 8.323-1 depend on the pair.  It is
+    therefore a constant rather than ``bodvrd("SUN", "RADII")``: NAIF's
+    pck00011 carries 695 700 km (review item W1).
     """
-    with SPICE_LOCK:
-        return float(spice.bodvrd("SUN", "RADII", 3)[1][0])
+    return SUN_RADIUS_KM
 
 
 # --- Time scales ----------------------------------------------------------------

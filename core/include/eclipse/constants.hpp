@@ -28,6 +28,12 @@ inline constexpr double EARTH_MEAN_RADIUS_KM = (2.0 * WGS84_A_KM + WGS84_B_KM) /
 inline constexpr double K_PENUMBRA = 0.2725076;
 inline constexpr double K_UMBRA = 0.2722810;
 
+// --- Solar radius (app/constants.py SUN_RADIUS_KM) ----------------------------
+// IAU (1976) 696 000 km, paired with k1/k2 in the cone angles
+// sin f = (d_s +/- k) / G [ES92] eq. 8.323-1 [Espenak]; a constant, not the
+// PCK's (pck00011 carries 695 700 km; review item W1).
+inline constexpr double SUN_RADIUS_KM = 696000.0;
+
 // --- Time -------------------------------------------------------------------
 inline constexpr double J2000_JD = 2451545.0;   // Julian date of J2000.0
 inline constexpr double MJD_OFFSET = 2400000.5; // JD - MJD

@@ -5,6 +5,7 @@
 // ``ephem::besselian_instants`` call bound in the second ``global_contacts``.
 #include "eclipse/geometry.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -24,6 +25,7 @@ using constants::DEG_TO_RAD;
 using constants::EARTH_MEAN_RADIUS_KM;
 using constants::RAD_TO_DEG;
 using constants::WGS84_A_KM;
+using constants::WGS84_F;
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
@@ -70,6 +72,26 @@ double haversine_km(double lat1_deg, double lon1_deg, double lat2_deg, double lo
     return 2 * EARTH_MEAN_RADIUS_KM * std::asin(std::sqrt(a));
 }
 
+double geodesic_km(double lat1_deg, double lon1_deg, double lat2_deg, double lon2_deg) {
+    // Andoyer [Meeus98] ch. 11, in app.geography.geodesic_km's operation order.
+    const double fh = ((lat1_deg + lat2_deg) / 2.0) * DEG_TO_RAD;
+    const double gh = ((lat1_deg - lat2_deg) / 2.0) * DEG_TO_RAD;
+    const double lh = (numerics::np_remainder(lon1_deg - lon2_deg + 180.0, 360.0) - 180.0) / 2.0 *
+                      DEG_TO_RAD;
+    const double sin_g = std::sin(gh), cos_g = std::cos(gh);
+    const double sin_f = std::sin(fh), cos_f = std::cos(fh);
+    const double sin_l = std::sin(lh), cos_l = std::cos(lh);
+    const double s = sin_g * sin_g * (cos_l * cos_l) + cos_f * cos_f * (sin_l * sin_l);
+    const double c = cos_g * cos_g * (cos_l * cos_l) + sin_f * sin_f * (sin_l * sin_l);
+    const double w = std::atan(std::sqrt(s / c));
+    const double r = std::sqrt(s * c) / w;
+    const double dist = 2.0 * w * WGS84_A_KM;
+    const double h1 = (3.0 * r - 1.0) / (2.0 * c);
+    const double h2 = (3.0 * r + 1.0) / (2.0 * s);
+    return dist * (1.0 + WGS84_F * h1 * (sin_f * sin_f) * (cos_g * cos_g) -
+                   WGS84_F * h2 * (cos_f * cos_f) * (sin_g * sin_g));
+}
+
 double bearing_deg(double lat1_deg, double lon1_deg, double lat2_deg, double lon2_deg) {
     const double p1 = lat1_deg * DEG_TO_RAD, p2 = lat2_deg * DEG_TO_RAD;
     const double dl = (lon2_deg - lon1_deg) * DEG_TO_RAD;
@@ -95,11 +117,14 @@ EdgeLimits shadow_edge_limits(std::span<const double> x, std::span<const double>
                               std::span<const double> d_deg, std::span<const double> mu_deg,
                               std::span<const double> l, std::span<const double> tan_f,
                               std::span<const double> path_bearing_deg, double max_km,
-                              bool sunlit_only) {
+                              bool sunlit_only, const EdgeRates* rates) {
     const std::size_t n = x.size();
     if (y.size() != n || d_deg.size() != n || mu_deg.size() != n || l.size() != n ||
         tan_f.size() != n || path_bearing_deg.size() != n)
         throw std::invalid_argument("shadow_edge_limits: argument arrays differ in length");
+    if (rates && (rates->dx.size() != n || rates->dy.size() != n || rates->dd_deg.size() != n ||
+                  rates->dmu_deg.size() != n || rates->dl.size() != n))
+        throw std::invalid_argument("shadow_edge_limits: rates differ in length from x");
 
     // Residual of the edge condition at a point (lat, lon) for instant i:
     // |axis separation| - |l - zeta tan f| = 0 [ES92] / [MeeusSE], with the
@@ -107,10 +132,48 @@ EdgeLimits shadow_edge_limits(std::span<const double> x, std::span<const double>
     // (geo_to_fund [ES92] eq. 8.331). With sunlit_only, a point beyond the
     // terminator (zeta <= 0) counts as outside the shadow (residual 1.0);
     // a NaN zeta keeps the NaN residual, as ``np.where(zeta <= 0.0, 1.0, r)``.
-    const auto residual = [&](double lat, double lon, std::size_t i) {
+    const auto instant_residual = [&](double lat, double lon, std::size_t i) {
         const ellipsoid::Fund f = ellipsoid::geo_to_fund_one(lat, lon, d_deg[i], mu_deg[i]);
         const double r = std::hypot(f.xi - x[i], f.eta - y[i]) - std::abs(l[i] - f.zeta * tan_f[i]);
         return (sunlit_only && f.zeta <= 0.0) ? 1.0 : r;
+    };
+
+    // Path envelope (the oracle's ``envelope_residual``): squared axis
+    // separation and zeta at tau [h] from instant i, elements linear in tau,
+    // [ES92] eq. 8.331 via geo_to_fund_one; the tau of closest approach by
+    // Newton steps with central differences; then the edge condition there.
+    struct Sep {
+        double s2, zeta;
+    };
+    const auto separation2 = [&](double lat, double lon, std::size_t i, double tau) {
+        const ellipsoid::Fund f = ellipsoid::geo_to_fund_one(
+            lat, lon, d_deg[i] + rates->dd_deg[i] * tau, mu_deg[i] + rates->dmu_deg[i] * tau);
+        const double u = (x[i] + rates->dx[i] * tau) - f.xi;
+        const double v = (y[i] + rates->dy[i] * tau) - f.eta;
+        return Sep{u * u + v * v, f.zeta};
+    };
+    const auto envelope_residual = [&](double lat, double lon, std::size_t i) {
+        const double h = ENVELOPE_H;
+        double tau = 0.0;
+        for (int it = 0; it < ENVELOPE_ITERATIONS; ++it) {
+            const double s_m = separation2(lat, lon, i, tau - h).s2;
+            const double s_0 = separation2(lat, lon, i, tau).s2;
+            const double s_p = separation2(lat, lon, i, tau + h).s2;
+            const double g = (s_p - s_m) / (2.0 * h);
+            const double c = (s_p - 2.0 * s_0 + s_m) / (h * h);
+            if (c > 0.0) {
+                // np.clip: maximum then minimum, NaN propagating.
+                const double t = tau - g / c;
+                tau = std::isnan(t) ? t
+                                    : std::min(std::max(t, -ENVELOPE_MAX_TAU_H), ENVELOPE_MAX_TAU_H);
+            }
+        }
+        const Sep sep = separation2(lat, lon, i, tau);
+        const double r = std::sqrt(sep.s2) - std::abs((l[i] + rates->dl[i] * tau) - sep.zeta * tan_f[i]);
+        return (sunlit_only && sep.zeta <= 0.0) ? 1.0 : r;
+    };
+    const auto residual = [&](double lat, double lon, std::size_t i) {
+        return rates ? envelope_residual(lat, lon, i) : instant_residual(lat, lon, i);
     };
 
     EdgeLimits out;
@@ -160,7 +223,7 @@ EdgeLimits shadow_edge_limits(std::span<const double> x, std::span<const double>
             lat_e[0] = lat_e[1] = kNaN;
             lon_e[0] = lon_e[1] = kNaN;
         }
-        out.width_km[i] = ok ? haversine_km(lat_e[0], lon_e[0], lat_e[1], lon_e[1]) : 0.0;
+        out.width_km[i] = ok ? geodesic_km(lat_e[0], lon_e[0], lat_e[1], lon_e[1]) : 0.0;
         // Northern point = greater latitude (tie -> the first; NaN -> false -> second).
         const bool first_is_north = lat_e[0] >= lat_e[1];
         out.north_lat[i] = first_is_north ? lat_e[0] : lat_e[1];

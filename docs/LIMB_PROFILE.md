@@ -327,11 +327,12 @@ Open:
    - ~1.5 GB of neighbour indices in the current in-memory layout, so they
      would have to be computed on the fly.
 
-   Recommendation: decide after PR 2. Its 3D oracle validates the contact
+   **Deferred to after PR 2** (agreed). Its 3D oracle validates the contact
    function these numbers come from, and the external gate (§5.4) is
-   0.3 s, so we'll know whether 0.1–0.5 s matters against the sources.
-2. **External values (§5.4):** Jubier's maps are interactive. Who captures
-   the values, and from which source, is still open.
+   0.3 s, so we'll know then whether 0.1–0.5 s matters against the sources.
+2. **External values (§5.4):** being found by web research (Claude). The
+   sources and extracted values will be recorded, with provenance, before
+   PR 4.
 
 ## 9. PR 1 results
 

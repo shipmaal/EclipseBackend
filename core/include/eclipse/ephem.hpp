@@ -128,4 +128,14 @@ struct SubSolar {
 };
 SubSolar sub_solar_points(std::span<const double> et, Frame frame = Frame::ITRS);
 
+/// ``app.ephemeris.limb_axes``: the fundamental-plane unit vectors x^ (east),
+/// y^ (north), z^ (shadow axis, toward the Sun) [ES92] 8.322 expressed in
+/// ``moon_frame`` (``"MOON_ME"``, the LOLA DEM's frame, or ``"IAU_MOON"``),
+/// one row-major 3x3 per ``et`` (rows x^, y^, z^). z^ is the apparent (LT+S)
+/// Moon->Sun direction, y^ the ``frame``'s pole projected onto the plane,
+/// x^ = y^ x z^; the Moon's orientation is at ``et - lt`` (docs/LIMB_PROFILE.md
+/// sec. 3.1-3.2).
+std::vector<std::array<double, 9>> limb_axes(std::span<const double> et, Frame frame,
+                                             std::string_view moon_frame);
+
 }  // namespace eclipse::ephem

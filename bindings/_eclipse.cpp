@@ -207,4 +207,5 @@ NB_MODULE(_eclipse, m) {
     bind_geometry(m);
     bind_circumstances(m);  // phase 3
     bind_catalog(m);        // phase 4
+    bind_limb(m);           // lunar limb profile
 }

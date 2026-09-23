@@ -55,3 +55,4 @@ void bind_ellipsoid(nb::module_& m);
 void bind_geometry(nb::module_& m);
 void bind_circumstances(nb::module_& m);
 void bind_catalog(nb::module_& m);
+void bind_limb(nb::module_& m);

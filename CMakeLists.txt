@@ -46,6 +46,7 @@ add_library(eclipse STATIC
   core/src/geometry.cpp
   core/src/circumstances.cpp
   core/src/catalog.cpp
+  core/src/limb.cpp
 )
 target_include_directories(eclipse PUBLIC core/include)
 target_link_libraries(eclipse PUBLIC cspice erfa)
@@ -93,6 +94,7 @@ if(ECLIPSE_BUILD_PYTHON)
     bindings/bind_geometry.cpp
     bindings/bind_circumstances.cpp
     bindings/bind_catalog.cpp
+    bindings/bind_limb.cpp
   )
   target_link_libraries(_eclipse PRIVATE eclipse)
   target_compile_options(_eclipse PRIVATE ${ECLIPSE_FP_FLAGS})

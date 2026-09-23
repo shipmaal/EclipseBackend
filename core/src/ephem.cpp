@@ -476,5 +476,72 @@ SubSolar sub_solar_points(std::span<const double> et, Frame frame) {
     return s;
 }
 
+// Row-wise dot product summed left to right (app.ephemeris._dot3).
+static double dot3(const double* a, const double* b) {
+    return (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2];
+}
+
+std::vector<std::array<double, 9>> limb_axes(std::span<const double> et, Frame frame,
+                                             std::string_view moon_frame) {
+    const size_t n = et.size();
+    const std::string mf(moon_frame);
+    std::vector<Vec3> moon(n), sun(n);
+    std::vector<std::array<double, 9>> rot(n);
+    spice_call([&] {
+        for (size_t i = 0; i < n; ++i) {
+            SpiceDouble lt = 0.0, lt_sun = 0.0;
+            spkpos_c("MOON", et[i], "J2000", "LT+S", "EARTH", moon[i].data(), &lt);
+            spkpos_c("SUN", et[i], "J2000", "LT+S", "EARTH", sun[i].data(), &lt_sun);
+            SpiceDouble m[3][3];
+            pxform_c("J2000", mf.c_str(), et[i] - lt, m);
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 3; ++c) rot[i][static_cast<size_t>(3 * r + c)] = m[r][c];
+        }
+    });
+
+    // Earth-frame pole in J2000: row 2 of the J2000 -> frame matrix
+    // (app.ephemeris._earth_pole_j2000).
+    std::vector<Vec3> pole(n);
+    if (frame == Frame::ITRS || frame == Frame::TOD) {
+        const EarthRotation ert = earth_rotation_times(et);
+        for (size_t i = 0; i < n; ++i) {
+            double r[3][3];
+            if (frame == Frame::ITRS)
+                eraC2t06a(J2000_JD, ert.tt2[i], J2000_JD, ert.ut1[i], ert.xp[i], ert.yp[i], r);
+            else
+                eraPnm06a(J2000_JD, ert.tt2[i], r);
+            pole[i] = {r[2][0], r[2][1], r[2][2]};
+        }
+    } else {
+        const char* ef = to_string(frame);
+        spice_call([&] {
+            for (size_t i = 0; i < n; ++i) {
+                SpiceDouble m[3][3];
+                pxform_c("J2000", ef, et[i], m);
+                pole[i] = {m[2][0], m[2][1], m[2][2]};
+            }
+        });
+    }
+
+    std::vector<std::array<double, 9>> out(n);
+    for (size_t i = 0; i < n; ++i) {
+        const Vec3 w = {sun[i][0] - moon[i][0], sun[i][1] - moon[i][1], sun[i][2] - moon[i][2]};
+        const double wn = std::sqrt(dot3(w.data(), w.data()));
+        const Vec3 zh = {w[0] / wn, w[1] / wn, w[2] / wn};
+        const double pz = dot3(pole[i].data(), zh.data());
+        const Vec3 yv = {pole[i][0] - pz * zh[0], pole[i][1] - pz * zh[1],
+                         pole[i][2] - pz * zh[2]};
+        const double yn = std::sqrt(dot3(yv.data(), yv.data()));
+        const Vec3 yh = {yv[0] / yn, yv[1] / yn, yv[2] / yn};
+        const Vec3 xh = {yh[1] * zh[2] - yh[2] * zh[1], yh[2] * zh[0] - yh[0] * zh[2],
+                         yh[0] * zh[1] - yh[1] * zh[0]};
+        const Vec3* rows[3] = {&xh, &yh, &zh};
+        for (size_t k = 0; k < 3; ++k)
+            for (size_t r = 0; r < 3; ++r)
+                out[i][3 * k + r] = dot3(&rot[i][3 * r], rows[k]->data());
+    }
+    return out;
+}
+
 }  // namespace ephem
 }  // namespace eclipse

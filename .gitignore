@@ -45,3 +45,7 @@ c_src/ElpMpp02/myprogram
 # IDE
 /.vscode/
 /.idea/
+kernels/*.tf
+kernels/*.bin
+kernels/*.img
+kernels/*.lbl

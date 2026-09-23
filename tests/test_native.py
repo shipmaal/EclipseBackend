@@ -1406,3 +1406,140 @@ def test_catalog_century_benchmark(monkeypatch, oracle):
     print(f"\nfind_eclipses {start}..{end} ({len(rows)} eclipses): detail on {elapsed:.2f} s, "
           f"detail off {elapsed_off:.2f} s ({os.cpu_count()} CPUs; gate {limit} s)")
     assert elapsed < limit, f"{elapsed:.2f} s >= {limit} s"
+
+
+# ---------------------------------------------------------- lunar limb profile
+# docs/LIMB_PROFILE.md PR 1: ephem::limb_axes and eclipse::limb against
+# app.ephemeris.limb_axes / app.limb, bit-identical: same CSPICE, same ERFA,
+# same operation order, and libm's atan2 on both sides (app.limb._atan2; with
+# np.arctan2 the residual was 4.5e-13 km on 75 of 7200 bins of a real profile
+# and 3.4e-12 km on a rough synthetic DEM).
+
+
+def _moon_me_loaded(oracle) -> bool:
+    import spiceypy
+
+    oracle.load_kernels()
+    try:
+        spiceypy.pxform("J2000", "MOON_ME", 0.0)
+        return True
+    except spiceypy.utils.exceptions.SpiceyError:
+        return False
+
+
+@requires_kernels
+def test_limb_axes_parity(oracle, native_pool):
+    if not _moon_me_loaded(oracle):
+        pytest.skip("MOON_ME not defined (python -m kernels.bootstrap --limb)")
+    for utc0, utc1 in _WINDOWS:
+        et = np.linspace(oracle.utc_to_et(utc0), oracle.utc_to_et(utc1), 25)
+        if not _ephemeris_covers(oracle, float(et[0])):
+            continue
+        for frame in _frames_available(oracle):
+            if frame == "ITRF93" and utc0 < "1950":
+                continue
+            for moon_frame in ("MOON_ME", "IAU_MOON"):
+                ours = native_pool.limb_axes(et, frame, moon_frame)
+                ref = oracle.limb_axes(et, frame, moon_frame)
+                assert ours.shape == ref.shape == (len(et), 3, 3)
+                assert np.array_equal(ours, ref), (utc0, frame, moon_frame)
+
+
+def _synthetic_band(tmp_path):
+    from app import limb
+    from kernels import limb_band
+
+    ppd = 8.0
+    lines, samples = int(180 * ppd), int(360 * ppd)
+    rng = np.random.default_rng(7)
+    dn = rng.integers(-6000, 6000, size=(lines, samples)).astype("<i2")
+    img, lbl = tmp_path / "s.img", tmp_path / "s.lbl"
+    dn.tofile(img)
+    lbl.write_text(
+        f'PRODUCT_ID = "SYN"\nLINES = {lines}\nLINE_SAMPLES = {samples}\nSAMPLE_BITS = 16\n'
+        'SAMPLE_TYPE = LSB_INTEGER\nSCALING_FACTOR = 0.5\nOFFSET = 1737400.\n'
+        f'MAP_RESOLUTION = {ppd:g}\nLINE_PROJECTION_OFFSET = {lines / 2 - 0.5}\n'
+        f'SAMPLE_PROJECTION_OFFSET = {samples / 2 - 0.5}\nCENTER_LONGITUDE = 180\n'
+        'COORDINATE_SYSTEM_NAME = "SYN"\n')
+    limb_band.cut(img, lbl, tmp_path / "s.bin")
+    return limb.band_from_file(limb_band.read(tmp_path / "s.bin"))
+
+
+def test_limb_silhouette_parity_synthetic(monkeypatch, native_pool, tmp_path):
+    """A rough random DEM (+-3 km) seen along twelve tilted axes: every bin."""
+    from app import limb
+    from app import native as native_mod
+
+    monkeypatch.setattr(native_mod, "BACKEND", "python")
+    band = _synthetic_band(tmp_path)
+    limb.install_native(band)
+    rng = np.random.default_rng(11)
+    for _ in range(12):
+        z = np.array([-1.0, *rng.uniform(-0.14, 0.14, 2)])  # <= 11.2 deg off -x
+        z /= np.linalg.norm(z)
+        y = np.cross(z, rng.normal(size=3))
+        y /= np.linalg.norm(y)
+        axes = np.stack([np.cross(y, z), y, z])
+        for n_bins in (720, 7200):
+            ref = limb.silhouette(band, axes, n_bins)
+            ours = native_pool.limb_silhouette(np.ascontiguousarray(axes), n_bins)
+            assert np.array_equal(ours, ref), float(np.max(np.abs(ours - ref)))
+    psi = np.linspace(-7.0, 7.0, 2001)
+    assert np.array_equal(native_pool.limb_delta_rho_at(ref, psi), limb.delta_rho_at(ref, psi))
+    with pytest.raises(ValueError, match="coverage"):
+        native_pool.limb_silhouette(np.eye(3), 720)  # z^ = +z of MOON_ME: the pole
+
+
+@requires_kernels
+def test_limb_profile_parity_real_dem(monkeypatch, oracle, native_pool):
+    from app import limb
+    from app import native as native_mod
+
+    if not (_moon_me_loaded(oracle) and limb.default_band_path().exists()):
+        pytest.skip("limb band / MOON_ME not installed (python -m kernels.bootstrap --limb)")
+    band = limb.load_band()
+    limb.install_native(band)
+    et = oracle.utc_to_et("2024-04-08T18:17:20") + np.array([-5400.0, 0.0, 3600.0])
+    ref = limb.limb_profiles(et, band=band)  # oracle backend (fixture)
+    monkeypatch.setattr(native_mod, "BACKEND", "native")
+    ours = limb.limb_profiles(et, band=band)
+    assert np.array_equal(ours, ref)
+
+
+def test_limb_silhouette_uses_the_band_it_is_given(monkeypatch, native_pool, tmp_path):
+    """The core holds one band; app.limb.silhouette must install its argument
+    rather than silently project whichever band was installed last."""
+    from app import limb
+    from app import native as native_mod
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    band_a = _synthetic_band(tmp_path / "a")
+    band_b = limb.band_from_file(_zero_band_file(tmp_path / "b"))
+    monkeypatch.setattr(native_mod, "BACKEND", "python")
+    ref_a = limb.silhouette(band_a, _FACE_ON, 720)
+    ref_b = limb.silhouette(band_b, _FACE_ON, 720)
+    assert not np.array_equal(ref_a, ref_b)
+    monkeypatch.setattr(native_mod, "BACKEND", "native")
+    assert np.array_equal(limb.silhouette(band_a, _FACE_ON, 720), ref_a)
+    assert np.array_equal(limb.silhouette(band_b, _FACE_ON, 720), ref_b)
+    assert np.array_equal(limb.silhouette(band_a, _FACE_ON, 720), ref_a)
+
+
+_FACE_ON = np.array([[0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]])
+
+
+def _zero_band_file(tmp_path):
+    from kernels import limb_band
+
+    ppd = 8.0
+    lines, samples = int(180 * ppd), int(360 * ppd)
+    np.zeros((lines, samples), dtype="<i2").tofile(tmp_path / "z.img")
+    (tmp_path / "z.lbl").write_text(
+        f'PRODUCT_ID = "ZERO"\nLINES = {lines}\nLINE_SAMPLES = {samples}\nSAMPLE_BITS = 16\n'
+        'SAMPLE_TYPE = LSB_INTEGER\nSCALING_FACTOR = 0.5\nOFFSET = 1737400.\n'
+        f'MAP_RESOLUTION = {ppd:g}\nLINE_PROJECTION_OFFSET = {lines / 2 - 0.5}\n'
+        f'SAMPLE_PROJECTION_OFFSET = {samples / 2 - 0.5}\nCENTER_LONGITUDE = 180\n'
+        'COORDINATE_SYSTEM_NAME = "SYN"\n')
+    limb_band.cut(tmp_path / "z.img", tmp_path / "z.lbl", tmp_path / "z.bin")
+    return limb_band.read(tmp_path / "z.bin")

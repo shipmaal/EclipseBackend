@@ -483,6 +483,75 @@ def axis_separation(et) -> tuple[np.ndarray, np.ndarray]:
     return np.hypot(f.x, f.y), f.z
 
 
+def _earth_pole_j2000(et: np.ndarray, earth_frame: str) -> np.ndarray:
+    """(n, 3) unit vector of ``earth_frame``'s +z (the pole the elements' ``d``
+    and the fundamental plane's north ``y`` refer to), in J2000.
+
+    It is row 2 of the J2000 -> ``earth_frame`` matrix: ERFA ``c2t06a`` (ITRS)
+    or ``pnm06a`` (TOD; GAST turns about this pole and leaves it fixed) [SOFA],
+    exactly as :func:`_geocentric_vectors` builds them, or SPICE ``pxform``
+    for a SPICE frame.
+    """
+    if earth_frame in ("ITRS", "TOD"):
+        tt2, ut1_frac, xp, yp = earth_rotation_times(et)
+        if earth_frame == "ITRS":
+            r = erfa.c2t06a(_J2000_JD, tt2, _J2000_JD, ut1_frac, xp, yp)
+        else:
+            r = erfa.pnm06a(_J2000_JD, tt2)
+        return np.ascontiguousarray(np.asarray(r).reshape(len(et), 3, 3)[:, 2, :])
+    with SPICE_LOCK:
+        return np.array([spice.pxform("J2000", earth_frame, float(t))[2] for t in et])
+
+
+def _dot3(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Row-wise dot product of (n, 3) arrays, summed left to right."""
+    return (a[:, 0] * b[:, 0] + a[:, 1] * b[:, 1]) + a[:, 2] * b[:, 2]
+
+
+def limb_axes(et, earth_frame: str = DEFAULT_EARTH_FRAME,
+              moon_frame: str = "MOON_ME") -> np.ndarray:
+    """Fundamental-plane axes in the Moon's body frame at each TDB ``et``.
+
+    Returns an ``(n, 3, 3)`` array whose rows are the unit vectors ``x^``
+    (east), ``y^`` (north), ``z^`` (shadow axis, toward the Sun) of the
+    fundamental plane [ES92] 8.322, expressed in ``moon_frame`` (``MOON_ME`` =
+    the LOLA DEM's frame, from ``moon_de440_*.tf`` + ``moon_pa_de440_*.bpc``;
+    ``IAU_MOON`` works with a text PCK alone).  ``z^`` is the apparent (LT+S)
+    Moon-to-Sun direction, as for the elements; ``y^`` is ``earth_frame``'s
+    pole projected onto the plane, ``x^ = y^ x z^`` -- the same axes as
+    :func:`_fundamental_xyz`'s ``(a, d)`` construction, built rotation-free.
+    The Moon's orientation is taken at the light-time-corrected epoch
+    ``et - lt``.  Stellar aberration tilts ``z^`` by <= 20.5" relative to the
+    geometric ray direction, which moves a limb point at most ~20 m; ignored.
+    ``docs/LIMB_PROFILE.md`` sec. 3.1-3.2.  Dispatches to the native core.
+    """
+    et = np.atleast_1d(np.asarray(et, dtype=float))
+    if native.is_native():
+        return native.module().limb_axes(et, earth_frame, moon_frame)
+    n = len(et)
+    with SPICE_LOCK:
+        moon, lt = spice.spkpos("MOON", et, "J2000", "LT+S", "EARTH")
+        sun, _ = spice.spkpos("SUN", et, "J2000", "LT+S", "EARTH")
+        lt = np.atleast_1d(np.asarray(lt, dtype=float))
+        rot = np.array([spice.pxform("J2000", moon_frame, float(t) - float(tau))
+                        for t, tau in zip(et, lt, strict=True)])
+    moon = np.asarray(moon).reshape(n, 3)
+    sun = np.asarray(sun).reshape(n, 3)
+    w = sun - moon
+    zh = w / np.sqrt(_dot3(w, w))[:, None]
+    pole = _earth_pole_j2000(et, earth_frame)
+    yv = pole - _dot3(pole, zh)[:, None] * zh
+    yh = yv / np.sqrt(_dot3(yv, yv))[:, None]
+    xh = np.stack([yh[:, 1] * zh[:, 2] - yh[:, 2] * zh[:, 1],
+                   yh[:, 2] * zh[:, 0] - yh[:, 0] * zh[:, 2],
+                   yh[:, 0] * zh[:, 1] - yh[:, 1] * zh[:, 0]], axis=1)
+    out = np.empty((n, 3, 3))
+    for k, v in enumerate((xh, yh, zh)):
+        for r in range(3):
+            out[:, k, r] = _dot3(rot[:, r, :], v)
+    return out
+
+
 def sub_solar_points(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> tuple[np.ndarray, np.ndarray]:
     """Geographic (lon, lat) arrays [deg] of the sub-solar point at each ``et``.
 

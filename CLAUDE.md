@@ -22,6 +22,7 @@ Earth orientation from **ERFA** (IAU 2006/2000A) with **IERS** EOP. Packaging is
 ```bash
 uv sync                                  # install into .venv (also builds the native core)
 uv run python -m kernels.bootstrap       # download SPICE kernels (auto: NAIF else GitHub mirror)
+uv run python -m kernels.bootstrap --limb  # + lunar limb profile inputs (LOLA band, MOON_ME kernels)
 uv run pytest                            # tests (integration tests auto-skip without kernels)
 uv run uvicorn app.main:app --reload     # API + viewer at http://localhost:8000/ui/
 cmake --preset release && cmake --build --preset release && ctest --preset release  # C++ tests
@@ -39,17 +40,19 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
 
 | Module | Responsibility |
 | --- | --- |
-| `ephemeris.py` | SPICE apparent Sun/Moon positions; `besselian_instant()` builds the 8 elements at one instant; the four Earth-orientation frames (`ITRS`/`TOD`/`ITRF93`/`IAU_EARTH`); `sub_solar_point()`. Owns the lunar-radius constants `K_PENUMBRA`/`K_UMBRA`. |
+| `ephemeris.py` | SPICE apparent Sun/Moon positions; `besselian_instant()` builds the 8 elements at one instant; the four Earth-orientation frames (`ITRS`/`TOD`/`ITRF93`/`IAU_EARTH`); `sub_solar_point()`; `limb_axes()` (fundamental-plane axes in `MOON_ME`). Owns the lunar-radius constants `K_PENUMBRA`/`K_UMBRA`. |
 | `eop.py` | IERS polar motion + UT1−UTC, interpolated from the `astropy-iers-data` bundle. |
 | `besselian.py` | Samples the elements around T0 and polynomial-fits them (`BesselianModel`). |
 | `geography.py` | The ellipsoid geometry: `fund_to_geo` (fundamental→geographic), `geo_to_fund` (its exact inverse), `shadow_edge_limits` (N/S limits + true width, umbral or penumbral), `global_contacts` (P1–U4), `shadow_radii`, great-circle helpers. |
 | `deltat.py` | ΔT = TT − UT1 polynomial model [Espenak] for epochs outside the IERS era. |
 | `circumstances.py` | Per-observer local circumstances from a `BesselianModel`; `circumstances_grid` for maps. |
 | `catalog.py` | `find_eclipses`: scan a date range, refine greatest eclipse, classify P/A/T/H, Canon-style rows. |
+| `limb.py` | Lunar limb profile from the LOLA DEM (`docs/LIMB_PROFILE.md`): loads the limb band, `silhouette()` (δρ per 0.05° bin, points + grid edges), `delta_rho_at()`, `limb_profiles()`. Not yet used by the API (PR 2+). |
 | `numerics.py` | Vectorized bisection / parabolic-extremum helpers shared by circumstances, contacts and the catalog. |
 | `reference.py` | Parses `app/data.txt` (a reference central-line track). |
 | `main.py` | FastAPI: `/health`, `/besselian`, `/central-line`, `/circumstances`, `/map`, `/eclipses`; serves `frontend/` at `/ui`. |
-| `kernels/bootstrap.py` | Downloads kernels (`--source auto|naif|mirror`) and writes `eclipse.tm`. |
+| `kernels/bootstrap.py` | Downloads kernels (`--source auto|naif|mirror`, `--limb`) and writes `eclipse.tm`. |
+| `kernels/limb_band.py` | Cuts LOLA `LDEM_*` to the lunar limb band (deterministic, SHA-pinned file) and reads it back. |
 
 ## Scientific conventions — READ BEFORE EDITING MATH
 
@@ -161,6 +164,14 @@ structural, not stylistic:
   is 1e-2 s, with rows required identical up to a whole-second `greatest_utc`
   flip at a rounding boundary inside that band (`catalog.hpp` "CONDITIONING
   OF et_g", `app/catalog.py::_rho_at`, `tests/test_native.py` phase 4).
+- Lunar limb profile (`docs/LIMB_PROFILE.md`, PR 1): `ephem::limb_axes`
+  (adds `pxform_c`) and `core/src/limb.cpp` (`silhouette`, `delta_rho_at`),
+  bit-identical to `app.ephemeris.limb_axes` / `app.limb`. The band is
+  injected from Python like the EOP table (`app.limb.install_native` ->
+  `set_limb_band`: runs, DN, neighbour indices, pixel-centre trig tables),
+  so the C++ never parses the band file. The Python side calls libm's
+  `atan2` (`app.limb._atan2`), not `np.arctan2` (SIMD, 1 ulp off), to keep
+  the parity exact; the native silhouette holds `native.PARALLEL_LOCK`.
 - No `-ffast-math`; `-ffp-contract=off` is set. Keep the Python's operation
   order so parity is bit-level, not "close".
 - `_eclipse` links its own CSPICE statically: its kernel pool is separate from
@@ -184,7 +195,13 @@ hand-picked expected value.
   copy (DE432s + IAU_EARTH; the ERFA `ITRS`/`TOD` frames need no binary PCK).
 - **No model identifier** goes into commits/PRs/code.
 - **Accuracy ceiling today**: DE432s (mirror) vs DE440 (both sub-km for Sun/Moon)
-  and no per-position lunar-limb profile (the mean limb is folded into `K_UMBRA`).
+  and no per-position lunar-limb profile in the results yet (the mean limb is
+  folded into `K_UMBRA`); the profile itself exists (`app/limb.py`) and PRs 2–4
+  of `docs/LIMB_PROFILE.md` wire it into contacts, limits and the API.
+- **Limb data** (`--limb`): `lola_ldem16_limb20.bin` + `moon_pa_de440_200625.bpc`
+  + `moon_de440_250416.tf`, SHA-256-pinned in `kernels/bootstrap.py`. The
+  `mirror` source fetches them from this repo's data-only `limb-data` branch at
+  a pinned commit — never rewrite that branch; add a commit and move the pin.
 
 ## References
 
@@ -212,3 +229,10 @@ Cite these by key in code.
   3rd ed., 2000 — a = 6378137 m, f = 1/298.257223563.
 - **[DE440]** R. S. Park et al. (2021), *AJ* 161, 105 — JPL DE440/DE441.
 - **[SPICE]** C. H. Acton (1996), *Planet. Space Sci.* 44, 65 — NAIF SPICE.
+- **[LOLA]** D. E. Smith et al. (2010), *GRL* 37, L18204; D. E. Smith et al.
+  (2017), *Icarus* 283, 70 — LRO Lunar Orbiter Laser Altimeter; gridded DEMs
+  `LDEM_*` in PDS `LRO-L-LOLA-3-RDR-V1` (reference sphere 1737.4 km, frame
+  Mean Earth/Polar Axis of DE421 = SPICE `MOON_ME`).
+- **[NASA-limb]** F. Espenak, "The Lunar Limb Profile and Eclipse Predictions",
+  eclipse.gsfc.nasa.gov/SEhelp/limb.html; "Limb Corrections to the Path Limits:
+  Graze Zones", eclipse.gsfc.nasa.gov/SEmono/reference/graze.html.

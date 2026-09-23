@@ -17,6 +17,21 @@ The generated `eclipse.tm` metakernel loads the set below. The engine
 | `pck00011.tpc` | text PCK | Body radii (`bodvrd`) and the low-precision `IAU_EARTH` frame. |
 | `earth_latest_high_prec.bpc` | binary PCK | High-precision Earth orientation — defines the **ITRF93** frame with precession, nutation and true (UT1/EOP) rotation. Optional: the default **`TOD`** frame (pyerfa true-of-date) is already high precision without it. |
 
+## Lunar limb profile inputs (`--limb`)
+
+`uv run python -m kernels.bootstrap --limb` also installs, SHA-256-pinned
+(`docs/LIMB_PROFILE.md`):
+
+| File | Why it's needed |
+| --- | --- |
+| `moon_pa_de440_200625.bpc` | binary PCK: DE440 lunar orientation (`MOON_PA`), 1550–2650 |
+| `moon_de440_250416.tf` | frame kernel: defines `MOON_ME` (= the LOLA DEM's frame, DE421 mean-Earth) on top of it |
+| `lola_ldem16_limb20.bin` | LRO LOLA `LDEM_16` cut to the lunar limb band (every pixel within 20° of the mean limb) by `kernels/limb_band.py` |
+
+From NAIF/PDS the band is cut locally from `ldem_16.img` (33 MB); the `mirror`
+source downloads the same pre-cut bytes and the two kernels from this
+repository's data-only `limb-data` branch at a pinned commit.
+
 ## Earth-orientation frames (`SPICE_EARTH_FRAME` / `frame=` query)
 
 | Frame | Needs | Notes |

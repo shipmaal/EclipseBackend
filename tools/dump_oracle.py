@@ -686,6 +686,90 @@ def write_geometry_cases(path: Path) -> int:
     return n_rec
 
 
+def write_limb_cases(path: Path) -> int:
+    """limb_cases.txt: app.ephemeris.limb_axes / app.limb oracle (docs/LIMB_PROFILE.md
+    PR 1). A 1-ppd random synthetic limb band (runs, DN, neighbours, trig tables)
+    with its silhouettes along tilted axes, delta_rho_at cases, and -- when the
+    lunar kernels are loaded -- the axes at the reference instants."""
+    import tempfile
+
+    import spiceypy
+
+    from app import limb
+    from kernels import limb_band
+
+    n_rec = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        lines, samples = 180, 360
+        dn = np.random.default_rng(3).integers(-8000, 8000, (lines, samples)).astype("<i2")
+        dn.tofile(tmp / "s.img")
+        (tmp / "s.lbl").write_text(
+            f'PRODUCT_ID = "SYN1"\nLINES = {lines}\nLINE_SAMPLES = {samples}\n'
+            "SAMPLE_BITS = 16\nSAMPLE_TYPE = LSB_INTEGER\nSCALING_FACTOR = 0.5\n"
+            "OFFSET = 1737400.\nMAP_RESOLUTION = 1\nLINE_PROJECTION_OFFSET = 89.5\n"
+            "SAMPLE_PROJECTION_OFFSET = 179.5\nCENTER_LONGITUDE = 180\n"
+            'COORDINATE_SYSTEM_NAME = "SYN"\n')
+        limb_band.cut(tmp / "s.img", tmp / "s.lbl", tmp / "s.bin")
+        band = limb.band_from_file(limb_band.read(tmp / "s.bin"))
+
+    with open(path, "w") as fh:
+        header(fh, "app.limb / app.ephemeris.limb_axes oracle (lunar limb profile, PR 1)")
+        fh.write(f"lband {row(band.offset_km, band.scale_km, band.band_deg)}\n")
+        fh.write("lcoslat " + row(*band.cos_lat) + "\n")
+        fh.write("lsinlat " + row(*band.sin_lat) + "\n")
+        fh.write("lcoslon " + row(*band.cos_lon) + "\n")
+        fh.write("lsinlon " + row(*band.sin_lon) + "\n")
+        for line, first, count in band.runs:
+            fh.write(f"lrun {line} {first} {count}\n")
+        fh.write("ldn " + " ".join(str(int(v)) for v in band.dn) + "\n")
+        fh.write("lright " + " ".join(str(int(v)) for v in band.right) + "\n")
+        fh.write("ldown " + " ".join(str(int(v)) for v in band.down) + "\n")
+        n_rec += 9 + len(band.runs)
+
+        fh.write("# lsil <n_bins> <9 axes> <n_bins delta_rho>\n")
+        rng = np.random.default_rng(5)
+        for _ in range(4):
+            z = np.array([-1.0, *rng.uniform(-0.14, 0.14, 2)])
+            z /= np.linalg.norm(z)
+            y = np.cross(z, rng.normal(size=3))
+            y /= np.linalg.norm(y)
+            axes = np.stack([np.cross(y, z), y, z])
+            for n_bins in (90, 360):
+                prof = limb.silhouette(band, axes, n_bins)
+                fh.write(f"lsil {n_bins} {row(*axes.ravel(), *prof)}\n")
+                n_rec += 1
+
+        fh.write("# ldra <n> <profile..> <m> <psi..> <out..>\n")
+        prof = np.random.default_rng(9).normal(size=16)
+        psi = np.linspace(-7.0, 7.0, 29)
+        out = limb.delta_rho_at(prof, psi)
+        fh.write(f"ldra {len(prof)} {row(*prof)} {len(psi)} {row(*psi)} {row(*out)}\n")
+        n_rec += 1
+
+        try:
+            spiceypy.pxform("J2000", "MOON_ME", 0.0)
+            have_moon = True
+        except spiceypy.utils.exceptions.SpiceyError:
+            have_moon = False
+        if not have_moon:
+            fh.write("# lax: skipped (MOON_ME not loaded; kernels.bootstrap --limb)\n")
+            return n_rec
+        fh.write("# lax <et> <earth_frame> <moon_frame> <9 axes, rows x^ y^ z^>\n")
+        for label, utc0, utc1 in ECLIPSES:
+            if label not in CONTACT_EPOCHS:
+                continue
+            et = np.linspace(ep.utc_to_et(utc0), ep.utc_to_et(utc1), 3)
+            for frame in ("ITRS", "TOD", "IAU_EARTH"):
+                for moon_frame in ("MOON_ME", "IAU_MOON"):
+                    ax = ep.limb_axes(et, frame, moon_frame)
+                    for i in range(len(et)):
+                        vals = row(*ax[i].ravel())
+                        fh.write(f"lax {float(et[i])!r} {frame} {moon_frame} {vals}\n")
+                        n_rec += 1
+    return n_rec
+
+
 def main() -> None:
     assert not native.is_native(), "dump the *Python* oracle: ECLIPSE_BACKEND=python"
     if not (ROOT / "kernels" / SPK).exists():
@@ -747,10 +831,12 @@ def main() -> None:
     n_geo = write_geometry_cases(OUT / "geometry_cases.txt")
     n_circ = write_circumstances_cases(OUT / "circumstances_cases.txt")
     n_cat = write_catalog_cases(OUT / "catalog_cases.txt")
+    n_limb = write_limb_cases(OUT / "limb_cases.txt")
 
     n_rows = int(keep.sum())
-    print(f"wrote {len(ECLIPSES) + 6} fixtures to {OUT.relative_to(ROOT)}, {n_rows} EOP rows, "
-          f"{n_geo} geometry records, {n_circ} circumstances records, {n_cat} catalog records")
+    print(f"wrote {len(ECLIPSES) + 7} fixtures to {OUT.relative_to(ROOT)}, {n_rows} EOP rows, "
+          f"{n_geo} geometry records, {n_circ} circumstances records, {n_cat} catalog records, "
+          f"{n_limb} limb records")
 
 
 if __name__ == "__main__":

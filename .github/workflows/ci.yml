@@ -52,8 +52,8 @@ jobs:
           key: ubuntu-latest-ctest
       - name: Install dependencies (nanobind for the bindings target)
         run: uv sync
-      - name: Download SPICE kernels (NAIF if reachable, else mirror)
-        run: uv run python -m kernels.bootstrap
+      - name: Download SPICE kernels + limb profile inputs (NAIF if reachable, else mirror)
+        run: uv run python -m kernels.bootstrap --limb
       - name: Configure, build, test
         run: |
           cmake --preset release
@@ -76,8 +76,8 @@ jobs:
           key: ubuntu-latest-native
       - name: Install dependencies
         run: uv sync
-      - name: Download SPICE kernels (GitHub mirror)
-        run: uv run python -m kernels.bootstrap --source mirror
+      - name: Download SPICE kernels + limb profile inputs (GitHub mirror)
+        run: uv run python -m kernels.bootstrap --source mirror --limb
       - name: Full validation through the Python oracle (reference eclipses + parity)
         run: ECLIPSE_BACKEND=python uv run pytest -q
       # The 0.5-degree grid benchmark (roadmap §5 phase 3) is gated at 0.5 s and

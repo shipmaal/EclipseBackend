@@ -21,9 +21,11 @@ below the rise/set altitude ``h0 = -0 deg 50'`` [Meeus98] ch. 15 is listed in
 ``below_horizon``, and an observer for whom C1, maximum and C4 are all below it
 sees no eclipse at all (``eclipse: False``).
 
-Geometric only otherwise: no atmospheric refraction on the contacts themselves
-and the mean lunar limb (folded into k2), so grazing/limb-profile effects are
-not modelled (item A3).
+Geometric only otherwise: no atmospheric refraction on the contacts
+themselves.  ``limb="mean"`` (the default) is the mean lunar limb folded into
+k2 [Espenak]; ``limb="profile"`` takes C2/C3 (and whether there is a central
+phase at all) from the LRO LOLA limb profile (:mod:`app.limb`,
+docs/LIMB_PROFILE.md), everything else still from the mean limb.
 """
 
 from __future__ import annotations
@@ -32,13 +34,30 @@ from typing import NamedTuple, TypedDict
 
 import numpy as np
 
+from . import limb as limb_profile
 from . import native
+from .constants import EARTH_EQUATORIAL_RADIUS_KM
 from .ephemeris import sub_solar_points
 from .geography import bearing, format_clock, geo_to_fund
 from .numerics import bisect, sign_changes
 
 # Sun rise/set altitude: refraction 34' + solar semidiameter 16' [Meeus98] ch. 15.
 HORIZON_ALT_DEG = -0.8333
+
+# Lunar limb models (docs/LIMB_PROFILE.md): the mean limb in k2, or the profile.
+LIMB_MODES = ("mean", "profile")
+
+# Profile-mode C2/C3 search (docs/LIMB_PROFILE.md sec. 3.4): sampled every
+# _PROFILE_STEP_H over the mean-limb central phase widened by
+# _PROFILE_MARGIN_H each side (the profile moves contacts by <~5 s); an
+# observer outside the mean umbra by less than _PROFILE_NEAR_KM (the deepest
+# limb valleys, ~9 km, plus margin) is searched over +/- _PROFILE_GRAZE_H of
+# maximum, since the profile can make the eclipse central there.
+_PROFILE_STEP_H = 0.5 / 3600.0
+_PROFILE_MARGIN_H = 30.0 / 3600.0
+_PROFILE_GRAZE_H = 3.0 / 60.0
+_PROFILE_NEAR_KM = 12.0
+_PROFILE_MAX_WIDEN = 10
 
 
 class LocalCircumstances(TypedDict, total=False):
@@ -71,6 +90,7 @@ class LocalCircumstances(TypedDict, total=False):
     C3_alt: float
     central_duration_s: float  # totality/annularity duration (central phase only)
     below_horizon: list[str]   # events ("C1", "C2", "max", "C3", "C4") with Sun below h0
+    limb: str                  # lunar limb model: "mean" (k2) or "profile" (LOLA)
 
 
 def _series(model, lat, lon, t):
@@ -199,6 +219,62 @@ def _refine_contacts(model, lat, lon, t_lo, t_hi, central):
     return bisect(f, t_lo, t_hi)
 
 
+def _profile_g(model, lat, lon, t):
+    """The profile contact function at offsets ``t`` [h]: ``G_T`` where the
+    reduced umbral radius ``L2' < 0`` (total), else ``G_A`` (annular); the
+    observer is in the central phase where it is negative.  Elements from the
+    LOLA sphere for both cones (``limb.K_REF``) [ES92] eq. 8.353-8.354."""
+    t = np.atleast_1d(np.asarray(t, dtype=float))
+    k = limb_profile.K_REF
+    e = model.evaluate_direct(t, k, k)
+    xi, eta, zeta = geo_to_fund(lat, lon, e["d"], e["mu"])
+    px = xi - e["x"]
+    py = eta - e["y"]
+    L1p = e["l1"] - zeta * e["tan_f1"]
+    L2p = e["l2"] - zeta * e["tan_f2"]
+    r_s = (L1p + L2p) / 2.0
+    r_m = (L1p - L2p) / 2.0
+    prof = limb_profile.profiles_at(model.et0 + t * 3600.0, model.earth_frame)
+    out = np.empty(len(t))
+    tot = L2p < 0.0
+    if tot.any():
+        out[tot] = limb_profile.g_total(px[tot], py[tot], r_s[tot], r_m[tot], prof[tot])
+    if (~tot).any():
+        out[~tot] = limb_profile.g_annular(px[~tot], py[~tot], r_s[~tot], r_m[~tot], prof[~tot])
+    return out
+
+
+def _profile_contacts(model, lat, lon, t_lo: float, t_hi: float):
+    """``(central, c2, c3)`` [h] from the limb profile inside ``[t_lo, t_hi]``.
+
+    ``_profile_g`` is sampled every ``_PROFILE_STEP_H``; C2 is the first
+    entry into the central phase (falling root), C3 the last exit (rising
+    root), each bisected.  A central phase broken by limb features (a graze)
+    is reported from its first entry to its last exit.  A window end that is
+    itself central is pushed out by ``_PROFILE_MARGIN_H`` (up to
+    ``_PROFILE_MAX_WIDEN`` times each).  ``central`` is False
+    (``c2 = c3 = NaN``) when no sample is central, or when an end is still
+    central after that.
+    """
+    for _ in range(_PROFILE_MAX_WIDEN + 1):
+        t = np.arange(t_lo, t_hi + 1e-12, _PROFILE_STEP_H)
+        g = _profile_g(model, lat, lon, t)
+        if not (g[0] < 0.0 or g[-1] < 0.0):
+            break
+        if g[0] < 0.0:
+            t_lo = t_lo - _PROFILE_MARGIN_H
+        if g[-1] < 0.0:
+            t_hi = t_hi + _PROFILE_MARGIN_H
+    if not (g < 0.0).any() or g[0] < 0.0 or g[-1] < 0.0:
+        return False, float("nan"), float("nan")
+    ch = sign_changes(t, g)
+    i2 = min(i for i, rising in ch if not rising)
+    i3 = max(i for i, rising in ch if rising)
+    c2, c3 = bisect(lambda tt: _profile_g(model, lat, lon, tt),
+                    [t[i2], t[i3]], [t[i2 + 1], t[i3 + 1]])
+    return True, float(c2), float(c3)
+
+
 def _refine_maximum(model, lat, lon, t, mag, imax):
     """Parabolic refinement of the time of maximum through the three grid points."""
     if 0 < imax < len(t) - 1:
@@ -244,13 +320,17 @@ _NO_ECLIPSE_RAW = _LocalRaw(False, False, *([float("nan")] * 8), _NAN5, _NAN5,
                             (False,) * 5, False)
 
 
-def _local_raw(model, lat: float, lon: float) -> _LocalRaw:
+def _local_raw(model, lat: float, lon: float, limb: str = "mean") -> _LocalRaw:
     """The numbers behind :func:`local_circumstances` (the math; formatting is separate).
 
     The sampling window starts at the model's fit window and is expanded as
     needed so the partial contacts C1/C4 are always bracketed, even for an
     observer whose partial phase extends beyond it (item A2).  Contacts and the
-    maximum are refined below the 30-s grid (bisection / parabolic).
+    maximum are refined below the 30-s grid (bisection / parabolic).  With
+    ``limb="profile"`` the central phase (C2, C3, and whether there is one)
+    comes from :func:`_profile_contacts`, searched around the mean-limb
+    contacts or, for an observer within ``_PROFILE_NEAR_KM`` of the mean
+    umbra, around maximum; C1/C4, the maximum and the magnitude stay mean-limb.
     """
     t, m, L1p, L2p, mag = _bracketed_series(model, lat, lon)
 
@@ -279,6 +359,22 @@ def _local_raw(model, lat: float, lon: float) -> _LocalRaw:
                              [b[1] for b in brackets], [b[2] for b in brackets])
     c1, c4 = float(times[0]), float(times[1])
     tmax = _refine_maximum(model, lat, lon, t, mag, imax)
+    if central_phase:
+        c2, c3 = float(times[2]), float(times[3])
+    else:
+        c2 = c3 = float("nan")
+
+    if limb == "profile":
+        if central_phase:
+            lo, hi = c2 - _PROFILE_MARGIN_H, c3 + _PROFILE_MARGIN_H
+            search = True
+        else:
+            search = bool(m[imax] - abs(L2p[imax]) < _PROFILE_NEAR_KM / EARTH_EQUATORIAL_RADIUS_KM)
+            lo, hi = t[imax] - _PROFILE_GRAZE_H, t[imax] + _PROFILE_GRAZE_H
+        if search:
+            central_phase, c2, c3 = _profile_contacts(model, lat, lon, float(lo), float(hi))
+        else:
+            central_phase = False
 
     # Quantities at the refined maximum.
     m_x, L1_x, L2_x, _ = (float(v[0]) for v in _series(model, lat, lon, np.array([tmax])))
@@ -291,17 +387,13 @@ def _local_raw(model, lat: float, lon: float) -> _LocalRaw:
         magnitude = (L1_x - m_x) / (L1_x + L2_x)
 
     events = ["C1", "max", "C4"] + (["C2", "C3"] if central_phase else [])
-    ev_times = [c1, tmax, c4] + ([float(times[2]), float(times[3])] if central_phase else [])
+    ev_times = [c1, tmax, c4] + ([c2, c3] if central_phase else [])
     alts, azs = _sun_altaz(model, lat, lon, np.array(ev_times))
     below = [name for name, a in zip(events, alts, strict=True) if a <= HORIZON_ALT_DEG]
     # The cone geometry continues through the Earth; a night-side observer is
     # "inside" it but sees nothing.
     eclipse = len(below) != len(events)
 
-    if central_phase:
-        c2, c3 = float(times[2]), float(times[3])
-    else:
-        c2 = c3 = float("nan")
     pad = 5 - len(events)
     return _LocalRaw(
         geometric=True,
@@ -366,7 +458,12 @@ def _format_local(t0_utc: str, lat: float, lon: float, raw: _LocalRaw) -> LocalC
     return result
 
 
-def local_raw(model, lat: float, lon: float) -> _LocalRaw:
+def _check_limb(limb: str) -> None:
+    if limb not in LIMB_MODES:
+        raise ValueError(f"limb must be one of {LIMB_MODES}, not {limb!r}")
+
+
+def local_raw(model, lat: float, lon: float, limb: str = "mean") -> _LocalRaw:
     """The :class:`_LocalRaw` numbers of :func:`local_circumstances` at (lat, lon).
 
     Dispatches to the native core under ``ECLIPSE_BACKEND=native`` (the
@@ -374,16 +471,23 @@ def local_raw(model, lat: float, lon: float) -> _LocalRaw:
     half-window) and to :func:`_local_raw` otherwise.  The one place that
     dispatch lives: :func:`local_circumstances` and the catalog's
     greatest-eclipse detail (:mod:`app.catalog`) both format from it.
+    ``limb`` is ``"mean"`` or ``"profile"`` (module docstring); the profile
+    mode needs the limb band and lunar kernels (``kernels.bootstrap --limb``,
+    ``FileNotFoundError`` / a SPICE error otherwise).
     """
+    _check_limb(limb)
     if native.is_native():
+        if limb == "profile":
+            limb_profile.ensure_native_band()
         raw = native.module().local_circumstances(
-            model.et0, model.earth_frame, model.half_window_hours, float(lat), float(lon)
+            model.et0, model.earth_frame, model.half_window_hours, float(lat), float(lon),
+            limb == "profile",
         )
         return _LocalRaw(*raw)
-    return _local_raw(model, lat, lon)
+    return _local_raw(model, lat, lon, limb)
 
 
-def local_circumstances(model, lat: float, lon: float) -> LocalCircumstances:
+def local_circumstances(model, lat: float, lon: float, limb: str = "mean") -> LocalCircumstances:
     """Compute the eclipse circumstances at (lat, lon).
 
     T0 should be near the observer's maximum eclipse (e.g. the greatest-eclipse
@@ -396,8 +500,12 @@ def local_circumstances(model, lat: float, lon: float) -> LocalCircumstances:
 
     The numbers are :func:`local_raw` (:func:`_local_raw`, or the native core
     under ``ECLIPSE_BACKEND=native``); the dict shape is :func:`_format_local`.
+    ``limb`` selects the lunar limb model (``"mean"`` or ``"profile"``) and is
+    echoed in the result.
     """
-    return _format_local(model.t0_utc, lat, lon, local_raw(model, lat, lon))
+    out = _format_local(model.t0_utc, lat, lon, local_raw(model, lat, lon, limb))
+    out["limb"] = limb
+    return out
 
 
 def circumstances_grid(

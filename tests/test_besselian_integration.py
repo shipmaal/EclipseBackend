@@ -470,3 +470,100 @@ def test_best_frame_reraises_ephemeris_coverage_gaps():
 
     with pytest.raises(spiceypy.utils.exceptions.SpiceSPKINSUFFDATA):
         build_model_best_frame("1700-06-01T12:00:00", half_window_hours=2.0)
+
+
+# ------------------------------------------------ limb-profile contacts, 2024
+# [EB2024] F. Espenak & J. Anderson, *Eclipse Bulletin: Total Solar Eclipse
+# of 2024 April 08*, Table 2-3 (sample page, eclipsewise.com/pubs/images/
+# EB2024-sample2.pdf): "These tables include the effect of the Moon's profile
+# on the contact times" (book page).  C2/C3 printed in local daylight time
+# (IL CDT = UT-5, IN EDT = UT-4, Evansville CDT), here in UT; coordinates as
+# printed (0.01 deg).  The book is all rights reserved: a cited subset only.
+#   name, lat, lon [deg], C2, C3 [UT], T0 (near the site's maximum) [UT]
+_EB2024_MID = [
+    ("Carbondale", 37.73, -89.22, "18:59:16.6", "19:03:25.8", "19:01:21"),
+    ("Herrin", 37.80, -89.03, "18:59:38.0", "19:03:47.0", "19:01:43"),
+    ("Mount Vernon", 38.32, -88.92, "19:00:34.8", "19:04:15.3", "19:02:26"),
+    ("Evansville", 37.97, -87.58, "19:02:35.0", "19:05:38.0", "19:04:07"),
+    ("Vincennes", 38.68, -87.53, "19:02:51.9", "19:06:57.6", "19:04:55"),
+    ("Terre Haute", 39.47, -87.42, "19:04:22.9", "19:07:19.3", "19:05:51"),
+    ("Jasper", 38.40, -86.93, "19:03:55.5", "19:07:09.8", "19:05:33"),
+    ("Bedford", 38.87, -86.48, "19:04:46.6", "19:08:30.9", "19:06:41"),
+    ("Bloomington", 39.17, -86.53, "19:04:50.8", "19:08:53.8", "19:06:53"),
+    ("Indianapolis", 39.77, -86.15, "19:06:05.2", "19:09:52.1", "19:08:00"),
+    ("Columbus", 39.22, -85.92, "19:05:55.2", "19:09:42.3", "19:07:50"),
+    ("Anderson", 40.17, -85.68, "19:07:14.4", "19:10:45.3", "19:09:02"),
+    ("Muncie", 40.20, -85.38, "19:07:37.1", "19:11:19.6", "19:09:29"),
+    ("Richmond", 39.83, -84.90, "19:07:55.4", "19:11:45.9", "19:09:52"),
+]
+# Within ~3 km of the limit (NASA SVS limb-corrected path): 1.1 and 2.9 km.
+_EB2024_NEAR = [
+    ("Effingham", 39.12, -88.55, "19:03:25.2", "19:03:50.9", "19:03:49"),
+    ("Crawfordsville", 40.03, -86.90, "19:06:38.6", "19:07:18.1", "19:07:08"),
+]
+
+
+def _limb_ready() -> bool:
+    import spiceypy
+
+    from app import limb
+    from app.ephemeris import load_kernels
+
+    if not limb.default_band_path().exists():
+        return False
+    load_kernels()
+    try:
+        spiceypy.pxform("J2000", "MOON_ME", 0.0)
+    except spiceypy.utils.exceptions.SpiceyError:
+        return False
+    return True
+
+
+def _eb_residuals(site, limb_mode):
+    """(ours - [EB2024]) for C2 and C3 [s] at a sea-level observer."""
+    from app.besselian import BesselianModel
+    from app.circumstances import local_raw
+
+    _name, lat, lon, c2, c3, t0 = site
+    model = BesselianModel(t0_utc=f"2024-04-08T{t0}")
+    raw = local_raw(model, lat, lon, limb_mode)
+    assert raw.central, site
+    base = sum(float(v) * k for v, k in zip(t0.split(":"), (3600, 60, 1), strict=True))
+    out = []
+    for c, ref in ((raw.c2, c2), (raw.c3, c3)):
+        ref_s = sum(float(v) * k for v, k in zip(ref.split(":"), (3600, 60, 1), strict=True))
+        out.append(base + c * 3600.0 - ref_s)
+    return out
+
+
+def test_limb_profile_contacts_match_eclipse_bulletin_2024():
+    """Limb-profile C2/C3 against [EB2024] at 14 mid-path sites (22-93 km from
+    a limit).  Achieved (sea-level observers; the sites are 130-270 m up and
+    elevation is not modelled yet): median 0.37 s, max 1.15 s over the 28
+    contacts, against median 0.82 s / max 3.14 s for the mean limb (k2) --
+    the profile is what brings us to the Bulletin.  Over all 36 mid-path
+    Bulletin sites: median 0.35 s, p90 0.68 s (docs/LIMB_PROFILE.md sec. 9.7).
+    The 0.3 s gate of docs sec. 5.4 waits on observer elevation."""
+    if not _limb_ready():
+        pytest.skip("limb band / lunar kernels not installed (python -m kernels.bootstrap --limb)")
+    prof = np.abs([r for s in _EB2024_MID for r in _eb_residuals(s, "profile")])
+    mean = np.abs([r for s in _EB2024_MID for r in _eb_residuals(s, "mean")])
+    assert np.max(prof) <= 1.2, prof
+    assert np.median(prof) <= 0.4, np.median(prof)
+    assert np.median(prof) < 0.5 * np.median(mean), (np.median(prof), np.median(mean))
+
+
+_ELEVATION_XFAIL = pytest.mark.xfail(strict=True, reason=(
+    "1.1 km from the limit the contacts are seconds-sensitive to the observer's "
+    "elevation (182 m here), which is not modelled: +5.5 / -3.4 s against [EB2024] "
+    "(docs/LIMB_PROFILE.md sec. 9.7)"))
+
+
+@pytest.mark.parametrize("site", [
+    pytest.param(_EB2024_NEAR[0], id="Effingham", marks=_ELEVATION_XFAIL),
+    pytest.param(_EB2024_NEAR[1], id="Crawfordsville"),  # 2.9 km: -0.88 / +0.19 s
+])
+def test_limb_profile_contacts_near_the_limit_eb2024(site):
+    if not _limb_ready():
+        pytest.skip("limb band / lunar kernels not installed")
+    assert np.max(np.abs(_eb_residuals(site, "profile"))) <= 1.2

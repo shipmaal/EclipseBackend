@@ -385,8 +385,15 @@ def _geocentric_vectors(et: np.ndarray, earth_frame: str):
             np.zeros(n))
 
 
-def besselian_instants(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> dict[str, np.ndarray]:
+def besselian_instants(et, earth_frame: str = DEFAULT_EARTH_FRAME, k1: float = K_PENUMBRA,
+                       k2: float = K_UMBRA) -> dict[str, np.ndarray]:
     """Besselian elements at each TDB ``et`` of a 1-D array, as arrays.
+
+    ``k1``/``k2`` are the lunar radii [Earth equatorial radii] of the penumbral
+    and umbral cones; the defaults are the [Espenak] pair (``K_PENUMBRA``,
+    ``K_UMBRA``: the umbral one reduced for the mean limb valleys).  The limb
+    profile mode passes the LOLA reference sphere for both (``app.limb.K_REF``),
+    the valleys then coming from the DEM (docs/LIMB_PROFILE.md sec. 3.3).
 
     Returns a dict with keys ``x, y, d, mu, l1, l2, tan_f1, tan_f2`` (same units
     as :class:`BesselianInstant`: ``d, mu`` in degrees, lengths in Earth radii)
@@ -401,7 +408,7 @@ def besselian_instants(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> dict[str, 
     """
     et = np.atleast_1d(np.asarray(et, dtype=float))
     if native.is_native():
-        return native.module().besselian_instants(et, earth_frame)
+        return native.module().besselian_instants(et, earth_frame, float(k1), float(k2))
     a_e = earth_equatorial_radius_km()
 
     moon, sun, gast = _geocentric_vectors(et, earth_frame)
@@ -415,13 +422,13 @@ def besselian_instants(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> dict[str, 
     # Penumbral (f1) and umbral (f2) shadow cones [ES92] eq. 8.323-1, 8.323-6,
     # 8.323-7, with distinct penumbral/umbral lunar radii k1/k2 [Espenak].
     d_s = sun_radius_km() / a_e  # solar radius in Earth radii
-    sin_f1 = (d_s + K_PENUMBRA) / g_dist
-    sin_f2 = (d_s - K_UMBRA) / g_dist
+    sin_f1 = (d_s + k1) / g_dist
+    sin_f2 = (d_s - k2) / g_dist
     tan_f1 = np.tan(np.arcsin(sin_f1))
     tan_f2 = np.tan(np.arcsin(sin_f2))
 
-    l1 = (z + K_PENUMBRA / sin_f1) * tan_f1
-    l2 = (z - K_UMBRA / sin_f2) * tan_f2
+    l1 = (z + k1 / sin_f1) * tan_f1
+    l2 = (z - k2 / sin_f2) * tan_f2
 
     return {
         "x": x,
@@ -509,10 +516,14 @@ def _dot3(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def limb_axes(et, earth_frame: str = DEFAULT_EARTH_FRAME,
-              moon_frame: str = "MOON_ME") -> np.ndarray:
+              moon_frame: str = "MOON_ME") -> tuple[np.ndarray, np.ndarray]:
     """Fundamental-plane axes in the Moon's body frame at each TDB ``et``.
 
-    Returns an ``(n, 3, 3)`` array whose rows are the unit vectors ``x^``
+    Returns ``(axes, distance_km)``.  ``distance_km`` (n,) is the Moon's
+    distance from the fundamental plane along the axis, ``moon . z^`` [km]
+    (= the element ``z`` times the Earth's radius, [ES92] eq. 8.322-6): the
+    viewing distance of the perspective silhouette (``app.limb.silhouette``).
+    ``axes`` is an ``(n, 3, 3)`` array whose rows are the unit vectors ``x^``
     (east), ``y^`` (north), ``z^`` (shadow axis, toward the Sun) of the
     fundamental plane [ES92] 8.322, expressed in ``moon_frame`` (``MOON_ME`` =
     the LOLA DEM's frame, from ``moon_de440_*.tf`` + ``moon_pa_de440_*.bpc``;
@@ -549,7 +560,7 @@ def limb_axes(et, earth_frame: str = DEFAULT_EARTH_FRAME,
     for k, v in enumerate((xh, yh, zh)):
         for r in range(3):
             out[:, k, r] = _dot3(rot[:, r, :], v)
-    return out
+    return out, _dot3(moon, zh)
 
 
 def sub_solar_points(et, earth_frame: str = DEFAULT_EARTH_FRAME) -> tuple[np.ndarray, np.ndarray]:

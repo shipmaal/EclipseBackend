@@ -407,7 +407,7 @@ std::vector<double> tt_minus_ut1(std::span<const double> et) {
 
 // ---------------------------------------------------------------- geometry
 
-Elements besselian_instants(std::span<const double> et, Frame frame) {
+Elements besselian_instants(std::span<const double> et, Frame frame, double k1, double k2) {
     const double a_e = EARTH_EQUATORIAL_RADIUS_KM;
     const Geocentric g = geocentric_vectors(et, frame);
     const double d_s = sun_radius_km() / a_e;  // solar radius in Earth radii
@@ -424,8 +424,8 @@ Elements besselian_instants(std::span<const double> et, Frame frame) {
 
         // Penumbral (f1) and umbral (f2) cones [ES92] eq. 8.323-1, 8.323-6,
         // 8.323-7 with distinct lunar radii k1/k2 [Espenak].
-        const double sin_f1 = (d_s + K_PENUMBRA) / g_dist;
-        const double sin_f2 = (d_s - K_UMBRA) / g_dist;
+        const double sin_f1 = (d_s + k1) / g_dist;
+        const double sin_f2 = (d_s - k2) / g_dist;
         const double tan_f1 = std::tan(std::asin(sin_f1));
         const double tan_f2 = std::tan(std::asin(sin_f2));
 
@@ -434,8 +434,8 @@ Elements besselian_instants(std::span<const double> et, Frame frame) {
         out.z.push_back(z);
         out.d.push_back(d * RAD_TO_DEG);
         out.mu.push_back(wrap_180(mu * RAD_TO_DEG));
-        out.l1.push_back((z + K_PENUMBRA / sin_f1) * tan_f1);
-        out.l2.push_back((z - K_UMBRA / sin_f2) * tan_f2);
+        out.l1.push_back((z + k1 / sin_f1) * tan_f1);
+        out.l2.push_back((z - k2 / sin_f2) * tan_f2);
         out.tan_f1.push_back(tan_f1);
         out.tan_f2.push_back(tan_f2);
     }
@@ -481,8 +481,7 @@ static double dot3(const double* a, const double* b) {
     return (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2];
 }
 
-std::vector<std::array<double, 9>> limb_axes(std::span<const double> et, Frame frame,
-                                             std::string_view moon_frame) {
+LimbAxes limb_axes(std::span<const double> et, Frame frame, std::string_view moon_frame) {
     const size_t n = et.size();
     const std::string mf(moon_frame);
     std::vector<Vec3> moon(n), sun(n);
@@ -523,7 +522,10 @@ std::vector<std::array<double, 9>> limb_axes(std::span<const double> et, Frame f
         });
     }
 
-    std::vector<std::array<double, 9>> out(n);
+    LimbAxes result;
+    std::vector<std::array<double, 9>>& out = result.axes;
+    out.resize(n);
+    result.distance_km.resize(n);
     for (size_t i = 0; i < n; ++i) {
         const Vec3 w = {sun[i][0] - moon[i][0], sun[i][1] - moon[i][1], sun[i][2] - moon[i][2]};
         const double wn = std::sqrt(dot3(w.data(), w.data()));
@@ -539,8 +541,9 @@ std::vector<std::array<double, 9>> limb_axes(std::span<const double> et, Frame f
         for (size_t k = 0; k < 3; ++k)
             for (size_t r = 0; r < 3; ++r)
                 out[i][3 * k + r] = dot3(&rot[i][3 * r], rows[k]->data());
+        result.distance_km[i] = dot3(moon[i].data(), zh.data());
     }
-    return out;
+    return result;
 }
 
 }  // namespace ephem

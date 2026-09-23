@@ -137,3 +137,29 @@ def test_eclipses_compute_value_error_is_a_500_not_invalid_epoch(monkeypatch):
     assert r.status_code == 500
     r = c.get("/eclipses", params={"start": "2024 JAN 01", "end": "2024-12-31"})
     assert r.status_code == 400 and "invalid epoch" in r.json()["detail"]
+
+
+def test_circumstances_limb_parameter(client):
+    """limb= selects the lunar limb model (docs/LIMB_PROFILE.md); it is echoed,
+    an unknown value is a 400, and the profile mode is a 503 (not a 500) when
+    its inputs are missing."""
+    from app import limb
+
+    params = {"epoch": "2024-04-08T19:08:00", "lat": 39.77, "lon": -86.15}
+    r = client.get("/circumstances", params={**params, "limb": "watts"})
+    assert r.status_code == 400
+    mean = client.get("/circumstances", params=params).json()
+    assert mean["limb"] == "mean"
+    r = client.get("/circumstances", params={**params, "limb": "profile"})
+    if not limb.default_band_path().exists():
+        assert r.status_code == 503
+        return
+    if r.status_code == 503:
+        pytest.skip("MOON_ME not loaded (kernels.bootstrap --limb)")
+    prof = r.json()
+    assert prof["limb"] == "profile" and prof["type"] == "total"
+    # Indianapolis 2024: the limb shortens totality by ~3 s (229.6 -> 226.4 s,
+    # docs sec. 9.6); C1/C4 and the magnitude are the mean limb's.
+    assert prof["central_duration_s"] == pytest.approx(mean["central_duration_s"] - 3.2, abs=0.3)
+    assert (prof["C1"], prof["C4"], prof["magnitude"]) == (mean["C1"], mean["C4"],
+                                                         mean["magnitude"])

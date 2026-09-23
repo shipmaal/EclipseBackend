@@ -45,12 +45,12 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
 | `besselian.py` | Samples the elements around T0 and polynomial-fits them (`BesselianModel`). |
 | `geography.py` | The ellipsoid geometry: `fund_to_geo` (fundamental→geographic), `geo_to_fund` (its exact inverse), `shadow_edge_limits` (N/S limits + true width, umbral or penumbral), `global_contacts` (P1–U4), `shadow_radii`, great-circle helpers. |
 | `deltat.py` | ΔT = TT − UT1 polynomial model [Espenak] for epochs outside the IERS era. |
-| `circumstances.py` | Per-observer local circumstances from a `BesselianModel`; `circumstances_grid` for maps. |
+| `circumstances.py` | Per-observer local circumstances from a `BesselianModel` (`limb="mean"` k2, or `"profile"`: C2/C3 from the LOLA limb profile); `circumstances_grid` for maps. |
 | `catalog.py` | `find_eclipses`: scan a date range, refine greatest eclipse, classify P/A/T/H, Canon-style rows. |
-| `limb.py` | Lunar limb profile from the LOLA DEM (`docs/LIMB_PROFILE.md`): loads the limb band, `silhouette()` (δρ per 0.05° bin, points + grid edges), `delta_rho_at()`, `limb_profiles()`. Not yet used by the API (PR 2+). |
+| `limb.py` | Lunar limb profile from the LOLA DEM (`docs/LIMB_PROFILE.md`): loads the limb band, `silhouette()` (δρ per 0.05° bin, points + grid edges, in perspective from the Moon's distance), `profiles_at()` (5-min cached lattice), the contact functions `g_total()` / `g_annular()`. Used by `/circumstances?limb=profile`. |
 | `numerics.py` | Vectorized bisection / parabolic-extremum helpers shared by circumstances, contacts and the catalog. |
 | `reference.py` | Parses `app/data.txt` (a reference central-line track). |
-| `main.py` | FastAPI: `/health`, `/besselian`, `/central-line`, `/circumstances`, `/map`, `/eclipses`; serves `frontend/` at `/ui`. |
+| `main.py` | FastAPI: `/health`, `/besselian`, `/central-line`, `/circumstances` (`limb=mean|profile`), `/map`, `/eclipses`; serves `frontend/` at `/ui`. |
 | `kernels/bootstrap.py` | Downloads kernels (`--source auto|naif|mirror`, `--limb`) and writes `eclipse.tm`. |
 | `kernels/limb_band.py` | Cuts LOLA `LDEM_*` to the lunar limb band (deterministic, SHA-pinned file) and reads it back. |
 
@@ -84,7 +84,10 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
    (`docs/CODE_REVIEW_FOLLOWUPS.md` §6). Path limits/widths are the time
    envelope of the shadow (`shadow_edge_limits_v(..., rates=element_rates(...))`),
    measured with `geodesic_km`; the solar radius is the constant
-   `constants.SUN_RADIUS_KM` (IAU 1976), never the PCK's.
+   `constants.SUN_RADIUS_KM` (IAU 1976), never the PCK's. Limb-profile
+   contacts are checked against an independent 3D ray-traced oracle
+   (`tests/test_limb_oracle.py`, gated in limb-height metres) and against
+   [EB2024] (`docs/LIMB_VALIDATION_SOURCES.md`).
 
 5. **Frames & epochs.** Input epochs are **UTC** and must be ISO-8601
    (`besselian.normalize_utc` is the single parser). ΔT = TT − UT1 is measured
@@ -164,9 +167,16 @@ structural, not stylistic:
   is 1e-2 s, with rows required identical up to a whole-second `greatest_utc`
   flip at a rounding boundary inside that band (`catalog.hpp` "CONDITIONING
   OF et_g", `app/catalog.py::_rho_at`, `tests/test_native.py` phase 4).
-- Lunar limb profile (`docs/LIMB_PROFILE.md`, PR 1): `ephem::limb_axes`
-  (adds `pxform_c`) and `core/src/limb.cpp` (`silhouette`, `delta_rho_at`),
-  bit-identical to `app.ephemeris.limb_axes` / `app.limb`. The band is
+- Lunar limb profile (`docs/LIMB_PROFILE.md`, PRs 1-2): `ephem::limb_axes`
+  (adds `pxform_c`; also returns the viewing distance), `core/src/limb.cpp`
+  (`silhouette`, `delta_rho_at`, `profiles_at` with a mutex-guarded node cache
+  keyed by the band generation, `g_total` / `g_annular`) and, in
+  `circumstances.cpp`, `profile_g` / `profile_contacts` / the `profile` flag of
+  `local_circumstances` (the `Model` carries `elements_ref_at` = the elements
+  with `limb::K_REF` for both cones, and `profiles_at`); `besselian_instants`
+  takes the cones' `k1`/`k2`. Profiles and contact functions are
+  bit-identical to `app.ephemeris.limb_axes` / `app.limb`; profile-mode
+  local circumstances are gated like the mean-limb ones (1e-9 h). The band is
   injected from Python like the EOP table (`app.limb.install_native` ->
   `set_limb_band`: runs, DN, neighbour indices, pixel-centre trig tables),
   so the C++ never parses the band file. The Python side calls libm's
@@ -194,10 +204,11 @@ hand-picked expected value.
   `raw.githubusercontent.com` work — the `mirror` source uses a pinned GitHub
   copy (DE432s + IAU_EARTH; the ERFA `ITRS`/`TOD` frames need no binary PCK).
 - **No model identifier** goes into commits/PRs/code.
-- **Accuracy ceiling today**: DE432s (mirror) vs DE440 (both sub-km for Sun/Moon)
-  and no per-position lunar-limb profile in the results yet (the mean limb is
-  folded into `K_UMBRA`); the profile itself exists (`app/limb.py`) and PRs 2–4
-  of `docs/LIMB_PROFILE.md` wire it into contacts, limits and the API.
+- **Accuracy ceiling today**: DE432s (mirror) vs DE440 (both sub-km for Sun/Moon);
+  the mean limb (`K_UMBRA`) everywhere except `/circumstances?limb=profile`
+  (C2/C3 from the LOLA profile; limits, catalog and maps are PRs 3–4); and
+  **observers are at sea level** (`geo_to_fund` has no height), which near a
+  limit moves the profile contacts by seconds (`docs/LIMB_PROFILE.md` §8).
 - **Limb data** (`--limb`): `lola_ldem16_limb20.bin` + `moon_pa_de440_200625.bpc`
   + `moon_de440_250416.tf`, SHA-256-pinned in `kernels/bootstrap.py`. The
   `mirror` source fetches them from this repo's data-only `limb-data` branch at
@@ -233,6 +244,11 @@ Cite these by key in code.
   (2017), *Icarus* 283, 70 — LRO Lunar Orbiter Laser Altimeter; gridded DEMs
   `LDEM_*` in PDS `LRO-L-LOLA-3-RDR-V1` (reference sphere 1737.4 km, frame
   Mean Earth/Polar Axis of DE421 = SPICE `MOON_ME`).
+- **[EB2024]** F. Espenak & J. Anderson, *Eclipse Bulletin: Total Solar Eclipse of
+  2024 April 08*, Table 2–3 (limb-profile-corrected local contacts; sample page
+  eclipsewise.com/pubs/images/EB2024-sample2.pdf). All rights reserved: cite values.
+- **[Irwin21]** J. Irwin et al. (2021), *ApJS*, arXiv:2107.09416 — limb-corrected
+  contact predictions at a 2017 near-limit site (Table 3).
 - **[NASA-limb]** F. Espenak, "The Lunar Limb Profile and Eclipse Predictions",
   eclipse.gsfc.nasa.gov/SEhelp/limb.html; "Limb Corrections to the Path Limits:
   Graze Zones", eclipse.gsfc.nasa.gov/SEmono/reference/graze.html.

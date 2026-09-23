@@ -4,9 +4,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <tuple>
 #include <numbers>
 #include <stdexcept>
 #include <string>
@@ -16,6 +19,7 @@
 #endif
 
 #include "eclipse/constants.hpp"
+#include "eclipse/ephem.hpp"
 
 namespace eclipse::limb {
 
@@ -39,6 +43,12 @@ std::mutex& band_mutex() {
 std::shared_ptr<const Band>& band_slot() {
     static std::shared_ptr<const Band> b;
     return b;
+}
+
+// Bumped by every set_band (under band_mutex): the profile cache's key.
+std::uint64_t& band_generation() {
+    static std::uint64_t g = 0;
+    return g;
 }
 
 std::shared_ptr<const Band> band() {
@@ -120,6 +130,7 @@ void set_band(std::span<const std::int32_t> line, std::span<const std::int32_t> 
     b->band_deg = band_deg;
     std::scoped_lock lock(band_mutex());
     band_slot() = std::move(b);
+    ++band_generation();
 }
 
 bool has_band() {
@@ -127,7 +138,11 @@ bool has_band() {
     return static_cast<bool>(band_slot());
 }
 
-std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins) {
+double sphere_radius(double distance_km) {
+    return R_REF_KM / std::sqrt(1.0 - (R_REF_KM / distance_km) * (R_REF_KM / distance_km));
+}
+
+std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins, double distance_km) {
     if (n_bins < 1) throw std::invalid_argument("eclipse::limb::silhouette: n_bins < 1");
     const auto b = band();
     const double cover = std::cos((b->band_deg - VISIBLE_DEG) * constants::DEG_TO_RAD);
@@ -137,6 +152,7 @@ std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins) {
 
     const double x0 = axes[0], x1 = axes[1], x2 = axes[2];
     const double y0 = axes[3], y1 = axes[4], y2 = axes[5];
+    const double z0 = axes[6], z1 = axes[7], z2 = axes[8];
     const double floor_km = R_REF_KM - FLOOR_KM;
     const double pi = std::numbers::pi;
     const double per_rad = static_cast<double>(n_bins) / (2.0 * pi);
@@ -161,7 +177,9 @@ std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins) {
         const double pz = rad * b->sin_lat[li];
         const double qx = (px * x0 + py * x1) + pz * x2;
         const double qy = (px * y0 + py * y1) + pz * y2;
-        Proj r{std::sqrt(qx * qx + qy * qy), 0.0, false};
+        const double w = (px * z0 + py * z1) + pz * z2;
+        // Perspective from distance D along -z^ (app.limb.silhouette).
+        Proj r{std::sqrt(qx * qx + qy * qy) / (1.0 + w / distance_km), 0.0, false};
         if (r.s > floor_km) {
             r.near = true;
             r.u = (std::atan2(qy, qx) + pi) * per_rad;
@@ -259,7 +277,8 @@ std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins) {
             if (local[k] > rho[k]) rho[k] = local[k];
     }
     fill_empty(rho);
-    for (double& v : rho) v = v - R_REF_KM;
+    const double ref = sphere_radius(distance_km);
+    for (double& v : rho) v = v - ref;
     return rho;
 }
 
@@ -279,6 +298,143 @@ std::vector<double> delta_rho_at(std::span<const double> profile, std::span<cons
         const std::ptrdiff_t i1 = (i0 + 1) % n;
         const double a = profile[static_cast<std::size_t>(i0)];
         out[i] = a + w * (profile[static_cast<std::size_t>(i1)] - a);
+    }
+    return out;
+}
+
+// ------------------------------------------------------------ time lattice
+
+namespace {
+
+using NodeKey = std::tuple<std::int64_t, int, std::string, std::uint64_t>;
+
+std::mutex& cache_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+std::map<NodeKey, std::shared_ptr<const std::vector<double>>>& cache() {
+    static std::map<NodeKey, std::shared_ptr<const std::vector<double>>> c;
+    return c;
+}
+
+constexpr std::size_t kMaxCachedNodes = 256;
+
+std::shared_ptr<const std::vector<double>> node_profile(std::int64_t node, Frame frame,
+                                                       std::string_view moon_frame) {
+    std::uint64_t generation;
+    {
+        std::scoped_lock lock(band_mutex());
+        generation = band_generation();
+    }
+    NodeKey key{node, static_cast<int>(frame), std::string(moon_frame), generation};
+    {
+        std::scoped_lock lock(cache_mutex());
+        if (auto it = cache().find(key); it != cache().end()) return it->second;
+    }
+    // app.limb._node_profile: the silhouette along limb_axes(node * LATTICE_S).
+    const double et[1] = {static_cast<double>(node) * LATTICE_S};
+    const ephem::LimbAxes la = ephem::limb_axes(et, frame, moon_frame);
+    auto prof = std::make_shared<const std::vector<double>>(
+        silhouette(la.axes[0], N_BINS, la.distance_km[0]));
+    std::scoped_lock lock(cache_mutex());
+    if (cache().size() >= kMaxCachedNodes) cache().clear();
+    cache().emplace(key, prof);
+    return prof;
+}
+
+// cos / sin of the n bin centres -pi + (k + 0.5) 2 pi / n (app.limb._unit_circle).
+struct UnitCircle {
+    std::vector<double> c, s;
+};
+UnitCircle unit_circle(int n) {
+    const double pi = std::numbers::pi;
+    const double step = 2.0 * pi / static_cast<double>(n);
+    UnitCircle u;
+    u.c.resize(static_cast<std::size_t>(n));
+    u.s.resize(static_cast<std::size_t>(n));
+    for (int k = 0; k < n; ++k) {
+        const double phi = -pi + (static_cast<double>(k) + 0.5) * step;
+        u.c[static_cast<std::size_t>(k)] = std::cos(phi);
+        u.s[static_cast<std::size_t>(k)] = std::sin(phi);
+    }
+    return u;
+}
+
+// Running np.max: a NaN, once seen, is the result.
+double np_max2(double best, double v) {
+    if (std::isnan(best) || std::isnan(v)) return std::numeric_limits<double>::quiet_NaN();
+    return v > best ? v : best;
+}
+
+void check_g(std::span<const double> px, std::span<const double> py, std::span<const double> r_s,
+             std::span<const double> r_m, std::span<const double> profiles, int n_bins) {
+    const std::size_t n = px.size();
+    if (n_bins < 1 || py.size() != n || r_s.size() != n || r_m.size() != n ||
+        profiles.size() != n * static_cast<std::size_t>(n_bins))
+        throw std::invalid_argument("eclipse::limb: g_total/g_annular argument lengths differ");
+}
+
+}  // namespace
+
+std::vector<double> profiles_at(std::span<const double> et, Frame frame,
+                                std::string_view moon_frame) {
+    const auto nb = static_cast<std::size_t>(N_BINS);
+    std::vector<double> out(et.size() * nb);
+    for (std::size_t i = 0; i < et.size(); ++i) {
+        const double q = et[i] / LATTICE_S;
+        const double k0 = std::floor(q);
+        const double w = q - k0;
+        const auto node = static_cast<std::int64_t>(k0);
+        const auto p0 = node_profile(node, frame, moon_frame);
+        const auto p1 = node_profile(node + 1, frame, moon_frame);
+        for (std::size_t k = 0; k < nb; ++k)
+            out[i * nb + k] = (*p0)[k] + w * ((*p1)[k] - (*p0)[k]);
+    }
+    return out;
+}
+
+std::vector<double> g_total(std::span<const double> px, std::span<const double> py,
+                            std::span<const double> r_s, std::span<const double> r_m,
+                            std::span<const double> profiles, int n_bins) {
+    check_g(px, py, r_s, r_m, profiles, n_bins);
+    const auto nb = static_cast<std::size_t>(n_bins);
+    const UnitCircle u = unit_circle(n_bins);
+    std::vector<double> out(px.size()), qx(nb), qy(nb), psi(nb);
+    for (std::size_t i = 0; i < px.size(); ++i) {
+        for (std::size_t k = 0; k < nb; ++k) {
+            qx[k] = px[i] + r_s[i] * u.c[k];
+            qy[k] = py[i] + r_s[i] * u.s[k];
+            psi[k] = std::atan2(qy[k], qx[k]);
+        }
+        const std::vector<double> rho = delta_rho_at(profiles.subspan(i * nb, nb), psi);
+        double best = -std::numeric_limits<double>::infinity();
+        for (std::size_t k = 0; k < nb; ++k) {
+            const double v = std::sqrt(qx[k] * qx[k] + qy[k] * qy[k]) -
+                             r_m[i] * (1.0 + rho[k] / R_REF_KM);
+            best = np_max2(best, v);
+        }
+        out[i] = best;
+    }
+    return out;
+}
+
+std::vector<double> g_annular(std::span<const double> px, std::span<const double> py,
+                              std::span<const double> r_s, std::span<const double> r_m,
+                              std::span<const double> profiles, int n_bins) {
+    check_g(px, py, r_s, r_m, profiles, n_bins);
+    const auto nb = static_cast<std::size_t>(n_bins);
+    const UnitCircle u = unit_circle(n_bins);
+    std::vector<double> out(px.size());
+    for (std::size_t i = 0; i < px.size(); ++i) {
+        double best = -std::numeric_limits<double>::infinity();
+        for (std::size_t k = 0; k < nb; ++k) {
+            const double rad = r_m[i] * (1.0 + profiles[i * nb + k] / R_REF_KM);
+            const double dx = rad * u.c[k] - px[i];
+            const double dy = rad * u.s[k] - py[i];
+            best = np_max2(best, std::sqrt(dx * dx + dy * dy));
+        }
+        out[i] = best - r_s[i];
     }
     return out;
 }

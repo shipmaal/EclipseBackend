@@ -19,6 +19,7 @@
 #include <string_view>
 #include <vector>
 
+#include "eclipse/constants.hpp"
 #include "eclipse/elements.hpp"
 #include "eclipse/spice_error.hpp"
 
@@ -102,8 +103,11 @@ std::vector<double> tt_minus_ut1(std::span<const double> et);
 // ---------------------------------------------------------------- geometry
 
 /// ``app.ephemeris.besselian_instants``: the eight elements plus ``z`` at each
-/// ``et`` [ES92] eq. 8.322-6, 8.323-1/6/7 with k1/k2 [Espenak].
-Elements besselian_instants(std::span<const double> et, Frame frame = Frame::ITRS);
+/// ``et`` [ES92] eq. 8.322-6, 8.323-1/6/7. ``k1``/``k2`` are the penumbral /
+/// umbral cones' lunar radii [Earth equatorial radii], by default the
+/// [Espenak] pair; the limb-profile mode passes ``limb::K_REF`` for both.
+Elements besselian_instants(std::span<const double> et, Frame frame = Frame::ITRS,
+                            double k1 = constants::K_PENUMBRA, double k2 = constants::K_UMBRA);
 
 /// ``app.ephemeris.axis_separation``: the Moon's cylindrical coordinates about
 /// the shadow axis at each ``et``, frame-free — ``rho = hypot(x, y)`` (the axis'
@@ -131,11 +135,16 @@ SubSolar sub_solar_points(std::span<const double> et, Frame frame = Frame::ITRS)
 /// ``app.ephemeris.limb_axes``: the fundamental-plane unit vectors x^ (east),
 /// y^ (north), z^ (shadow axis, toward the Sun) [ES92] 8.322 expressed in
 /// ``moon_frame`` (``"MOON_ME"``, the LOLA DEM's frame, or ``"IAU_MOON"``),
-/// one row-major 3x3 per ``et`` (rows x^, y^, z^). z^ is the apparent (LT+S)
-/// Moon->Sun direction, y^ the ``frame``'s pole projected onto the plane,
-/// x^ = y^ x z^; the Moon's orientation is at ``et - lt`` (docs/LIMB_PROFILE.md
-/// sec. 3.1-3.2).
-std::vector<std::array<double, 9>> limb_axes(std::span<const double> et, Frame frame,
-                                             std::string_view moon_frame);
+/// one row-major 3x3 per ``et`` (rows x^, y^, z^), and ``distance_km``, the
+/// Moon's distance from the fundamental plane along the axis (``moon . z^``,
+/// the element ``z`` in km) -- the perspective silhouette's viewing distance.
+/// z^ is the apparent (LT+S) Moon->Sun direction, y^ the ``frame``'s pole
+/// projected onto the plane, x^ = y^ x z^; the Moon's orientation is at
+/// ``et - lt`` (docs/LIMB_PROFILE.md sec. 3.1-3.2).
+struct LimbAxes {
+    std::vector<std::array<double, 9>> axes;
+    std::vector<double> distance_km;
+};
+LimbAxes limb_axes(std::span<const double> et, Frame frame, std::string_view moon_frame);
 
 }  // namespace eclipse::ephem

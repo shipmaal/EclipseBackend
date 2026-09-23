@@ -16,6 +16,8 @@ import numpy as np
 
 from .ephemeris import (
     DEFAULT_EARTH_FRAME,
+    K_PENUMBRA,
+    K_UMBRA,
     BesselianInstant,
     besselian_instant,
     besselian_instants,
@@ -142,7 +144,8 @@ class BesselianModel:
             "tan_f2": np.full_like(t, p.tan_f2),
         }
 
-    def evaluate_direct(self, t_hours: np.ndarray) -> dict[str, np.ndarray]:
+    def evaluate_direct(self, t_hours: np.ndarray, k1: float = K_PENUMBRA,
+                        k2: float = K_UMBRA) -> dict[str, np.ndarray]:
         """Evaluate every element DIRECTLY from the ephemeris at each ``t_hours``.
 
         Same units and dict shape as :meth:`evaluate`, but each instant is
@@ -155,10 +158,12 @@ class BesselianModel:
 
         ``t_hours`` is treated as a 1-D sequence; results are 1-D arrays.  One
         vectorized :func:`~app.ephemeris.besselian_instants` call, so a dense
-        grid costs little more than a single instant.
+        grid costs little more than a single instant.  ``k1``/``k2`` are the
+        cones' lunar radii (:func:`~app.ephemeris.besselian_instants`); the
+        limb-profile contacts evaluate with the LOLA sphere for both.
         """
         t = np.atleast_1d(np.asarray(t_hours, dtype=float))
-        e = besselian_instants(self.et0 + t * 3600.0, self.earth_frame)
+        e = besselian_instants(self.et0 + t * 3600.0, self.earth_frame, k1, k2)
         # mu is an angle: unwrap so a 360-degree wrap inside the range does not
         # leave a discontinuity (harmless for the modular use in geography, but
         # keeps the array continuous and consistent with evaluate()).

@@ -275,3 +275,8 @@ grazing polar path). The width gate went from 2 km to 1 km, with no xfails.
 Parity: native = oracle on all seven widths. The live test
 (`test_shadow_edge_limits_parity`, envelope mode added) and the new offline
 `limr` / `geod` fixtures pass.
+
+**Next: lunar limb profile.** With W1/W2 done, the mean limb folded into
+`K_UMBRA` is the largest remaining model error (C2/C3 ~1–3 s, limits ~1–3 km).
+Design and PR plan: `docs/LIMB_PROFILE.md`. Note that the 2021-12-04 −0.86 km
+residual above is *not* a limb effect: Espenak's width is mean-limb too.

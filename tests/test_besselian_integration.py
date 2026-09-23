@@ -456,3 +456,17 @@ def test_delta_t_used_outside_era_is_the_model_not_the_frozen_leap_count():
     assert float(tt_minus_ut1(et)[0]) == pytest.approx(21.0, abs=0.5)
     # The string was read as UT1: TT = UT1 + delta-T.
     assert et - spiceypy.tparse("1919-05-29T13:08:00")[0] == pytest.approx(21.0, abs=0.5)
+
+
+@pytest.mark.skipif(not default_metakernel().exists(), reason="SPICE kernels not downloaded")
+def test_best_frame_reraises_ephemeris_coverage_gaps():
+    """An epoch outside the loaded SPK is a coverage error, not "no usable
+    frame": it must reach the caller as SpiceSPKINSUFFDATA so the pre-IERS
+    reference tests skip on the mirror's DE432s (1949-2050) instead of failing
+    (CI full-validation, 1868/1919 cases)."""
+    import spiceypy
+
+    from app.besselian import build_model_best_frame
+
+    with pytest.raises(spiceypy.utils.exceptions.SpiceSPKINSUFFDATA):
+        build_model_best_frame("1700-06-01T12:00:00", half_window_hours=2.0)

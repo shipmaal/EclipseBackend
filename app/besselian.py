@@ -181,6 +181,8 @@ def best_earth_frame(frames: tuple[str, ...] = _FRAME_PREFERENCE) -> str:
         try:
             besselian_instant(0.0, frame)  # et = 0 -> J2000
             return frame
+        except spiceypy.utils.exceptions.SpiceSPKINSUFFDATA:
+            raise  # ephemeris coverage, not a frame problem: no frame can fix it
         except spiceypy.utils.exceptions.SpiceyError:
             spiceypy.reset()
     raise RuntimeError("no usable Earth-orientation frame in the furnished kernels")
@@ -196,7 +198,10 @@ def build_model_best_frame(
 
     Tries each frame in preference order and returns ``(model, frame)`` for the
     first that the furnished kernels support.  Factors the frame-fallback loop out
-    of the tests.  Raises ``RuntimeError`` if none work.
+    of the tests.  Raises ``RuntimeError`` if none work.  An epoch outside the
+    SPK's coverage (``SpiceSPKINSUFFDATA``, e.g. 1919 with the mirror's DE432s,
+    1949-2050) is re-raised as is: it is not a frame failure, and callers
+    (the pre-IERS reference tests) skip on it.
     """
     import spiceypy
 
@@ -209,6 +214,8 @@ def build_model_best_frame(
                 step_hours=step_hours,
             )
             return model, frame
+        except spiceypy.utils.exceptions.SpiceSPKINSUFFDATA:
+            raise  # ephemeris coverage, not a frame problem: no frame can fix it
         except spiceypy.utils.exceptions.SpiceyError:
             spiceypy.reset()
     raise RuntimeError("no usable Earth-orientation frame in the furnished kernels")

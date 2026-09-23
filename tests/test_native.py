@@ -343,6 +343,71 @@ def test_native_backend_raises_spiceypy_exception_types(monkeypatch, native_pool
     assert raw.value.traceback_text and raw.value.long_message
 
 
+def test_utc_to_et_spice_error_is_raised_and_reset(native_pool):
+    # tparse_c's own SPICE error (the wrapper's empty-string check) goes through
+    # spice_call: raised as SpiceyError like spiceypy.tparse(""), and the global
+    # error state is reset, so the next call works (review item C5).
+    with pytest.raises(native_pool.SpiceError) as exc_info:
+        native_pool.utc_to_et("")
+    assert exc_info.value.short_message == "SPICE(EMPTYSTRING)"
+    with pytest.raises(spiceypy.utils.exceptions.SpiceEMPTYSTRING):
+        spiceypy.tparse("")
+    assert native_pool.toolkit_version() == "CSPICE_N0067"
+    assert native_pool.utc_to_et("1919-05-29T13:08:00") < 0.0
+
+
+@requires_kernels
+def test_kernel_pool_change_mid_vector_is_an_error_never_mixed(native_pool):
+    """A furnish/kclear between two spkpos batches (2048 instants each) raises
+    instead of returning a vector from two kernel sets (review item C6).  Timing
+    decides whether a reload lands mid-vector -- rarely: the batch loop re-takes
+    the (unfair) mutex before a waiting furnish wakes, so on glibc the reloads
+    mostly land after the SPK phase -- hence each run must be either the
+    untouched result or the RuntimeError, never anything else."""
+    import threading
+
+    et0 = native_pool.utc_to_et("2024-04-08T18:17:20")
+    et = et0 + np.linspace(-3e6, 3e6, 200_000)
+    ref = native_pool.axis_separation(et)
+    mk = str(default_metakernel())
+    stop = threading.Event()
+
+    def reload_loop():
+        while not stop.is_set():
+            native_pool.furnish(mk)  # same kernels: only the generation changes
+
+    outcomes = []
+    t = threading.Thread(target=reload_loop)
+    t.start()
+    try:
+        for _ in range(5):
+            try:
+                got = native_pool.axis_separation(et)
+            except RuntimeError as exc:
+                assert not isinstance(exc, native_pool.SpiceError)
+                assert "kernel pool changed" in str(exc)
+                outcomes.append("raised")
+            else:
+                for g, r in zip(got, ref, strict=True):
+                    assert np.array_equal(g, r)
+                outcomes.append("identical")
+    finally:
+        stop.set()
+        t.join()
+        native_pool.kclear()
+        native_pool.furnish(mk)
+    assert native_pool.axis_separation(et[:10])[0].shape == (10,)
+
+
+def test_native_proxy_caches_wrapped_functions():
+    # One wrapper per name, built on first access (review item C10).
+    from app import native as native_mod
+
+    mod = native_mod.module()
+    assert mod.shadow_radii is mod.shadow_radii
+    assert mod.bearing is mod.bearing
+
+
 def test_unknown_frame_is_a_value_error(native_pool):
     with pytest.raises(ValueError, match="earth_frame"):
         native_pool.besselian_instants(np.array([0.0]), "GCRS")
@@ -386,6 +451,12 @@ def test_numerics_parity(native_pool):
     f = np.array([1.0, 0.0, 2.0, -1.0, np.nan, -3.0, 4.0, 0.0])
     assert native_pool.sign_changes(t, f) == numerics.sign_changes(t, f)
     assert native_pool.sign_changes(t, f) == [(1, True), (2, False), (5, True)]
+    # An f shorter than t is the oracle's IndexError; natively it used to read
+    # past the buffer (review item C2).
+    with pytest.raises(IndexError):
+        numerics.sign_changes(np.arange(10.0), np.zeros(2))
+    with pytest.raises(ValueError, match="shorter"):
+        native_pool.sign_changes(np.arange(10.0), np.zeros(2))
 
     # bisect: 200 brackets of cos(t) - t, bit-identical, 31 objective calls each.
     calls = {"py": 0, "cc": 0}

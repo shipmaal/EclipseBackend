@@ -127,3 +127,82 @@ Original table (all rows now cited):
 4. Citation pass — apply §2 with equation numbers, per `CLAUDE.md`.
 5. Tooling: ruff + CI + the two pure-function tests (M1, M5); doc/exception fixes
    (M2, M3, M4).
+
+## 5. Native-core review (phases 0–4) — DONE
+
+A second review, targeted at the C++ port (`14fb261..c92720a`, excluding
+`third_party/` and the fixtures): concurrency and the CSPICE global state, the
+binding boundary, port fidelity, and API hardening. **No finding changes an
+eclipse number.** The parity residuals, the Espenak agreement and the
+`axis_separation` change (the same in both languages) all hold. The findings
+are about crashes, error mapping and behaviour under load. Each fix has a
+regression test that fails on the old code, except C6 (timing-dependent, see
+below) and C9 (configuration).
+
+- **C1 — `/eclipses` failed on a fresh worker (high). DONE.** The range guard
+  in `app/main.py` called `utc_to_et` before `find_eclipses` loaded the kernels,
+  so a worker's first request had no leap-second kernel and got a 400
+  "SPICE error". The handler now calls `load_kernels()` first.
+  Test: `test_eclipses_on_a_fresh_worker_loads_the_kernels`.
+- **C2 — Out-of-bounds read in `sign_changes` (medium). DONE.** The core loops
+  over `t.size()` and reads `f[i + 1]`, and the binding did not check lengths.
+  `numerics::sign_changes` now throws `std::invalid_argument` (→ `ValueError`)
+  when `f` is shorter than `t`; the Python oracle raises `IndexError` there.
+  Test: `test_numerics_parity`.
+- **C3 — `/map` allocated before its cell guard (high). DONE.** `lat_step=1e-6`
+  allocated gigabytes and `1e-300` gave a 500. `_arange_len` computes
+  `ceil((stop − start)/step)` (the `np.arange` length) as a float, which is
+  `inf` on overflow, and the guard runs before any array exists.
+  Test: `test_map_tiny_step_is_a_400_before_any_allocation`.
+- **C4 — An empty `ECLIPSE_BACKEND=` stopped the app starting (medium). DONE.**
+  `app/native.py` now reads a set-but-empty variable as `auto`.
+  Test: `test_empty_backend_behaves_like_unset`.
+- **C5 — `utc_to_et` bypassed `spice_call` (medium). DONE.** `tparse_c` ran
+  under a hand-taken lock with no `failed_c()` check or `reset_c()`. A SPICE
+  error (e.g. `SPICE(EMPTYSTRING)`, raised before `errmsg` is written) was left
+  pending in the global error state for the next caller, and `errmsg` was read
+  uninitialized. It now goes through `spice_call` and raises exactly as
+  `spiceypy.tparse("")` does; the result is unchanged for every valid string.
+  Test: `test_utc_to_et_spice_error_is_raised_and_reset`.
+- **C6 — The kernel pool could change mid-vector (low). DONE.** `spkpos_both`
+  releases the SPICE mutex between 2048-instant batches, so a concurrent
+  `furnish`/`kclear` could leave one vector using two kernel sets. `furnish`
+  and `kclear` now bump a pool generation under the mutex, and `spkpos_both`
+  raises `RuntimeError` (a 500: a server-side condition) if the generation
+  changes between its batches. `test_kernel_pool_change_mid_vector_is_an_error_never_mixed`
+  checks that every run is either the untouched result or that error. The
+  race is rare in practice: glibc's mutex is unfair, so the batch loop re-takes
+  it before a waiting `furnish` wakes, and 0 of 5 runs hit it here. The guard
+  is therefore verified by inspection rather than by the test forcing it.
+- **C7 — `/eclipses` reported compute errors as "invalid epoch" (medium).
+  DONE.** Only epoch parsing is now caught as `ValueError` → 400. A
+  `ValueError` from the computation (native invariant checks surface as that)
+  is a 500. Test: `test_eclipses_compute_value_error_is_a_500_not_invalid_epoch`.
+- **C8 — `/central-line` gave a 500 for a subnormal `step_minutes` (low).
+  DONE.** The same `_arange_len` guard as C3.
+  Test: `test_central_line_subnormal_step_is_a_400`.
+- **C9 — Too many OpenMP threads under gunicorn (medium). DONE.** libgomp
+  creates a team per calling thread, sized to the host's full core count (it
+  ignores cgroup quotas), and every worker and request thread made its own.
+  `native.PARALLEL_LOCK` now serializes the two long parallel entry points
+  (`circumstances_grid`, `find_eclipses`) within a process. The Docker CMD
+  sets `OMP_NUM_THREADS` to `nproc / WEB_CONCURRENCY` (at least 1) unless it
+  is already set, and sets `OMP_WAIT_POLICY=PASSIVE` so idle teams sleep
+  rather than spin. Results do not depend on either (they are identical for
+  any thread count, as established in phase 3/4).
+- **C10 — Native dispatch rebuilt a wrapper on every call (low). DONE.**
+  `_Translating.__getattr__` built a new closure plus `functools.wraps` on
+  every attribute access. It now caches each wrapper on the proxy.
+  Test: `test_native_proxy_caches_wrapped_functions`.
+
+Validation: `uv run pytest` gives 122 passed / 2 skipped (the benchmarks),
+both with the default backend (native) and with `ECLIPSE_BACKEND=python`;
+`ruff check` is clean.
+
+Not fixed, pre-existing: `ctest` fails the three `ITRF93` rows of "Besselian
+elements parity" with or without these changes (e.g. `mu` differs by 3.7e-10
+deg against a 1e-11 gate). The offline fixtures were dumped with an older
+`earth_latest_high_prec.bpc`, which NAIF regenerates daily, while the `ITRS` /
+`TOD` / `IAU_EARTH` rows pass. Regenerate the fixtures
+(`tools/dump_oracle.py`) against the current kernel, or pin the binary PCK
+that the fixtures were dumped with.

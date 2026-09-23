@@ -229,10 +229,13 @@ struct SignChange {
 /// between ``t[i]`` and ``t[i + 1]``. An exact zero at ``f[i]`` counts as a
 /// crossing at ``i`` with ``rising = f[i + 1] > 0``; otherwise the pair counts
 /// when ``f[i] * f[i + 1] < 0`` (false for NaN) with ``rising = f[i + 1] > f[i]``.
-/// Only ``t.size()`` is used, as in the Python (``range(len(t) - 1)``). (numerical)
+/// Only ``t.size()`` is used, as in the Python (``range(len(t) - 1)``); an ``f``
+/// shorter than ``t`` is the Python's IndexError, here ``std::invalid_argument``
+/// rather than an out-of-bounds read (review item C2). (numerical)
 inline std::vector<SignChange> sign_changes(std::span<const double> t, std::span<const double> f) {
     std::vector<SignChange> out;
     if (t.empty()) return out;
+    if (f.size() < t.size()) throw std::invalid_argument("sign_changes: f is shorter than t");
     for (std::size_t i = 0; i + 1 < t.size(); ++i) {
         if (f[i] == 0.0) {
             out.push_back({i, f[i + 1] > 0.0});

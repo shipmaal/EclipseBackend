@@ -429,11 +429,12 @@ def circumstances_grid(
     lats = np.atleast_1d(np.asarray(lats, dtype=float))
     lons = np.atleast_1d(np.asarray(lons, dtype=float))
     if native.is_native():
-        g = native.module().circumstances_grid(
-            model.et0, model.earth_frame, model.half_window_hours,
-            np.ascontiguousarray(lats, dtype=float), np.ascontiguousarray(lons, dtype=float),
-            float(step_minutes),
-        )
+        with native.PARALLEL_LOCK:  # one OpenMP team per process (native.PARALLEL_LOCK)
+            g = native.module().circumstances_grid(
+                model.et0, model.earth_frame, model.half_window_hours,
+                np.ascontiguousarray(lats, dtype=float), np.ascontiguousarray(lons, dtype=float),
+                float(step_minutes),
+            )
         return {k: g[k] for k in ("magnitude", "obscuration", "t_max_hours", "sun_alt",
                                   "visible", "central")}
     hw = model.half_window_hours

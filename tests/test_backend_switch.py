@@ -90,3 +90,18 @@ except RuntimeError as exc:
 """, backend="bogus")
     assert out.returncode == 0, out.stderr
     assert out.stdout.startswith("RuntimeError") and "bogus" in out.stdout
+
+
+def test_empty_backend_behaves_like_unset():
+    # ``ECLIPSE_BACKEND=`` (a blank .env entry) used to be a RuntimeError at
+    # import, taking the whole app down (review item C4).
+    out = _run(_BLOCK + """
+import warnings
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    from app import native
+assert native.BACKEND == "python" and len(w) == 1
+print("ok")
+""", backend="")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "ok"

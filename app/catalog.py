@@ -347,8 +347,9 @@ def find_eclipses(
     if et_b <= et_a:
         raise ValueError("end must be after start")
     if native.is_native():
-        raws = [_event_from_native(t) for t in
-                native.module().find_eclipses(et_a, et_b, earth_frame, detail)]
+        with native.PARALLEL_LOCK:  # one OpenMP team per process (native.PARALLEL_LOCK)
+            events = native.module().find_eclipses(et_a, et_b, earth_frame, detail)
+        raws = [_event_from_native(t) for t in events]
     else:
         raws = _catalog_raw(et_a, et_b, earth_frame, detail)
     return [_format_event(raw, detail) for raw in raws]

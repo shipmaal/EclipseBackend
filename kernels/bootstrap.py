@@ -30,7 +30,7 @@ NAIF = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels"
 # (ITRF93). Preferred when reachable.
 NAIF_KERNELS: list[tuple[str, str]] = [
     (f"{NAIF}/lsk/naif0012.tls", "leapseconds (UTC <-> ET)"),
-    (f"{NAIF}/spk/planets/de440s.bsp", "JPL DE440s ephemeris (1550-2650)"),
+    (f"{NAIF}/spk/planets/de440s.bsp", "JPL DE440s ephemeris (1849-2150)"),
     (f"{NAIF}/pck/pck00011.tpc", "planetary constants (radii, IAU_EARTH)"),
     (f"{NAIF}/pck/earth_latest_high_prec.bpc", "high-precision Earth orientation (ITRF93)"),
 ]

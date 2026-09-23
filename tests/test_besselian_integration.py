@@ -1,6 +1,9 @@
-"""End-to-end validation against published references for two eclipses:
-2024-04-08 (full central-line table) and 2017-08-21 (published Besselian
-elements + greatest-eclipse point).
+"""End-to-end validation against published references: 2024-04-08 (full
+central-line table) and, against F. Espenak's NASA values [Espenak], seven
+eclipses that between them cover total / annular / hybrid, a polar grazing
+path, and both delta-T regimes (IERS-measured 2017-2024; the polynomial model
+for 1868 and 1919): published Besselian elements, mu, greatest-eclipse point,
+path width, central duration and magnitude.
 
 Requires the SPICE kernels (run ``python -m kernels.bootstrap``); the whole
 module is skipped automatically when they are absent, so the rest of the suite
@@ -96,29 +99,63 @@ _2024_PUBLISHED = {"x": -0.3182440, "y": 0.2197640, "d": 7.5862002}
 _2024_GREATEST = {"utc": "2024-04-08T18:17:15", "lat": 25.3, "lon": -104.1, "width_km": 197.5, "is_total": True, "duration_s": 268, "magnitude": 1.0566}
 
 
-def _check_greatest(g):
-    from app.geography import central_track, shadow_edge_limits, shadow_radii
+def _t0_utc(g):
+    """UTC epoch of greatest eclipse for case ``g``: its ``utc``, or its published
+    ``td`` (TDT) converted with *our* delta-T.  The Canon's own UT is TD minus
+    the Canon's delta-T (73.4 s in 2023, vs 69.2 s measured), so for the newer
+    cases the TD instant is the unambiguous anchor: ~4 s moves a grazing polar
+    shadow by several km."""
+    if "utc" in g:
+        return g["utc"]
+    import spiceypy
 
-    model, _frame = _build_model(g["utc"])
+    from app.ephemeris import et_to_utc, load_kernels
+
+    load_kernels()
+    return et_to_utc(spiceypy.str2et(g["td"] + " TDT"))
+
+
+def _greatest_model(g):
+    import spiceypy
+
+    try:
+        return _build_model(_t0_utc(g))
+    except spiceypy.utils.exceptions.SpiceSPKINSUFFDATA:
+        pytest.skip("ephemeris does not cover this epoch (mirror DE432s spans 1949-2050; "
+                    "use NAIF DE440s, 1849-2150)")
+
+
+def _greatest_edges(g):
+    """(track point at greatest eclipse, north, south, width_km, is_total)."""
+    from app.geography import central_track, element_rates, shadow_edge_limits, shadow_radii
+
+    model, _frame = _greatest_model(g)
     dt = 0.02
     # central_track reduces each instant to (lat, lon) with the along-track
     # bearing from its neighbours -- the same path /central-line uses (item R3).
     elems, track = central_track(model, np.array([-dt, 0.0, dt]))
     tp = next(p for p in track if abs(p.t_hours) < 1e-9)  # central instant t=0
     i = tp.i
+    r = element_rates(model, np.array([0.0]))
     north, south, width = shadow_edge_limits(
         elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i],
         elems["l2"][i], elems["tan_f2"][i], tp.bearing,
+        rates=(r["x"], r["y"], r["d"], r["mu"], r["l2"]),
     )
     _pen, _umb, is_total = shadow_radii(
         elems["x"][i], elems["y"][i], elems["d"][i],
         elems["l1"][i], elems["l2"][i], elems["tan_f1"][i], elems["tan_f2"][i],
     )
-    # Published lat/lon are rounded to 0.1 deg; width matches to ~1 km.
+    return tp, north, south, width, is_total
+
+
+def _check_greatest(g):
+    tp, north, south, _width, is_total = _greatest_edges(g)
+    # Published lat/lon are rounded to 0.1 deg (measured |dlat|, |dlon| <= 0.05
+    # deg over all seven cases); the width is test_path_width_at_greatest_eclipse.
     assert tp.lat == pytest.approx(g["lat"], abs=0.12)
     assert tp.lon == pytest.approx(g["lon"], abs=0.12)
     assert north is not None and north[0] > south[0]
-    assert width == pytest.approx(g["width_km"], abs=2.0)
     assert is_total is g["is_total"]
 
 
@@ -190,15 +227,18 @@ def _check_circumstances(g):
     from app.circumstances import local_circumstances
     from app.geography import fund_to_geo
 
-    model, _frame = _build_model(g["utc"])
+    model, _frame = _greatest_model(g)
     e = model.evaluate(np.array([0.0]))  # central point at maximum
     lon, lat = fund_to_geo(e["x"][0], e["y"][0], e["d"][0], e["mu"][0])
     c = local_circumstances(model, lat, lon)
 
     assert c["eclipse"] is True
     assert c["type"] == ("total" if g["is_total"] else "annular")
-    assert c["central_duration_s"] == pytest.approx(g["duration_s"], abs=3.0)
-    assert c["magnitude"] == pytest.approx(g["magnitude"], abs=0.003)
+    # Measured over all seven cases: duration -0.4 .. +0.4 s (published to 1 s),
+    # magnitude within 1e-4 -- since the solar radius stopped following the
+    # PCK (item W1; it was +1.7 .. +2.4 s / +0.0005 with pck00011's 695 700 km).
+    assert c["central_duration_s"] == pytest.approx(g["duration_s"], abs=1.0)
+    assert c["magnitude"] == pytest.approx(g["magnitude"], abs=1e-3)
 
 
 def test_circumstances_2017():
@@ -281,6 +321,112 @@ def test_circumstances_grid_matches_scalar():
     assert bool(g["central"][1]) is False  # NYC
 
 
+# --- More reference eclipses [Espenak] ----------------------------------------
+# Source for each: F. Espenak, NASA Eclipse Web Site, Besselian-elements page
+# https://eclipse.gsfc.nasa.gov/SEsearch/SEdata.php?Ecl=YYYYMMDD (the
+# Five Millennium Canon's elements, VSOP87/ELP2000-82): the polynomial
+# elements' constant terms at t0 (TDT), the instant of greatest eclipse (TDT),
+# and the circumstances there (lat/lon to 0.1 deg, path width to 0.1 km,
+# central duration to 1 s, magnitude).  What each case adds:
+#   2023-04-20 H -- a hybrid (l2 crosses 0 along the path; total at greatest).
+#   2021-12-04 T -- a polar, grazing path (gamma -0.95, Sun 17 deg high).
+#   1919-05-29 T -- pre-IERS: delta-T from the polynomial model (Canon 21.0 s).
+#   1868-08-18 T -- pre-IERS, a century earlier (Canon delta-T 2.2 s).
+_REF_ECLIPSES = {
+    "2023-04-20H": {
+        "t0": "2023-04-20 04:00:00", "x": 0.0268500, "y": -0.4273660, "d": 11.4117899,
+        "mu": 240.242935, "td": "2023-04-20 04:17:56", "lat": -9.6, "lon": 125.8,
+        "width_km": 49.0, "is_total": True, "duration_s": 76, "magnitude": 1.0132,
+    },
+    "2021-12-04T": {
+        "t0": "2021-12-04 08:00:00", "x": 0.0252090, "y": -0.9836530, "d": -22.2747192,
+        "mu": 302.452179, "td": "2021-12-04 07:34:38", "lat": -76.8, "lon": -46.2,
+        "width_km": 418.7, "is_total": True, "duration_s": 114, "magnitude": 1.0367,
+    },
+    "1919-05-29T": {
+        "t0": "1919-05-29 13:00:00", "x": -0.0658300, "y": -0.3007040, "d": 21.5041408,
+        "mu": 15.729970, "td": "1919-05-29 13:08:55", "lat": 4.4, "lon": -16.7,
+        "width_km": 244.4, "is_total": True, "duration_s": 411, "magnitude": 1.0719,
+    },
+    "1868-08-18T": {
+        "t0": "1868-08-18 05:00:00", "x": -0.1255510, "y": -0.0143720, "d": 13.0380297,
+        "mu": 254.097061, "td": "1868-08-18 05:12:10", "lat": 10.6, "lon": 102.2,
+        "width_km": 245.1, "is_total": True, "duration_s": 407, "magnitude": 1.0756,
+    },
+}
+
+
+def _elements_at_t0(g):
+    import spiceypy
+
+    from app.ephemeris import besselian_instant, load_kernels
+
+    load_kernels()
+    et = spiceypy.str2et(g["t0"] + " TDT")  # published elements are tabulated vs TDT
+    try:
+        return et, besselian_instant(et, _usable_frame())
+    except spiceypy.utils.exceptions.SpiceSPKINSUFFDATA:
+        pytest.skip("ephemeris does not cover this epoch (mirror DE432s spans 1949-2050; "
+                    "use NAIF DE440s, 1849-2150)")
+
+
+@pytest.mark.parametrize("name", sorted(_REF_ECLIPSES))
+def test_reference_elements_match_published(name):
+    """x, y, d at t0 (TDT).  Measured: |dx|, |dy| <= 1e-5, |dd| <= 9.3e-5 deg."""
+    g = _REF_ECLIPSES[name]
+    _et, bi = _elements_at_t0(g)
+    for key in ("x", "y", "d"):
+        assert getattr(bi, key) == pytest.approx(g[key], abs=1e-3), key
+
+
+@pytest.mark.parametrize("name", sorted(_REF_ECLIPSES))
+def test_reference_mu_matches_published_with_delta_t(name):
+    """mu_published = mu_ours + delta-T * 1.002738 * 15"/s [ES92] sec. 8.36 (see
+    test_2024_mu_matches_published_with_delta_t), here with delta-T measured
+    (2021, 2023) or from the model (1868, 1919).  Measured: <= 1.9e-5 deg."""
+    from app.ephemeris import tt_minus_ut1
+
+    g = _REF_ECLIPSES[name]
+    et, bi = _elements_at_t0(g)
+    delta_t = float(tt_minus_ut1(et)[0])
+    mu_eph = (bi.mu % 360.0 + delta_t * 1.002738 * 15.0 / 3600.0) % 360.0
+    assert mu_eph == pytest.approx(g["mu"], abs=1e-4)
+
+
+@pytest.mark.parametrize("name", sorted(_REF_ECLIPSES))
+def test_reference_greatest_eclipse_point(name):
+    _check_greatest(_REF_ECLIPSES[name])
+
+
+@pytest.mark.parametrize("name", sorted(_REF_ECLIPSES))
+def test_reference_circumstances(name):
+    """Duration and magnitude at the greatest-eclipse point.  Measured: duration
+    within +/-0.4 s, magnitude within 1e-4 (see _check_circumstances)."""
+    _check_circumstances(_REF_ECLIPSES[name])
+
+
+# Every case with a published path width at greatest eclipse: the umbral path
+# width as the envelope of the shadow over time, measured on the WGS-84
+# ellipsoid (items W1/W2, docs/CODE_REVIEW_FOLLOWUPS.md section 6).  Measured
+# (ours - Espenak, km): 2017 -0.01, 2023-10 annular +0.12, 2024 -0.03,
+# 2023-04 hybrid -0.10, 1919 -0.10, 1868 -0.12, and the polar grazing
+# 2021-12-04 -0.86 (0.2%).  Before W1/W2 these were +1.64, -1.63, +1.37,
+# +1.51, +2.70, +2.30 and -6.71.
+_WIDTH_CASES = {
+    "2017-08-21T": _2017_GREATEST,
+    "2023-10-14A": _2023_GREATEST,
+    "2024-04-08T": _2024_GREATEST,
+    **_REF_ECLIPSES,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_WIDTH_CASES))
+def test_path_width_at_greatest_eclipse(name):
+    g = _WIDTH_CASES[name]
+    _tp, _north, _south, width, _is_total = _greatest_edges(g)
+    assert width == pytest.approx(g["width_km"], abs=1.0)
+
+
 # --- Delta-T outside the IERS era (review item 2) ----------------------------
 def test_delta_t_model_agrees_with_measured_inside_era():
     """Independent cross-check: the [Espenak] polynomial vs the leap-second kernel
@@ -310,28 +456,3 @@ def test_delta_t_used_outside_era_is_the_model_not_the_frozen_leap_count():
     assert float(tt_minus_ut1(et)[0]) == pytest.approx(21.0, abs=0.5)
     # The string was read as UT1: TT = UT1 + delta-T.
     assert et - spiceypy.tparse("1919-05-29T13:08:00")[0] == pytest.approx(21.0, abs=0.5)
-
-
-def test_1919_eddington_eclipse_smoke():
-    """1919-05-29 (the Eddington eclipse): total, greatest eclipse in the
-    equatorial Atlantic off West Africa, ~6m51s.  A smoke test of the
-    pre-IERS-era path (delta-T model; no EOP), with deliberately loose bounds --
-    we hold no digitized Canon reference for it."""
-    import spiceypy
-
-    from app.besselian import BesselianModel
-    from app.circumstances import local_circumstances
-    from app.geography import central_track
-
-    try:
-        model = BesselianModel(t0_utc="1919-05-29T13:08:00", half_window_hours=2.5)
-    except spiceypy.utils.exceptions.SpiceSPKINSUFFDATA:
-        pytest.skip("ephemeris does not cover 1919 (mirror DE432s spans 1949-2050; use NAIF DE440s)")
-    _elems, track = central_track(model, np.array([0.0]))
-    assert track, "no central line at greatest eclipse"
-    tp = track[0]
-    assert -5.0 < tp.lat < 12.0 and -30.0 < tp.lon < -5.0
-    c = local_circumstances(model, tp.lat, tp.lon)
-    assert c["type"] == "total"
-    assert c["central_duration_s"] == pytest.approx(411.0, abs=20.0)
-

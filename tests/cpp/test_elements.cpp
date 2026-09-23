@@ -52,10 +52,22 @@ bool setup(const std::vector<fixtures::Record>& recs) {
 void check_fixture(const std::string& name) {
     const auto recs = fixtures::read(name);
     if (!setup(recs)) return;
+    // ITRF93 reads the binary Earth PCK, which NAIF regenerates daily under one
+    // name: its rows replay only against the byte-identical file (``pck``
+    // header record); tests/test_native.py checks ITRF93 parity live.
+    const bool pck_pinned = fixtures::pinned_pck_matches(recs);
+    bool warned_pck = false;
 
     for (const auto& r : recs) {
         if (r.kind != "case") continue;
         const std::string label = r.tokens.at(0), frame = r.tokens.at(1);
+        if (frame == "ITRF93" && !pck_pinned) {
+            if (!warned_pck)
+                WARN(name << ": ITRF93 rows skipped; the binary Earth PCK on disk is not the "
+                             "one the fixtures were dumped with (regenerate them to replay)");
+            warned_pck = true;
+            continue;
+        }
         INFO(name << " " << label << " " << frame);
         const double et = r.num(2);
         const double e_[] = {et};

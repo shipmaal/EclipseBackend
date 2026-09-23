@@ -295,14 +295,7 @@ int kernel_count(std::string_view kind) {
     });
 }
 
-double sun_radius_km() {
-    return spice_call([] {
-        SpiceInt n = 0;
-        SpiceDouble radii[3] = {0.0, 0.0, 0.0};
-        bodvrd_c("SUN", "RADII", 3, &n, radii);
-        return radii[0];
-    });
-}
+double sun_radius_km() { return SUN_RADIUS_KM; }
 
 // --------------------------------------------------------------- raw SPICE
 

@@ -20,6 +20,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "eclipse/constants.hpp"
@@ -195,6 +196,52 @@ TEST_CASE("shadow_radii parity: [ES92] 8.353", "[parity]") {
     CHECK(n_off >= 3);      // the +/-3 h track ends fall off the Earth
     CHECK(n_total >= 10);   // 2017 and 2024 are total
     CHECK(n_annular >= 5);  // 2023 is annular
+}
+
+TEST_CASE("geodesic_km parity: Andoyer on WGS-84 [Meeus98] ch. 11", "[parity]") {
+    const auto recs = records("geod");
+    REQUIRE(recs.size() >= 6);
+    for (const auto& r : recs) {
+        INFO(r.num(0) << " " << r.num(1) << " -> " << r.num(2) << " " << r.num(3));
+        CHECK_THAT(geo::geodesic_km(r.num(0), r.num(1), r.num(2), r.num(3)), WithinAbs(r.num(4), kKmTol));
+    }
+}
+
+TEST_CASE("shadow_edge_limits parity: path envelope with element rates (W2)", "[parity]") {
+    // One vectorized call over all records, as the oracle dumped them per
+    // track; 600 km, sunlit, with the per-hour rates of x, y, d, mu, l2.
+    const auto recs = records("limr");
+    REQUIRE(recs.size() == 21);  // the umbral rows of the three 7-point tracks
+    std::vector<double> x, y, d, mu, l, tf, brg, dx, dy, dd, dmu, dl;
+    for (const auto& r : recs) {
+        for (auto [v, k] : {std::pair{&x, 0}, {&y, 1}, {&d, 2}, {&mu, 3}, {&l, 4}, {&tf, 5},
+                            {&brg, 6}, {&dx, 7}, {&dy, 8}, {&dd, 9}, {&dmu, 10}, {&dl, 11}})
+            v->push_back(r.num(static_cast<size_t>(k)));
+    }
+    const geo::EdgeRates rates{dx, dy, dd, dmu, dl};
+    const geo::EdgeLimits e = geo::shadow_edge_limits(x, y, d, mu, l, tf, brg, 600.0, true, &rates);
+    size_t n_found = 0;
+    for (size_t i = 0; i < recs.size(); ++i) {
+        const auto& r = recs[i];
+        INFO("x=" << x[i] << " y=" << y[i]);
+        CHECK(std::isnan(e.north_lat[i]) == std::isnan(r.num(12)));
+        if (std::isnan(r.num(12))) {
+            CHECK(e.width_km[i] == 0.0);
+            continue;
+        }
+        CHECK_THAT(e.north_lat[i], WithinAbs(r.num(12), kDegTol));
+        CHECK_THAT(e.north_lon[i], WithinAbs(r.num(13), kDegTol));
+        CHECK_THAT(e.south_lat[i], WithinAbs(r.num(14), kDegTol));
+        CHECK_THAT(e.south_lon[i], WithinAbs(r.num(15), kDegTol));
+        CHECK_THAT(e.width_km[i], WithinAbs(r.num(16), kKmTol));
+        ++n_found;
+    }
+    CHECK(n_found == 21);  // every track point is inside its umbra
+    // Rates of the wrong length are an error, not an out-of-bounds read.
+    const double one[] = {0.0};
+    const geo::EdgeRates short_rates{one, dy, dd, dmu, dl};
+    CHECK_THROWS_AS(geo::shadow_edge_limits(x, y, d, mu, l, tf, brg, 600.0, true, &short_rates),
+                    std::invalid_argument);
 }
 
 TEST_CASE("shadow_edge_limits parity: shadow_edge_limits_v, umbral and penumbral", "[parity]") {

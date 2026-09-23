@@ -47,9 +47,9 @@ void kclear();
 /// Number of loaded kernels of ``kind`` (``ktotal_c``; default "ALL").
 int kernel_count(std::string_view kind = "ALL");
 
-/// Solar radius [km] from the PCK (``bodvrd_c("SUN", "RADII")``, 696 000 km,
-/// IAU 1976) — the radius the [Espenak] k1/k2 are paired with
-/// (``app/ephemeris.sun_radius_km``).
+/// Solar radius [km]: ``constants::SUN_RADIUS_KM``, 696 000 km (IAU 1976) — the
+/// radius the [Espenak] k1/k2 are paired with (``app/ephemeris.sun_radius_km``);
+/// not read from the PCK, whose pck00011 value is 695 700 km (review item W1).
 double sun_radius_km();
 
 // --------------------------------------------------------------- raw SPICE

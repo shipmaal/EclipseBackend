@@ -206,3 +206,72 @@ deg against a 1e-11 gate). The offline fixtures were dumped with an older
 `TOD` / `IAU_EARTH` rows pass. Regenerate the fixtures
 (`tools/dump_oracle.py`) against the current kernel, or pin the binary PCK
 that the fixtures were dumped with.
+
+## 6. Reference-eclipse coverage and two width findings
+
+Four reference eclipses added to `tests/test_besselian_integration.py`, each
+checked against F. Espenak's Canon values (`SEsearch/SEdata.php`) [Espenak]:
+the 2023-04-20 hybrid, the 2021-12-04 polar grazing total (γ −0.95, Sun 17°),
+and two outside the IERS era, 1919-05-29 and 1868-08-18. The latter two
+exercise the `deltat.py` model path. The 1919 case replaces the old smoke test.
+Measured agreement:
+
+| quantity | gate | worst new case |
+| --- | --- | --- |
+| x, y at t0 | 1e-3 | 1e-5 |
+| d at t0 | 1e-3 deg | 9.3e-5 deg |
+| μ (ephemeris hour angle via ΔT) | 1e-4 deg | 1.9e-5 deg |
+| greatest-eclipse lat / lon | 0.12 deg | 0.049 deg |
+| central duration | 3 s | +2.4 s (all +1.7 to +2.4) |
+| magnitude | 0.003 | +0.0005 |
+
+The cases are anchored on Espenak's published TD instant, not the Canon's UT:
+the Canon's UT uses its own ΔT (73.4 s in 2023, against 69.2 s measured). The
+1868/1919 cases skip on the mirror kernel set (DE432s covers 1949–2050).
+DE440s covers 1849–2150, not "1550–2650" (that is DE440); fixed in
+`kernels/bootstrap.py`, `kernels/README.md` and `app/catalog.py`. A 2186 case
+was dropped for the same reason.
+
+Path widths are a new parametrized test over all seven eclipses. They
+surfaced two real discrepancies (first recorded as strict xfails), both now
+fixed in both languages:
+
+- **W1 — The solar radius followed the loaded PCK (medium). DONE.** Signed
+  width residuals (ours − Espenak) were 2017 +1.64, 2024 +1.37, 2023-04
+  hybrid +1.51, 1919 +2.70, 1868 +2.30 km, and the 2023-10 annular −1.63 km:
+  every total wider and the annular narrower. `tan f1` / `tan f2` were ~1.9e-6
+  (0.04%) below Espenak's for every eclipse. Backing the solar radius out of
+  his published `tan f` with our own G gives 695 982 – 695 995 km. Our
+  `sun_radius_km()` returned `bodvrd("SUN", "RADII")`, which is 695 700 km
+  (IAU 2015 nominal) in NAIF's pck00011 and 696 000 km in the mirror's
+  pck00010. So the cone, every umbral width, and every duration depended on
+  the kernel set, against the function's own docstring. The fix makes
+  `constants.SUN_RADIUS_KM = 696000.0` (IAU 1976, the value paired with k1/k2)
+  a constant in `app/constants.py` and `constants.hpp`. Side effect: central
+  durations went from +1.7 – +2.4 s to within ±0.4 s of Espenak, and
+  magnitudes to within 1e-4, so the mean limb in `K_UMBRA` was not their cause.
+  Gates tightened to 1 s / 1e-3.
+- **W2 — The limits and width were the instantaneous shadow section, not the
+  path (high for low-Sun paths). DONE.** `shadow_edge_limits_v` bisected the
+  shadow edge perpendicular to the track *at one instant*; the path limits are
+  the envelope of the shadow over time. For 2021-12-04 that gave 412.0 km
+  against Espenak's 418.7. With element `rates` (`geography.element_rates`:
+  central differences of `evaluate_direct` over ±1 min), a point on the
+  perpendicular counts as inside the path when it is inside at the instant of
+  the axis' closest approach. That instant comes from 3 Newton steps on the
+  squared separation, with the elements linear in time and the Earth's
+  rotation exact through `geo_to_fund`. It agrees with a brute-force scan over
+  exact elements (7 201 instants over ±0.3 h) to 1e-5 km. Part of the residual
+  was also the metric: the width was a haversine on the 6 371 km mean sphere,
+  which understates a polar width by ~0.4% and overstates an equatorial one by
+  ~0.5%. It is now Andoyer's geodesic on WGS-84 (`geodesic_km`, [Meeus98]
+  ch. 11). `/central-line`'s umbral limits and the catalog's detail width use
+  the envelope. The penumbral limits stay the instantaneous outline (a
+  visualization bound up to 10 000 km, beyond the linearization's range).
+
+Result (ours − Espenak, km): 2017 −0.01, 2023-10 annular +0.12, 2024 −0.03,
+2023-04 hybrid −0.10, 1919 −0.10, 1868 −0.12, 2021-12-04 −0.86 (0.2%, the
+grazing polar path). The width gate went from 2 km to 1 km, with no xfails.
+Parity: native = oracle on all seven widths. The live test
+(`test_shadow_edge_limits_parity`, envelope mode added) and the new offline
+`limr` / `geod` fixtures pass.

@@ -59,6 +59,7 @@ from .ephemeris import (
 )
 from .geography import (
     central_track,
+    element_rates,
     format_clock,
     fund_to_geo_v,
     geo_to_fund,
@@ -268,7 +269,9 @@ def _detail_raw(raw: _EventRaw, frame: str) -> _EventRaw:
     as the row reports it; the local circumstances are taken at the point
     rounded to 0.01 deg (the point the row reports); the width is the umbral
     :func:`~app.geography.shadow_edge_limits` at the ``t = 0`` point of a
-    three-point :func:`~app.geography.central_track` (its along-track bearing).
+    three-point :func:`~app.geography.central_track` (its along-track bearing),
+    as the path envelope from the :func:`~app.geography.element_rates` at
+    ``t = 0`` (item W2).
     """
     from .circumstances import local_raw
 
@@ -284,9 +287,11 @@ def _detail_raw(raw: _EventRaw, frame: str) -> _EventRaw:
     if mid:
         tp = mid[0]
         i = tp.i
+        r = element_rates(model, np.array([0.0]))
         _n, _s, width = shadow_edge_limits(
             elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i],
             elems["l2"][i], elems["tan_f2"][i], tp.bearing,
+            rates=(r["x"], r["y"], r["d"], r["mu"], r["l2"]),
         )
     return raw._replace(et0=model.et0, contacts=contacts, local=local, width_km=width)
 
@@ -335,7 +340,7 @@ def find_eclipses(
     """Every solar eclipse with greatest eclipse in ``[start_utc, end_utc]``.
 
     Epoch strings follow :func:`~app.besselian.normalize_utc`.  Coverage is
-    that of the loaded SPK (DE432s mirror: 1949-2050; DE440s: 1550-2650).
+    that of the loaded SPK (DE432s mirror: 1949-2050; DE440s: 1849-2150).
     The numbers are :func:`_catalog_raw`, or under ``ECLIPSE_BACKEND=native``
     the core's ``find_eclipses`` (the same ``_EventRaw`` tuples, its ``local``
     rebuilt as :class:`~app.circumstances._LocalRaw`); the row shape is

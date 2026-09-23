@@ -260,6 +260,37 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     return 2 * _EARTH_MEAN_KM * np.arcsin(np.sqrt(a))
 
 
+def geodesic_km(lat1, lon1, lat2, lon2):
+    """Distance [km] between two points on the WGS-84 ellipsoid (geodetic degrees).
+
+    H. Andoyer's formula with its first-order flattening correction, as given in
+    [Meeus98] ch. 11 ("Distance between two points on the Earth's surface"):
+    ``F, G, lambda`` the half-sum / half-differences, ``S, C``, ``tan w =
+    sqrt(S / C)``, ``R = sqrt(S C) / w``, ``D = 2 w a``, ``H1 = (3R - 1) / 2C``,
+    ``H2 = (3R + 1) / 2S`` and ``s = D (1 + f H1 sin^2 F cos^2 G - f H2 cos^2 F
+    sin^2 G)``; accurate to O(f^2) (tens of metres at path-width scale).  This is
+    the path-width metric: the mean-radius sphere of :func:`_haversine_km`
+    understates a polar width by ~0.4% (2021-12-04: 416.1 vs 417.8 km) and
+    overstates an equatorial one by ~0.5% (review item W2).  Undefined (NaN)
+    for coincident points.
+    """
+    fh = np.radians((lat1 + lat2) / 2.0)
+    gh = np.radians((lat1 - lat2) / 2.0)
+    lh = np.radians(((lon1 - lon2 + 180.0) % 360.0 - 180.0) / 2.0)
+    sin_g, cos_g = np.sin(gh), np.cos(gh)
+    sin_f, cos_f = np.sin(fh), np.cos(fh)
+    sin_l, cos_l = np.sin(lh), np.cos(lh)
+    s = sin_g * sin_g * (cos_l * cos_l) + cos_f * cos_f * (sin_l * sin_l)
+    c = cos_g * cos_g * (cos_l * cos_l) + sin_f * sin_f * (sin_l * sin_l)
+    w = np.arctan(np.sqrt(s / c))
+    r = np.sqrt(s * c) / w
+    dist = 2.0 * w * _A_KM
+    h1 = (3.0 * r - 1.0) / (2.0 * c)
+    h2 = (3.0 * r + 1.0) / (2.0 * s)
+    return dist * (1.0 + _F * h1 * (sin_f * sin_f) * (cos_g * cos_g)
+                   - _F * h2 * (cos_f * cos_f) * (sin_g * sin_g))
+
+
 def bearing(lat1, lon1, lat2, lon2):
     """Initial great-circle bearing (degrees) from point 1 to point 2.
 
@@ -276,15 +307,26 @@ def bearing(lat1, lon1, lat2, lon2):
     return (np.degrees(np.arctan2(y, x)) + 360.0) % 360.0
 
 
+# Path-limit envelope (review item W2): with element rates, a point is inside
+# the path when it is inside the shadow at the instant the shadow axis passes
+# closest to it, found by Newton steps on the squared axis separation with
+# central finite differences of step ENVELOPE_H [h], the step clamped to
+# +/- ENVELOPE_MAX_TAU_H [h] from the track instant. (numerical)
+ENVELOPE_H = 1e-3
+ENVELOPE_ITERATIONS = 3
+ENVELOPE_MAX_TAU_H = 0.25
+
+
 def shadow_edge_limits_v(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km=600.0,
-                         sunlit_only=True):
+                         sunlit_only=True, rates=None):
     """Shadow-edge points and widths for arrays of track instants (vectorized).
 
     Array form of :func:`shadow_edge_limits`: every argument is a 1-D array of
     the same length ``n`` (or a scalar).  Returns ``(north_lat, north_lon,
     south_lat, south_lon, width_km)`` arrays; entries are ``NaN`` (width ``0``)
     where the central point is outside the shadow or the edge is not found
-    within ``max_km``.  The bisection runs on all ``2n`` edge searches at once,
+    within ``max_km``.  The width is the ellipsoidal distance between the two
+    points (:func:`geodesic_km`).  The bisection runs on all ``2n`` edge searches at once,
     so the cost is 50 array evaluations regardless of ``n``.
 
     ``sunlit_only`` treats points beyond the terminator (``zeta <= 0``, Sun
@@ -292,16 +334,32 @@ def shadow_edge_limits_v(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km
     limit that would fall on the night side is clipped to the terminator --
     the boundary of where the partial eclipse is actually *seen*.  For the
     umbra (``max_km`` ~600) it never engages.
+
+    ``rates``, when given, is ``(dx, dy, dd_deg, dmu_deg, dl)``: the per-hour
+    rates of ``x, y, d, mu, l`` at each instant (:func:`element_rates`).  The
+    limits are then the path's -- the envelope of the shadow over time -- not
+    the shadow's outline at the one instant: a point counts as inside when it
+    is inside at the instant of the axis' closest approach to it, with the
+    elements linear in time about the track instant and the Earth's rotation
+    exact through :func:`geo_to_fund`.  The two agree to < 0.4 km for a
+    high-Sun path but not for a grazing one (2021-12-04: 412.0 km at one
+    instant, 418.5 km path width; review item W2).  Without ``rates`` the
+    outline at the instant is returned (the penumbral limits of
+    ``/central-line`` use that).
     Dispatches to the native core under ``ECLIPSE_BACKEND=native``.
     """
     x, y, d_deg, mu_deg, l, tan_f, brg = np.broadcast_arrays(
         *(np.atleast_1d(np.asarray(v, dtype=float))
           for v in (x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg))
     )
+    if rates is not None:
+        rx, ry, rd, rmu, rl = (np.ascontiguousarray(np.broadcast_to(
+            np.asarray(v, dtype=float), x.shape)) for v in rates)
     if native.is_native():
+        extra = {} if rates is None else {"rates": (rx, ry, rd, rmu, rl)}
         return native.module().shadow_edge_limits(
             *(np.ascontiguousarray(v) for v in (x, y, d_deg, mu_deg, l, tan_f, brg)),
-            max_km=float(max_km), sunlit_only=bool(sunlit_only),
+            max_km=float(max_km), sunlit_only=bool(sunlit_only), **extra,
         )
     n = len(x)
     lon0, lat0 = fund_to_geo_v(x, y, d_deg, mu_deg)
@@ -311,10 +369,38 @@ def shadow_edge_limits_v(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km
     bearings = np.stack([(brg - 90.0) % 360.0, (brg + 90.0) % 360.0])
     xx, yy, dd, mm, ll, tf = (np.broadcast_to(v, (2, n)) for v in (x, y, d_deg, mu_deg, l, tan_f))
 
-    def residual(lat, lon):
+    def instant_residual(lat, lon):
         xi, eta, zeta = geo_to_fund(lat, lon, dd, mm)
         r = np.hypot(xi - xx, eta - yy) - np.abs(ll - zeta * tf)
         return np.where(zeta <= 0.0, 1.0, r) if sunlit_only else r
+
+    if rates is not None:
+        rxx, ryy, rdd, rmm, rll = (np.broadcast_to(v, (2, n)) for v in (rx, ry, rd, rmu, rl))
+
+    def separation2(lat, lon, tau):
+        # Squared axis separation and zeta at tau [h] from the track instant,
+        # elements linear in tau; [ES92] eq. 8.331 via geo_to_fund.
+        xi, eta, zeta = geo_to_fund(lat, lon, dd + rdd * tau, mm + rmm * tau)
+        u = (xx + rxx * tau) - xi
+        v = (yy + ryy * tau) - eta
+        return u * u + v * v, zeta
+
+    def envelope_residual(lat, lon):
+        h = ENVELOPE_H
+        tau = np.zeros(np.shape(lat))
+        for _ in range(ENVELOPE_ITERATIONS):
+            s_m = separation2(lat, lon, tau - h)[0]
+            s_0 = separation2(lat, lon, tau)[0]
+            s_p = separation2(lat, lon, tau + h)[0]
+            g = (s_p - s_m) / (2.0 * h)
+            c = (s_p - 2.0 * s_0 + s_m) / (h * h)
+            tau = np.where(c > 0.0,
+                           np.clip(tau - g / c, -ENVELOPE_MAX_TAU_H, ENVELOPE_MAX_TAU_H), tau)
+        s2, zeta = separation2(lat, lon, tau)
+        r = np.sqrt(s2) - np.abs((ll + rll * tau) - zeta * tf)
+        return np.where(zeta <= 0.0, 1.0, r) if sunlit_only else r
+
+    residual = instant_residual if rates is None else envelope_residual
 
     inside = residual(lat0, lon0) < 0.0  # central point inside this shadow (n,)
     s_lo = np.zeros((2, n))
@@ -330,7 +416,8 @@ def shadow_edge_limits_v(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km
     ok = found[0] & found[1]
     lat_e = np.where(ok, lat_e, np.nan)
     lon_e = np.where(ok, lon_e, np.nan)
-    width = np.where(ok, _haversine_km(lat_e[0], lon_e[0], lat_e[1], lon_e[1]), 0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):  # NaN points where not ok
+        width = np.where(ok, geodesic_km(lat_e[0], lon_e[0], lat_e[1], lon_e[1]), 0.0)
     first_is_north = lat_e[0] >= lat_e[1]
     n_lat = np.where(first_is_north, lat_e[0], lat_e[1])
     n_lon = np.where(first_is_north, lon_e[0], lon_e[1])
@@ -339,7 +426,8 @@ def shadow_edge_limits_v(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km
     return n_lat, n_lon, s_lat, s_lon, width
 
 
-def shadow_edge_limits(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km=600.0):
+def shadow_edge_limits(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km=600.0,
+                       rates=None):
     """Find the two shadow-edge points perpendicular to the track, and the width.
 
     ``l``/``tan_f`` are the fundamental-plane radius and cone tangent of the shadow
@@ -353,10 +441,12 @@ def shadow_edge_limits(x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km=6
     ``|l - zeta*tan f|`` reduced to the ground -- is the umbral-limit definition
     of [ES92] / [MeeusSE]; solving it by bisection here is a numerical method, not
     a cited closed form.  Geometric only (no refraction; mean lunar limb), item A3.
+    ``rates`` (per-hour ``dx, dy, dd, dmu, dl``) makes them the path limits, the
+    envelope over time (see :func:`shadow_edge_limits_v`).
     Scalar wrapper over :func:`shadow_edge_limits_v`.
     """
     n_lat, n_lon, s_lat, s_lon, width = shadow_edge_limits_v(
-        x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km
+        x, y, d_deg, mu_deg, l, tan_f, path_bearing_deg, max_km, rates=rates
     )
     if np.isnan(n_lat[0]):
         return None, None, 0.0
@@ -471,6 +561,29 @@ def central_track(
         brg = bearing(prev[2], prev[3], nxt[2], nxt[3]) if n > 1 else 0.0
         points.append(TrackPoint(i=i, t_hours=ti, lat=lat, lon=lon, bearing=brg))
     return elems, points
+
+
+# Half-step [h] of the central differences in :func:`element_rates`: one
+# minute, over which the elements are polynomial to far below the rates' use.
+RATE_DT_H = 1.0 / 60.0
+
+
+def element_rates(model: BesselianModel, t_hours) -> dict[str, np.ndarray]:
+    """Per-hour rates of ``x, y, d, mu, l1, l2`` at ``t_hours`` (hours from T0).
+
+    Central differences over +/- :data:`RATE_DT_H` of the direct element
+    evaluation (one vectorized call); ``d``/``mu`` in degrees per hour, the
+    lengths in Earth radii per hour.  The ``mu`` difference is wrapped to
+    (-180, 180] before dividing.  These are the ``rates`` of the path-limit
+    envelope in :func:`shadow_edge_limits_v`. (numerical)
+    """
+    t = np.atleast_1d(np.asarray(t_hours, dtype=float))
+    n = len(t)
+    e = model.evaluate_direct(np.concatenate([t - RATE_DT_H, t + RATE_DT_H]))
+    out = {k: (e[k][n:] - e[k][:n]) / (2.0 * RATE_DT_H) for k in ("x", "y", "d", "l1", "l2")}
+    dmu = (e["mu"][n:] - e["mu"][:n] + 180.0) % 360.0 - 180.0
+    out["mu"] = dmu / (2.0 * RATE_DT_H)
+    return out
 
 
 def dec_to_hms(t_hours: float, t0_hours: float = 0.0) -> tuple[int, int, float]:

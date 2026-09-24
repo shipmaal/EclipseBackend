@@ -5,7 +5,11 @@
 // NumPy broadcasting of the Python signatures is the glue's job on the Python
 // side, not the core's. The array forms release the GIL around the compute.
 #include <cstddef>
+#include <optional>
+#include <span>
 #include <vector>
+
+#include <nanobind/stl/optional.h>
 
 #include "common.hpp"
 #include "eclipse/ellipsoid.hpp"
@@ -38,17 +42,19 @@ void bind_ellipsoid(nb::module_& m) {
         "NaN where the axis misses the Earth. x, y in Earth equatorial radii; d, mu in degrees.");
     m.def(
         "geo_to_fund",
-        [](In1D lat_deg, In1D lon_deg, In1D d_deg, In1D mu_deg) {
+        [](In1D lat_deg, In1D lon_deg, In1D d_deg, In1D mu_deg, std::optional<In1D> height_m) {
             ell::Fundamental f;
             {
                 nb::gil_scoped_release nogil;
                 f = ell::geo_to_fund(as_span(lat_deg), as_span(lon_deg), as_span(d_deg),
-                                     as_span(mu_deg));
+                                     as_span(mu_deg),
+                                     height_m ? as_span(*height_m) : std::span<const double>{});
             }
             return nb::make_tuple(to_numpy(std::move(f.xi)), to_numpy(std::move(f.eta)),
                                   to_numpy(std::move(f.zeta)));
         },
-        "lat_deg"_a, "lon_deg"_a, "d_deg"_a, "mu_deg"_a,
+        "lat_deg"_a, "lon_deg"_a, "d_deg"_a, "mu_deg"_a, "height_m"_a = nb::none(),
         "app.geography.geo_to_fund on equal-length 1-D arrays: (xi, eta, zeta) in Earth\n"
-        "equatorial radii. lat, lon, d, mu in degrees.");
+        "equatorial radii. lat, lon, d, mu in degrees; height_m [m] above the WGS-84\n"
+        "ellipsoid (None = sea level).");
 }

@@ -588,6 +588,15 @@ def test_fund_to_geo_and_inverse_parity(oracle, native_pool):
         assert diff <= _ELL_TOL, (name, diff)
     print(f"geo_to_fund: {inv_diff:.3g}")
 
+    # With the observer's height [m] (the Dead Sea shore to Everest, and the
+    # H = 0 skip mixed in): the same gate; measured 2.8e-16 Earth radii.
+    h2 = np.resize(np.array([-400.0, 0.0, 149.4, 693.8, 8848.0]), la.size)
+    ours = native_pool.geo_to_fund(la, lo, d2, mu2, h2)
+    ref = geography.geo_to_fund(la, lo, d2, mu2, h2)
+    h_diff = max(float(np.max(np.abs(a - b))) for a, b in zip(ours, ref, strict=True))
+    assert h_diff <= _ELL_TOL, h_diff
+    print(f"geo_to_fund with height: {h_diff:.3g}")
+
     # The (P, 1) x (N,) broadcast app.circumstances relies on, through the
     # dispatching app.geography.geo_to_fund itself.
     from app import native as native_mod
@@ -602,6 +611,14 @@ def test_fund_to_geo_and_inverse_parity(oracle, native_pool):
         scalar = geography.geo_to_fund(25.3, -104.1, 7.5862, 89.6)
     assert all(v.shape == (4, 61) for v in via_app)
     for a, b in zip(via_app, ref, strict=True):
+        assert np.max(np.abs(a - b)) <= _ELL_TOL
+    obs_h = np.array([[0.0], [5.4], [1500.0], [149.4]])
+    ref_h = geography.geo_to_fund(obs_lat, obs_lon, dN, muN, obs_h)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(native_mod, "BACKEND", "native")
+        via_app_h = geography.geo_to_fund(obs_lat, obs_lon, dN, muN, obs_h)
+    for a, b in zip(via_app_h, ref_h, strict=True):
+        assert a.shape == (4, 61)
         assert np.max(np.abs(a - b)) <= _ELL_TOL
     assert all(isinstance(v, float) for v in scalar)  # scalars in -> Python floats out
     for v, r in zip(scalar, geography.geo_to_fund(25.3, -104.1, 7.5862, 89.6), strict=True):
@@ -823,12 +840,41 @@ def _path_sites(model):
     return [(float(lat), float(lon))] + [(tp.lat, tp.lon) for tp in track]
 
 
-def _native_local_raw(native_pool, model, lat, lon):
+def _native_local_raw(native_pool, model, lat, lon, height_m=0.0):
     from app.circumstances import _LocalRaw
 
     raw = native_pool.local_circumstances(model.et0, model.earth_frame,
-                                          model.half_window_hours, float(lat), float(lon))
+                                          model.half_window_hours, float(lat), float(lon),
+                                          False, float(height_m))
     return _LocalRaw(*raw)
+
+
+def _compare_local_raw(ours, ref, site, worst):
+    """Field-by-field parity of two ``_LocalRaw`` at the ``_LOCAL_*`` gates;
+    ``worst`` accumulates the largest residual per group."""
+    for name in ("geometric", "central", "eclipse", "below"):
+        assert getattr(ours, name) == getattr(ref, name), (site, name)
+    for name in ("c1", "c4", "c2", "c3", "t_max"):
+        a, b = getattr(ours, name), getattr(ref, name)
+        assert np.isnan(a) == np.isnan(b), (site, name)
+        if not np.isnan(b):
+            key = "t_max" if name == "t_max" else "contact"
+            worst[key] = max(worst[key], abs(a - b))
+            assert abs(a - b) <= _LOCAL_TIME_TOL_H, (site, name, a, b)
+    for name in ("magnitude", "obscuration", "L2_x"):
+        a, b = getattr(ours, name), getattr(ref, name)
+        assert np.isnan(a) == np.isnan(b), (site, name)
+        if not np.isnan(b):
+            worst["mag"] = max(worst["mag"], abs(a - b))
+            assert abs(a - b) <= _LOCAL_MAG_TOL, (site, name, a, b)
+    for name, key in (("alt_deg", "alt"), ("az_deg", "az")):
+        a, b = np.array(getattr(ours, name)), np.array(getattr(ref, name))
+        assert np.array_equal(np.isnan(a), np.isnan(b)), (site, name)
+        ok = ~np.isnan(b)
+        if ok.any():
+            diff = float(np.max(np.abs(a[ok] - b[ok])))
+            worst[key] = max(worst[key], diff)
+            assert diff <= _LOCAL_ALT_TOL_DEG, (site, name, diff)
 
 
 @requires_kernels
@@ -865,30 +911,7 @@ def test_local_circumstances_parity(oracle, native_pool):
         for m, (lat, lon) in cases:
             ref = _local_raw(m, lat, lon)
             ours = _native_local_raw(native_pool, m, lat, lon)
-            site = (epoch, m.half_window_hours, lat, lon)
-            for name in ("geometric", "central", "eclipse", "below"):
-                assert getattr(ours, name) == getattr(ref, name), (site, name)
-            for name in ("c1", "c4", "c2", "c3", "t_max"):
-                a, b = getattr(ours, name), getattr(ref, name)
-                assert np.isnan(a) == np.isnan(b), (site, name)
-                if not np.isnan(b):
-                    key = "t_max" if name == "t_max" else "contact"
-                    worst[key] = max(worst[key], abs(a - b))
-                    assert abs(a - b) <= _LOCAL_TIME_TOL_H, (site, name, a, b)
-            for name in ("magnitude", "obscuration", "L2_x"):
-                a, b = getattr(ours, name), getattr(ref, name)
-                assert np.isnan(a) == np.isnan(b), (site, name)
-                if not np.isnan(b):
-                    worst["mag"] = max(worst["mag"], abs(a - b))
-                    assert abs(a - b) <= _LOCAL_MAG_TOL, (site, name, a, b)
-            for name, key in (("alt_deg", "alt"), ("az_deg", "az")):
-                a, b = np.array(getattr(ours, name)), np.array(getattr(ref, name))
-                assert np.array_equal(np.isnan(a), np.isnan(b)), (site, name)
-                ok = ~np.isnan(b)
-                if ok.any():
-                    diff = float(np.max(np.abs(a[ok] - b[ok])))
-                    worst[key] = max(worst[key], diff)
-                    assert diff <= _LOCAL_ALT_TOL_DEG, (site, name, diff)
+            _compare_local_raw(ours, ref, (epoch, m.half_window_hours, lat, lon), worst)
             n_sites += 1
             n_central += ref.central
             n_hidden += ref.geometric and not ref.eclipse
@@ -896,6 +919,41 @@ def test_local_circumstances_parity(oracle, native_pool):
     assert n_sites >= 26 and n_central >= 8 and n_hidden >= 2 and n_none >= 2
     print(f"\nlocal_circumstances ({n_sites} sites): contacts {worst['contact']:.3g} h, "
           f"t_max {worst['t_max']:.3g} h, magnitude/obscuration/L2_x {worst['mag']:.3g}, "
+          f"alt {worst['alt']:.3g} deg, az {worst['az']:.3g} deg")
+
+
+@requires_kernels
+def test_local_circumstances_height_parity(oracle, native_pool):
+    """_local_raw for observers above the ellipsoid (the observer-height term
+    of geo_to_fund in every series), native vs Python at the same gates as at
+    sea level, at the four path sites of each modern reference eclipse and
+    heights 693.8 m, 3 km and -400 m, plus the (P, 1) dispatch through
+    app.circumstances.local_raw.  Measured on x86-64 (DE440s): contacts 0.0 h
+    (bit-identical), t_max 5e-16 h, magnitude 3.5e-17, altitude 2.1e-14 deg,
+    azimuth 1.1e-13 deg -- the 1-ulp noise of the sea-level case."""
+    from app import circumstances as circ
+    from app import native as native_mod
+
+    oracle.load_kernels()
+    worst = {"contact": 0.0, "t_max": 0.0, "mag": 0.0, "alt": 0.0, "az": 0.0}
+    n_central = 0
+    for epoch in _CIRC_EPOCHS:
+        model = _circumstances_model(epoch)
+        if not _ephemeris_covers(oracle, model.et0):
+            continue
+        for lat, lon in _path_sites(model):
+            for h in (693.8, 3000.0, -400.0):
+                ref = circ._local_raw(model, lat, lon, "mean", h)
+                ours = _native_local_raw(native_pool, model, lat, lon, h)
+                _compare_local_raw(ours, ref, (epoch, lat, lon, h), worst)
+                n_central += ref.central
+                with pytest.MonkeyPatch.context() as mp:
+                    mp.setattr(native_mod, "BACKEND", "native")
+                    via_app = circ.local_raw(model, lat, lon, "mean", h)
+                _compare_local_raw(via_app, ours, (epoch, lat, lon, h, "dispatch"), worst)
+    assert n_central >= 8
+    print(f"\nlocal_circumstances with height: contacts {worst['contact']:.3g} h, "
+          f"t_max {worst['t_max']:.3g} h, magnitude {worst['mag']:.3g}, "
           f"alt {worst['alt']:.3g} deg, az {worst['az']:.3g} deg")
 
 
@@ -1564,11 +1622,13 @@ def test_limb_contact_functions_parity(native_pool):
         assert np.array_equal(ours, getattr(limb, name)(px, py, r_s, r_m, prof)), name
 
 
-_PROFILE_SITES = [  # (T0, lat, lon): mid-path, ~1 km from a limit, annular, a miss
-    ("2024-04-08T19:08:00", 39.77, -86.15),
-    ("2024-04-08T19:03:38", 39.12, -88.55),
-    ("2023-10-14T17:59:27", 11.4, -83.1),
-    ("2024-04-08T19:03:38", 39.00, -88.55),
+_PROFILE_SITES = [  # (T0, lat, lon, height [m]): mid-path, ~1 km from a limit, annular,
+    ("2024-04-08T19:08:00", 39.77, -86.15, 0.0),  # a miss, and two above the ellipsoid
+    ("2024-04-08T19:03:38", 39.12, -88.55, 0.0),
+    ("2023-10-14T17:59:27", 11.4, -83.1, 0.0),
+    ("2024-04-08T19:03:38", 39.00, -88.55, 0.0),
+    ("2024-04-08T19:03:38", 39.12, -88.55, 149.4),
+    ("2017-08-21T17:25:50", 43.953028, -117.219389, 693.8),
 ]
 
 
@@ -1591,7 +1651,7 @@ def test_profile_local_circumstances_parity(monkeypatch, oracle, native_pool):
         pytest.skip("limb band / MOON_ME not installed (python -m kernels.bootstrap --limb)")
     limb.ensure_native_band()
     times = ("c1", "c4", "c2", "c3", "t_max")
-    for t0, lat, lon in _PROFILE_SITES:
+    for t0, lat, lon, h in _PROFILE_SITES:
         if not _ephemeris_covers(oracle, oracle.utc_to_et(t0)):
             continue
         model = BesselianModel(t0_utc=t0)
@@ -1599,14 +1659,14 @@ def test_profile_local_circumstances_parity(monkeypatch, oracle, native_pool):
         assert np.array_equal(native_pool.limb_profiles_at(et, "ITRS", "MOON_ME"),
                               limb.profiles_at(et, "ITRS"))
         t = np.array([-0.01, 0.0, 0.003])
-        g_n = native_pool.profile_g(model.et0, "ITRS", model.half_window_hours, lat, lon, t)
-        g_p = circ._profile_g(model, lat, lon, t)
+        g_n = native_pool.profile_g(model.et0, "ITRS", model.half_window_hours, lat, lon, t, h)
+        g_p = circ._profile_g(model, lat, lon, t, h)
         assert np.allclose(g_n, g_p, rtol=0, atol=_XY_TOL), (t0, lat, g_n - g_p)
-        ref = circ._local_raw(model, lat, lon, "profile")
+        ref = circ._local_raw(model, lat, lon, "profile", h)
         monkeypatch.setattr(native_mod, "BACKEND", "native")
-        ours = circ.local_raw(model, lat, lon, "profile")
+        ours = circ.local_raw(model, lat, lon, "profile", h)
         monkeypatch.setattr(native_mod, "BACKEND", "python")
-        site = (t0, lat, lon)
+        site = (t0, lat, lon, h)
         assert (ours.geometric, ours.central, ours.below, ours.eclipse) == (
             ref.geometric, ref.central, ref.below, ref.eclipse), site
         for name in times:

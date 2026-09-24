@@ -632,6 +632,35 @@ void check_local_fixture(const std::string& name) {
         ++checked;
     }
     CHECK(checked == 10);
+    // ``localh`` records: the same with the observer's height [m] after lon.
+    int checked_h = 0;
+    for (const auto& r : recs) {
+        if (r.kind != "localh") continue;
+        INFO(name << " lat=" << r.tokens.at(4) << " lon=" << r.tokens.at(5) << " h=" << r.tokens.at(6));
+        REQUIRE(r.tokens.size() == 33);
+        const eclipse::Frame frame = eclipse::frame_from_string(r.tokens.at(1));
+        const circ::LocalRaw a =
+            circ::local_circumstances(r.num(2), frame, r.num(3), r.num(4), r.num(5), false, r.num(6));
+        CHECK(a.geometric == (r.num(7) != 0.0));
+        CHECK(a.central == (r.num(8) != 0.0));
+        const double* times[] = {&a.c1, &a.c4, &a.c2, &a.c3, &a.t_max};
+        for (std::size_t k = 0; k < 5; ++k) {
+            INFO("time field " << k);
+            check_nan_or_within(*times[k], r.num(9 + k), kHourTol);
+        }
+        check_nan_or_within(a.magnitude, r.num(14), kMagTol);
+        check_nan_or_within(a.obscuration, r.num(15), kMagTol);
+        check_nan_or_within(a.L2_x, r.num(16), kMagTol);
+        for (std::size_t k = 0; k < 5; ++k) {
+            INFO("event " << k);
+            check_nan_or_within(a.alt_deg[k], r.num(17 + k), kDegTol);
+            check_nan_or_within(a.az_deg[k], r.num(22 + k), kDegTol);
+            CHECK(a.below[k] == (r.num(27 + k) != 0.0));
+        }
+        CHECK(a.eclipse == (r.num(32) != 0.0));
+        ++checked_h;
+    }
+    CHECK(checked_h == 2);
 }
 
 // ``grid`` records: label frame et0 hw step lat lon magnitude obscuration

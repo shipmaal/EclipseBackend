@@ -166,16 +166,48 @@ def fund_to_geo_v(x, y, d_deg, mu_deg) -> tuple[np.ndarray, np.ndarray]:
     return lon, np.degrees(phi)
 
 
-def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float):
-    """Forward transform: geographic (lat, lon) -> fundamental-plane (xi, eta, zeta).
+def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float,
+                height_m: float = 0.0):
+    """Forward transform: geographic (lat, lon, height) -> fundamental-plane (xi, eta, zeta).
 
     Inverse of :func:`fund_to_geo` for a point on the WGS-84 ellipsoid.  ``xi, eta``
-    are the point's fundamental-plane coordinates (Earth radii) and ``zeta`` its
-    distance along the shadow axis; used for shadow-edge / limit computations.
+    are the point's fundamental-plane coordinates (Earth equatorial radii) and
+    ``zeta`` its distance along the shadow axis; used for shadow-edge / limit
+    computations and local circumstances.
 
-    Uses the inverse ellipsoid reduction [ES92] eq. 8.331 (via
-    :func:`_reduction_aux`), with the geodetic->parametric latitude
-    ``tan(beta) = (1 - f) tan(phi)`` [Meeus98] ch. 11, eq. 11.1.
+    On the ellipsoid (``height_m = 0``) this is the inverse ellipsoid reduction
+    [ES92] eq. 8.331 (via :func:`_reduction_aux`), with the geodetic->parametric
+    latitude ``tan(beta) = (1 - f) tan(phi)`` [Meeus98] ch. 11, eq. 11.1 --
+    an exact rotation of the ellipsoid point ``(cos beta cos lon, cos beta
+    sin lon, (b/a) sin beta)`` into the fundamental-plane axes.
+
+    A point at height ``H`` [m] above the ellipsoid (along the geodetic normal)
+    has the geocentric coordinates of [Meeus98] ch. 11 ("Geocentric rectangular
+    coordinates of an observer"; Meeus writes H / 6378140 m, here H / a WGS-84)
+
+        rho sin phi' = (b/a) sin beta + (H/a) sin phi
+        rho cos phi' =       cos beta + (H/a) cos phi,
+
+    i.e. the ellipsoid point plus ``H/a`` times the unit normal
+    ``(cos phi cos lon, cos phi sin lon, sin phi)``.  The rotation into the
+    fundamental plane is linear, so the height adds the rotated normal, with
+    the standard spherical form of [MeeusSE], [NASA-LC]
+    (``xi = rho cos phi' sin theta``, ``eta = rho sin phi' cos d - rho cos phi'
+    cos theta sin d``, ``zeta = rho sin phi' sin d + rho cos phi' cos theta
+    cos d``) applied to the normal alone:
+
+        xi   += (H/a) cos phi sin theta
+        eta  += (H/a) (sin phi cos d - cos phi cos theta sin d)
+        zeta += (H/a) (sin phi sin d + cos phi cos theta cos d).
+
+    This is the same projection NASA's local-circumstances calculator applies
+    to the whole ``rho sin phi'``, ``rho cos phi'`` [NASA-LC] (``readdata`` /
+    ``timelocdependent``); split into the ellipsoid and height parts here so
+    the sea-level part stays the [ES92] 8.331 reduction.  Exact, not a
+    first-order term (``tests/test_geography.py`` checks it against geodetic
+    -> ECEF -> rotated axes; the two forms agree to 4e-16).  When every height is zero the
+    term is skipped, so the sea-level result is bit-identical to the reduction
+    alone.
 
     Array-native: every argument may be a scalar or an array and the usual NumPy
     broadcasting applies (e.g. observers of shape ``(P, 1)`` against elements of
@@ -183,7 +215,7 @@ def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float):
     Dispatches to the native core under ``ECLIPSE_BACKEND=native``.
     """
     if native.is_native():
-        shape, flat = _native_args(lat_deg, lon_deg, d_deg, mu_deg)
+        shape, flat = _native_args(lat_deg, lon_deg, d_deg, mu_deg, height_m)
         xi, eta, zeta = native.module().geo_to_fund(*flat)
         if shape == ():
             return float(xi[0]), float(eta[0]), float(zeta[0])
@@ -191,7 +223,9 @@ def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float):
     lat_deg = np.asarray(lat_deg, dtype=float)
     lon_deg = np.asarray(lon_deg, dtype=float)
     mu_deg = np.asarray(mu_deg, dtype=float)
-    aux = _reduction_aux(np.radians(np.asarray(d_deg, dtype=float)))
+    height_m = np.asarray(height_m, dtype=float)
+    d = np.radians(np.asarray(d_deg, dtype=float))
+    aux = _reduction_aux(d)
 
     beta = np.arctan((1.0 - _F) * np.tan(np.radians(lat_deg)))  # parametric latitude
     theta = np.radians(lon_deg + mu_deg)  # hour angle east of the axis meridian
@@ -202,6 +236,16 @@ def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float):
     zeta1 = sb * aux.sin_d1 + cb * np.cos(theta) * aux.cos_d1
     eta = eta1 * aux.rho1
     zeta = aux.rho2 * (zeta1 * aux.cos_d1_d2 - eta1 * aux.sin_d1_d2)
+    if np.any(height_m != 0.0):
+        # Height along the geodetic normal [Meeus98] ch. 11, rotated
+        # into the fundamental plane [MeeusSE], [NASA-LC] (docstring).
+        h = height_m / (_A_KM * 1000.0)  # H/a
+        phi = np.radians(lat_deg)
+        cp, sp = np.cos(phi), np.sin(phi)
+        cos_d, sin_d = np.cos(d), np.sin(d)
+        xi = xi + h * (cp * np.sin(theta))
+        eta = eta + h * (sp * cos_d - cp * np.cos(theta) * sin_d)
+        zeta = zeta + h * (sp * sin_d + cp * np.cos(theta) * cos_d)
     if xi.ndim == 0 and eta.ndim == 0 and zeta.ndim == 0:
         return float(xi), float(eta), float(zeta)
     return xi, eta, zeta

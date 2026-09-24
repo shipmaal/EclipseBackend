@@ -8,6 +8,7 @@ central line in ``app/data.txt``.
 from __future__ import annotations
 
 import pytest
+from geodesy_oracle import direct_fundamental
 
 from app.geography import dec_to_hms, format_clock, format_offset, fund_to_geo, geo_to_fund
 from app.reference import central_line
@@ -83,6 +84,78 @@ def test_geo_to_fund_round_trip():
             assert lon2 == pytest.approx(lon, abs=1e-6), (lat, lon)
             checked += 1
     assert checked >= 3  # the round-trip was actually exercised
+
+
+def test_geo_to_fund_with_height_is_the_direct_3d_geometry():
+    """The observer-height term of ``geo_to_fund`` ([Meeus98] ch. 11,
+    rotated into the fundamental plane) against geodetic + H -> ECEF ->
+    fundamental-plane axes (``geodesy_oracle.direct_fundamental``), over 2000
+    random observers, axes and heights from -500 m to 9 km (and 1000 km, far
+    outside any observer, to show the term is exact rather than first order).
+    Achieved 1.1e-15 Earth radii (7 nm); gate 1e-14.  At H = 0 the same holds
+    and the result is bit-identical to the default argument."""
+    import numpy as np
+
+    rng = np.random.default_rng(20260923)
+    worst = 0.0
+    for _ in range(2000):
+        lat, lon = rng.uniform(-90.0, 90.0), rng.uniform(-180.0, 180.0)
+        d, mu = rng.uniform(-23.5, 23.5), rng.uniform(-180.0, 180.0)
+        for h in (0.0, rng.uniform(-500.0, 9000.0), 1.0e6):
+            ours = np.array(geo_to_fund(lat, lon, d, mu, h))
+            ref = np.array(direct_fundamental(lat, lon, d, mu, h))
+            worst = max(worst, float(np.max(np.abs(ours - ref))))
+        assert geo_to_fund(lat, lon, d, mu, 0.0) == geo_to_fund(lat, lon, d, mu)
+    assert worst <= 1e-14, worst
+
+
+def test_geo_to_fund_with_height_is_nasas_local_circumstances_form():
+    """``geo_to_fund`` against the form NASA's local-circumstances calculator
+    uses [NASA-LC] (SEcirc.js ``readdata``: Meeus's rho sin phi', rho cos phi'
+    with the observer's height [Meeus98] ch. 11; ``timelocdependent``:
+    xi = rho cos phi' sin h, eta = rho sin phi' cos d - rho cos phi' cos h sin d,
+    zeta = rho sin phi' sin d + rho cos phi' cos h cos d), with WGS-84 in place
+    of Meeus's IAU 1976 a and f.  Ours splits the same vector into the
+    ellipsoid point and the height normal; the two agree to 4.4e-16 (gate
+    1e-14) over 5000 random observers, axes and heights."""
+    import numpy as np
+
+    from app.constants import WGS84_A_KM, WGS84_F
+
+    rng = np.random.default_rng(7)
+    worst = 0.0
+    for _ in range(5000):
+        lat, lon = rng.uniform(-90.0, 90.0), rng.uniform(-180.0, 180.0)
+        d, mu, h = rng.uniform(-23.5, 23.5), rng.uniform(-180.0, 180.0), rng.uniform(-500, 9000)
+        phi = np.radians(lat)
+        u = np.arctan((1.0 - WGS84_F) * np.tan(phi))
+        k = h / (WGS84_A_KM * 1000.0)
+        rho_sin = (1.0 - WGS84_F) * np.sin(u) + k * np.sin(phi)
+        rho_cos = np.cos(u) + k * np.cos(phi)
+        ha, dd = np.radians(mu + lon), np.radians(d)
+        nasa = np.array([rho_cos * np.sin(ha),
+                         rho_sin * np.cos(dd) - rho_cos * np.cos(ha) * np.sin(dd),
+                         rho_sin * np.sin(dd) + rho_cos * np.cos(ha) * np.cos(dd)])
+        worst = max(worst, float(np.max(np.abs(np.array(geo_to_fund(lat, lon, d, mu, h)) - nasa))))
+    assert worst <= 1e-14, worst
+
+
+def test_geo_to_fund_height_broadcasts():
+    """``height_m`` broadcasts like the other arguments: observers (P, 1) with
+    their heights (P, 1) against instants (N,)."""
+    import numpy as np
+
+    lat = np.array([[39.12], [43.95]])
+    lon = np.array([[-88.55], [-117.22]])
+    h = np.array([[149.4], [693.8]])
+    d, mu = np.array([7.5, 7.6, 11.9]), np.array([80.0, 90.0, 100.0])
+    xi, eta, zeta = geo_to_fund(lat, lon, d, mu, h)
+    assert xi.shape == eta.shape == zeta.shape == (2, 3)
+    for i in range(2):
+        for j in range(3):
+            one = geo_to_fund(float(lat[i, 0]), float(lon[i, 0]), float(d[j]), float(mu[j]),
+                              float(h[i, 0]))
+            assert (xi[i, j], eta[i, j], zeta[i, j]) == pytest.approx(one, abs=1e-15)
 
 
 def test_format_offset_signed():

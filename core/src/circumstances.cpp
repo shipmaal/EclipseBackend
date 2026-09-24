@@ -78,21 +78,20 @@ std::vector<ellipsoid::ReductionAux> instant_aux(const Elements& e) {
 }
 
 /// ``_series`` for ONE observer over the N instants of ``e``: the body shared
-/// by both ``series`` overloads and the grid loop. ``cos_beta`` / ``sin_beta``
-/// are the observer's parametric-latitude factors (``parametric_latitude``,
-/// [Meeus98] ch. 11, eq. 11.1) and ``aux`` the per-instant reduction. Writes
-/// N values to each output.
+/// by both ``series`` overloads and the grid loop. ``o`` is the observer's
+/// ``ellipsoid::site`` (parametric latitude [Meeus98] ch. 11, eq. 11.1, and
+/// height) and ``aux`` the per-instant reduction. Writes N values to each
+/// output.
 ///   m    = hypot(xi - x, eta - y)          axis separation
 ///   L1'  = l1 - zeta tan_f1                penumbral radius at the observer [ES92] eq. 8.353
 ///   L2'  = l2 - zeta tan_f2                umbral / antumbral radius        [ES92] eq. 8.353
 ///   mag  = (L1' - m) / (L1' + L2')         magnitude [Espenak], [ES92] eq. 8.354
-void series_row(const Elements& e, std::span<const ellipsoid::ReductionAux> aux, double cos_beta,
-                double sin_beta, double lon_deg, double* m, double* L1p, double* L2p,
+void series_row(const Elements& e, std::span<const ellipsoid::ReductionAux> aux,
+                const ellipsoid::Site& o, double lon_deg, double* m, double* L1p, double* L2p,
                 double* mag) {
     const std::size_t n = e.size();
     for (std::size_t i = 0; i < n; ++i) {
-        const ellipsoid::Fund f =
-            ellipsoid::geo_to_fund_one(cos_beta, sin_beta, lon_deg, aux[i], e.mu[i]);
+        const ellipsoid::Fund f = ellipsoid::geo_to_fund_one(o, lon_deg, aux[i], e.mu[i]);
         m[i] = std::hypot(f.xi - e.x[i], f.eta - e.y[i]);
         L1p[i] = e.l1[i] - f.zeta * e.tan_f1[i];
         L2p[i] = e.l2[i] - f.zeta * e.tan_f2[i];
@@ -111,11 +110,11 @@ Series make_series(std::size_t n) {
 
 /// ``_series`` through a ``Model`` at offsets ``t`` [h]: ``elements_at`` (the
 /// ``evaluate_direct`` contract, ``mu`` already unwrapped) then the geometry.
-Series model_series(const Model& model, double lat_deg, double lon_deg, std::span<const double> t,
-                    const char* who) {
+Series model_series(const Model& model, double lat_deg, double lon_deg, double height_m,
+                    std::span<const double> t, const char* who) {
     const Elements e = model.elements_at(t);
     check_elements(e, t.size(), who);
-    return series(e, lat_deg, lon_deg);
+    return series(e, lat_deg, lon_deg, height_m);
 }
 
 /// The Python's ``_NO_ECLIPSE_RAW``: every field a placeholder.
@@ -178,13 +177,12 @@ Model model_from_ephem(double et0, Frame frame, double half_window_hours) {
 
 // ------------------------------------------------------------------- series
 
-Series series(const Elements& e, double lat_deg, double lon_deg) {
+Series series(const Elements& e, double lat_deg, double lon_deg, double height_m) {
     const std::size_t n = e.size();
     check_elements(e, n, "series");
     const std::vector<ellipsoid::ReductionAux> aux = instant_aux(e);
-    const double beta = ellipsoid::parametric_latitude(lat_deg);
     Series s = make_series(n);
-    series_row(e, aux, std::cos(beta), std::sin(beta), lon_deg, s.m.data(), s.L1p.data(),
+    series_row(e, aux, ellipsoid::site(lat_deg, height_m), lon_deg, s.m.data(), s.L1p.data(),
                s.L2p.data(), s.mag.data());
     return s;
 }
@@ -197,9 +195,8 @@ Series series(const Elements& e, std::span<const double> lat_deg, std::span<cons
     const std::vector<ellipsoid::ReductionAux> aux = instant_aux(e);
     Series s = make_series(P * n);
     for (std::size_t p = 0; p < P; ++p) {
-        const double beta = ellipsoid::parametric_latitude(lat_deg[p]);
         const std::size_t off = p * n;
-        series_row(e, aux, std::cos(beta), std::sin(beta), lon_deg[p], s.m.data() + off,
+        series_row(e, aux, ellipsoid::site(lat_deg[p]), lon_deg[p], s.m.data() + off,
                    s.L1p.data() + off, s.L2p.data() + off, s.mag.data() + off);
     }
     return s;
@@ -283,12 +280,12 @@ std::vector<Root> roots(std::span<const double> t, std::span<const double> f) {
 
 // --------------------------------------------------------------- bracketing
 
-Bracketed bracketed_series(const Model& model, double lat_deg, double lon_deg) {
+Bracketed bracketed_series(const Model& model, double lat_deg, double lon_deg, double height_m) {
     double hw = model.half_window_hours;
     for (;;) {
         std::vector<double> t = numerics::arange(-hw, hw + 1e-9, GRID_STEP_HOURS);
         if (t.empty()) throw std::invalid_argument("bracketed_series: empty sampling grid");
-        Series s = model_series(model, lat_deg, lon_deg, t, "bracketed_series");
+        Series s = model_series(model, lat_deg, lon_deg, height_m, t, "bracketed_series");
         // outside = m - L1' > 0 when the observer is outside the penumbra.
         const std::size_t last = t.size() - 1;
         const bool edges_clear = (s.m[0] - s.L1p[0]) > 0.0 && (s.m[last] - s.L1p[last]) > 0.0;
@@ -299,14 +296,14 @@ Bracketed bracketed_series(const Model& model, double lat_deg, double lon_deg) {
 
 std::vector<double> refine_contacts(const Model& model, double lat_deg, double lon_deg,
                                     std::span<const double> t_lo, std::span<const double> t_hi,
-                                    std::span<const std::uint8_t> central) {
+                                    std::span<const std::uint8_t> central, double height_m) {
     const std::size_t n = t_lo.size();
     if (t_hi.size() != n || central.size() != n)
         throw std::invalid_argument("refine_contacts: t_lo, t_hi, central differ in length");
     // np.where(central, m - |L2'|, m - L1'): the C2/C3 condition where central,
     // the C1/C4 one elsewhere; one series per objective call.
     const auto f = [&](std::span<const double> tt) -> std::vector<double> {
-        const Series s = model_series(model, lat_deg, lon_deg, tt, "refine_contacts");
+        const Series s = model_series(model, lat_deg, lon_deg, height_m, tt, "refine_contacts");
         std::vector<double> out(tt.size());
         for (std::size_t k = 0; k < tt.size(); ++k)
             out[k] = central[k] != 0 ? s.m[k] - std::abs(s.L2p[k]) : s.m[k] - s.L1p[k];
@@ -332,7 +329,7 @@ double refine_maximum(std::span<const double> t, std::span<const double> mag, st
 // -------------------------------------------------------- local circumstances
 
 std::vector<double> profile_g(const Model& model, double lat_deg, double lon_deg,
-                              std::span<const double> t_hours) {
+                              std::span<const double> t_hours, double height_m) {
     if (!model.elements_ref_at || !model.profiles_at)
         throw std::invalid_argument("profile_g: the model has no limb-profile hooks");
     const std::size_t n = t_hours.size();
@@ -341,14 +338,13 @@ std::vector<double> profile_g(const Model& model, double lat_deg, double lon_deg
     const std::vector<double> prof = model.profiles_at(t_hours);
     const auto nb = static_cast<std::size_t>(limb::N_BINS);
     if (prof.size() != n * nb) throw std::invalid_argument("profile_g: profiles_at returned a wrong size");
-    const double beta = ellipsoid::parametric_latitude(lat_deg);
-    const double cb = std::cos(beta), sb = std::sin(beta);
+    const ellipsoid::Site o = ellipsoid::site(lat_deg, height_m);
     const std::vector<ellipsoid::ReductionAux> aux = instant_aux(e);
     // Per instant: the Python's masked g_total / g_annular calls, one at a time
     // (each instant is independent, so the grouping does not change a bit).
     std::vector<double> out(n);
     for (std::size_t i = 0; i < n; ++i) {
-        const ellipsoid::Fund f = ellipsoid::geo_to_fund_one(cb, sb, lon_deg, aux[i], e.mu[i]);
+        const ellipsoid::Fund f = ellipsoid::geo_to_fund_one(o, lon_deg, aux[i], e.mu[i]);
         const double px = f.xi - e.x[i];
         const double py = f.eta - e.y[i];
         const double L1p = e.l1[i] - f.zeta * e.tan_f1[i];
@@ -364,12 +360,12 @@ std::vector<double> profile_g(const Model& model, double lat_deg, double lon_deg
 }
 
 ProfileContacts profile_contacts(const Model& model, double lat_deg, double lon_deg, double t_lo,
-                                 double t_hi) {
+                                 double t_hi, double height_m) {
     const double nan = std::numeric_limits<double>::quiet_NaN();
     std::vector<double> t, g;
     for (int k = 0; k <= PROFILE_MAX_WIDEN; ++k) {
         t = numerics::arange(t_lo, t_hi + 1e-12, PROFILE_STEP_H);
-        g = profile_g(model, lat_deg, lon_deg, t);
+        g = profile_g(model, lat_deg, lon_deg, t, height_m);
         if (!(g.front() < 0.0 || g.back() < 0.0)) break;
         if (g.front() < 0.0) t_lo = t_lo - PROFILE_MARGIN_H;
         if (g.back() < 0.0) t_hi = t_hi + PROFILE_MARGIN_H;
@@ -387,12 +383,14 @@ ProfileContacts profile_contacts(const Model& model, double lat_deg, double lon_
     if (!have2 || !have3) return {false, nan, nan};
     const double lo[2] = {t[i2], t[i3]}, hi[2] = {t[i2 + 1], t[i3 + 1]};
     const std::vector<double> c = numerics::bisect(
-        [&](std::span<const double> tt) { return profile_g(model, lat_deg, lon_deg, tt); }, lo, hi);
+        [&](std::span<const double> tt) { return profile_g(model, lat_deg, lon_deg, tt, height_m); },
+        lo, hi);
     return {true, c[0], c[1]};
 }
 
-LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg, bool profile) {
-    const Bracketed b = bracketed_series(model, lat_deg, lon_deg);
+LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg, bool profile,
+                             double height_m) {
+    const Bracketed b = bracketed_series(model, lat_deg, lon_deg, height_m);
     const std::vector<double>& t = b.t;
     const Series& s = b.s;
     const std::size_t n = t.size();
@@ -441,7 +439,8 @@ LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg,
             central_phase = false;
         }
     }
-    const std::vector<double> times = refine_contacts(model, lat_deg, lon_deg, t_lo, t_hi, is_central);
+    const std::vector<double> times =
+        refine_contacts(model, lat_deg, lon_deg, t_lo, t_hi, is_central, height_m);
     const double c1 = times[0], c4 = times[1];
     const double tmax = refine_maximum(t, s.mag, imax);
     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -462,7 +461,7 @@ LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg,
             hi = t[imax] + PROFILE_GRAZE_H;
         }
         if (search) {
-            const ProfileContacts pc = profile_contacts(model, lat_deg, lon_deg, lo, hi);
+            const ProfileContacts pc = profile_contacts(model, lat_deg, lon_deg, lo, hi, height_m);
             central_phase = pc.central;
             c2 = pc.c2;
             c3 = pc.c3;
@@ -473,7 +472,7 @@ LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg,
 
     // Quantities at the refined maximum: a fresh 1-instant series.
     const double t1[1] = {tmax};
-    const Series sx = model_series(model, lat_deg, lon_deg, t1, "local_circumstances");
+    const Series sx = model_series(model, lat_deg, lon_deg, height_m, t1, "local_circumstances");
     const double m_x = sx.m[0], L1_x = sx.L1p[0], L2_x = sx.L2p[0];
     // Eclipse magnitude [Espenak]: the Moon/Sun apparent diameter ratio when
     // central, the covered fraction of the Sun's diameter when partial.
@@ -519,9 +518,9 @@ LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg,
 }
 
 LocalRaw local_circumstances(double et0, Frame frame, double half_window_hours, double lat_deg,
-                             double lon_deg, bool profile) {
+                             double lon_deg, bool profile, double height_m) {
     return local_circumstances(model_from_ephem(et0, frame, half_window_hours), lat_deg, lon_deg,
-                               profile);
+                               profile, height_m);
 }
 
 // --------------------------------------------------------------------- grid
@@ -570,8 +569,7 @@ GridResult circumstances_grid(const Model& model, std::span<const double> lat_de
 #pragma omp for schedule(static)
 #endif
         for (std::size_t p = 0; p < P; ++p) {
-            const double beta = ellipsoid::parametric_latitude(lat_deg[p]);
-            series_row(e, aux, std::cos(beta), std::sin(beta), lon_deg[p], m.data(), L1p.data(),
+            series_row(e, aux, ellipsoid::site(lat_deg[p]), lon_deg[p], m.data(), L1p.data(),
                        L2p.data(), mag.data());
             const std::size_t imax = numerics::argmax_first(mag);
             const double mag_x = mag[imax], m_x = m[imax], L1_x = L1p[imax], L2_x = L2p[imax];

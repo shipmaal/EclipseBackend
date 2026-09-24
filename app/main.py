@@ -240,6 +240,10 @@ def circumstances(
     window_hours: float = Query(2.5, ge=1.0, le=6.0, description="Half-window sampled around T0"),
     frame: str = Query(DEFAULT_EARTH_FRAME),
     limb: str = Query("mean", description="Lunar limb: 'mean' (k2) or 'profile' (LRO LOLA)"),
+    elev: float = Query(
+        0.0, ge=-500.0, le=9000.0,
+        description="Observer height above the WGS-84 ellipsoid (m)",
+    ),
 ) -> dict:
     """Local eclipse circumstances at an observer: contacts, duration, magnitude.
 
@@ -250,12 +254,17 @@ def circumstances(
     should be near the observer's maximum (e.g. the greatest-eclipse time).
     ``limb=profile`` takes C2/C3 from the lunar limb profile
     (docs/LIMB_PROFILE.md); it needs ``kernels.bootstrap --limb`` (503 without).
+    ``elev`` is the observer's height above the WGS-84 ellipsoid in metres
+    (default 0, sea level; echoed as ``elev_m``). It moves every contact; the
+    horizon test stays the sea-level one (no dip of the horizon). Note that a
+    GPS or map height is usually above the geoid (mean sea level), which
+    differs from the ellipsoid by up to ~100 m.
     """
     if limb not in LIMB_MODES:
         raise HTTPException(status_code=400, detail=f"limb must be one of {LIMB_MODES}")
     model = _build_model(epoch, window_hours, frame)
     try:
-        return local_circumstances(model, lat, lon, limb)
+        return local_circumstances(model, lat, lon, limb, elev)
     except FileNotFoundError as exc:  # the limb band is not installed
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except spiceypy.utils.exceptions.SpiceyError as exc:

@@ -92,7 +92,7 @@ It ships a bundled `sample.json` so it renders even without a running backend
 | `GET /health` | Liveness check. |
 | `GET /besselian?epoch=…` | Besselian element polynomials for the eclipse. |
 | `GET /central-line?epoch=…&start_hours=…&end_hours=…&step_minutes=…` | Geographic shadow-axis track. |
-| `GET /circumstances?epoch=…&lat=…&lon=…` | Local circumstances for an observer. |
+| `GET /circumstances?epoch=…&lat=…&lon=…[&elev=…][&limb=…]` | Local circumstances for an observer. |
 | `GET /map?epoch=…&lat_step=…&lon_step=…` | Global maximum-eclipse grid: magnitude, obscuration, visibility. |
 | `GET /eclipses?start=…&end=…` | Catalog of every solar eclipse in a range: type, gamma, magnitude, greatest-eclipse point, duration, width, global contacts. |
 
@@ -106,6 +106,11 @@ C1–C4 contact times, maximum-eclipse time, `magnitude`, `obscuration`,
 `central_duration_s` (when total/annular), the Sun's altitude at each contact and
 `below_horizon` (the events the observer cannot see; `eclipse` is `false` when
 that is all of them) — click anywhere on the globe in the frontend to see it.
+`elev` is the observer's height above the WGS-84 ellipsoid in metres (default 0;
+echoed as `elev_m`; a map or GPS height above sea level needs the geoid
+undulation added, about −30 m in the US Midwest); near a path limit a few
+hundred metres move C2/C3 by seconds. `limb=profile` takes C2/C3 from the
+lunar limb profile (`docs/LIMB_PROFILE.md`).
 `/map` evaluates the same geometry for a whole lat/lon grid at once (vectorized:
 measured 0.6 s for a 2° global grid, 1.4 s at 1°, 5 s at 0.5°, with 2-minute time
 sampling).

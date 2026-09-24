@@ -479,27 +479,35 @@ def test_best_frame_reraises_ephemeris_coverage_gaps():
 # on the contact times" (book page).  C2/C3 printed in local daylight time
 # (IL CDT = UT-5, IN EDT = UT-4, Evansville CDT), here in UT; coordinates as
 # printed (0.01 deg).  The book is all rights reserved: a cited subset only.
-#   name, lat, lon [deg], C2, C3 [UT], T0 (near the site's maximum) [UT]
+#
+# Heights (not in the Bulletin, which has no elevation column): the ground
+# height H is SRTM90 [SRTM] at the printed coordinates (opentopodata.org
+# ``srtm90m``; orthometric, above the EGM96 geoid); N is the EGM96 geoid
+# undulation there [EGM96] (GeographicLib's ``egm96-5`` grid, bilinear;
+# docs/LIMB_VALIDATION_SOURCES.md).  The observer's height above the WGS-84
+# ellipsoid is h = H + N [EGM96].
+#   name, lat, lon [deg], C2, C3 [UT], T0 (near the site's maximum) [UT], H, N [m]
 _EB2024_MID = [
-    ("Carbondale", 37.73, -89.22, "18:59:16.6", "19:03:25.8", "19:01:21"),
-    ("Herrin", 37.80, -89.03, "18:59:38.0", "19:03:47.0", "19:01:43"),
-    ("Mount Vernon", 38.32, -88.92, "19:00:34.8", "19:04:15.3", "19:02:26"),
-    ("Evansville", 37.97, -87.58, "19:02:35.0", "19:05:38.0", "19:04:07"),
-    ("Vincennes", 38.68, -87.53, "19:02:51.9", "19:06:57.6", "19:04:55"),
-    ("Terre Haute", 39.47, -87.42, "19:04:22.9", "19:07:19.3", "19:05:51"),
-    ("Jasper", 38.40, -86.93, "19:03:55.5", "19:07:09.8", "19:05:33"),
-    ("Bedford", 38.87, -86.48, "19:04:46.6", "19:08:30.9", "19:06:41"),
-    ("Bloomington", 39.17, -86.53, "19:04:50.8", "19:08:53.8", "19:06:53"),
-    ("Indianapolis", 39.77, -86.15, "19:06:05.2", "19:09:52.1", "19:08:00"),
-    ("Columbus", 39.22, -85.92, "19:05:55.2", "19:09:42.3", "19:07:50"),
-    ("Anderson", 40.17, -85.68, "19:07:14.4", "19:10:45.3", "19:09:02"),
-    ("Muncie", 40.20, -85.38, "19:07:37.1", "19:11:19.6", "19:09:29"),
-    ("Richmond", 39.83, -84.90, "19:07:55.4", "19:11:45.9", "19:09:52"),
+    ("Carbondale", 37.73, -89.22, "18:59:16.6", "19:03:25.8", "19:01:21", 130, -29.8),
+    ("Herrin", 37.80, -89.03, "18:59:38.0", "19:03:47.0", "19:01:43", 129, -29.9),
+    ("Mount Vernon", 38.32, -88.92, "19:00:34.8", "19:04:15.3", "19:02:26", 155, -30.8),
+    ("Evansville", 37.97, -87.58, "19:02:35.0", "19:05:38.0", "19:04:07", 108, -31.6),
+    ("Vincennes", 38.68, -87.53, "19:02:51.9", "19:06:57.6", "19:04:55", 130, -32.4),
+    ("Terre Haute", 39.47, -87.42, "19:04:22.9", "19:07:19.3", "19:05:51", 142, -33.3),
+    ("Jasper", 38.40, -86.93, "19:03:55.5", "19:07:09.8", "19:05:33", 156, -33.4),
+    ("Bedford", 38.87, -86.48, "19:04:46.6", "19:08:30.9", "19:06:41", 217, -33.9),
+    ("Bloomington", 39.17, -86.53, "19:04:50.8", "19:08:53.8", "19:06:53", 240, -33.7),
+    ("Indianapolis", 39.77, -86.15, "19:06:05.2", "19:09:52.1", "19:08:00", 219, -34.3),
+    ("Columbus", 39.22, -85.92, "19:05:55.2", "19:09:42.3", "19:07:50", 197, -34.7),
+    ("Anderson", 40.17, -85.68, "19:07:14.4", "19:10:45.3", "19:09:02", 271, -35.0),
+    ("Muncie", 40.20, -85.38, "19:07:37.1", "19:11:19.6", "19:09:29", 289, -34.8),
+    ("Richmond", 39.83, -84.90, "19:07:55.4", "19:11:45.9", "19:09:52", 281, -34.5),
 ]
-# Within ~3 km of the limit (NASA SVS limb-corrected path): 1.1 and 2.9 km.
+# Within ~3 km of the northern limit (NASA SVS limb-corrected path; the
+# Bulletin's FDCL column, 0.981 and 0.968): 1.1 and 2.9 km.
 _EB2024_NEAR = [
-    ("Effingham", 39.12, -88.55, "19:03:25.2", "19:03:50.9", "19:03:49"),
-    ("Crawfordsville", 40.03, -86.90, "19:06:38.6", "19:07:18.1", "19:07:08"),
+    ("Effingham", 39.12, -88.55, "19:03:25.2", "19:03:50.9", "19:03:49", 182, -32.6),
+    ("Crawfordsville", 40.03, -86.90, "19:06:38.6", "19:07:18.1", "19:07:08", 246, -34.1),
 ]
 
 
@@ -519,31 +527,35 @@ def _limb_ready() -> bool:
     return True
 
 
-def _eb_residuals(site, limb_mode):
-    """(ours - [EB2024]) for C2 and C3 [s] at a sea-level observer."""
+def _clock_s(hms: str) -> float:
+    """``HH:MM:SS(.s)`` -> seconds of the day."""
+    return sum(float(v) * k for v, k in zip(hms.split(":"), (3600, 60, 1), strict=True))
+
+
+def _eb_residuals(site, limb_mode, with_height=True):
+    """(ours - [EB2024]) for C2 and C3 [s], for the observer at its height
+    above the ellipsoid (H + N) or, with ``with_height=False``, at sea level."""
     from app.besselian import BesselianModel
     from app.circumstances import local_raw
 
-    _name, lat, lon, c2, c3, t0 = site
+    _name, lat, lon, c2, c3, t0, h_geoid, n_geoid = site
     model = BesselianModel(t0_utc=f"2024-04-08T{t0}")
-    raw = local_raw(model, lat, lon, limb_mode)
+    height = h_geoid + n_geoid if with_height else 0.0
+    raw = local_raw(model, lat, lon, limb_mode, height)
     assert raw.central, site
-    base = sum(float(v) * k for v, k in zip(t0.split(":"), (3600, 60, 1), strict=True))
-    out = []
-    for c, ref in ((raw.c2, c2), (raw.c3, c3)):
-        ref_s = sum(float(v) * k for v, k in zip(ref.split(":"), (3600, 60, 1), strict=True))
-        out.append(base + c * 3600.0 - ref_s)
-    return out
+    base = _clock_s(t0)
+    return [base + c * 3600.0 - _clock_s(ref) for c, ref in ((raw.c2, c2), (raw.c3, c3))]
 
 
 def test_limb_profile_contacts_match_eclipse_bulletin_2024():
     """Limb-profile C2/C3 against [EB2024] at 14 mid-path sites (22-93 km from
-    a limit).  Achieved (sea-level observers; the sites are 130-270 m up and
-    elevation is not modelled yet): median 0.37 s, max 1.15 s over the 28
-    contacts, against median 0.82 s / max 3.14 s for the mean limb (k2) --
-    the profile is what brings us to the Bulletin.  Over all 36 mid-path
-    Bulletin sites: median 0.35 s, p90 0.68 s (docs/LIMB_PROFILE.md sec. 9.7).
-    The 0.3 s gate of docs sec. 5.4 waits on observer elevation."""
+    a limit), each observer at its height above the ellipsoid (H + N above).
+    Achieved: median 0.39 s, max 1.10 s over the 28 contacts (at sea level
+    0.37 / 1.15 s), against median 0.96 s / max 3.28 s for the mean limb (k2)
+    -- the profile is what brings us to the Bulletin.  Over all 36 mid-path
+    Bulletin sites elevation takes the profile from median 0.35 / p90 0.68 /
+    max 1.15 s to 0.30 / 0.61 / 1.10 s (docs/LIMB_PROFILE.md sec. 9.10); the
+    remaining site-to-site scatter (+-0.5 s) is not elevation."""
     if not _limb_ready():
         pytest.skip("limb band / lunar kernels not installed (python -m kernels.bootstrap --limb)")
     prof = np.abs([r for s in _EB2024_MID for r in _eb_residuals(s, "profile")])
@@ -553,17 +565,93 @@ def test_limb_profile_contacts_match_eclipse_bulletin_2024():
     assert np.median(prof) < 0.5 * np.median(mean), (np.median(prof), np.median(mean))
 
 
-_ELEVATION_XFAIL = pytest.mark.xfail(strict=True, reason=(
-    "1.1 km from the limit the contacts are seconds-sensitive to the observer's "
-    "elevation (182 m here), which is not modelled: +5.5 / -3.4 s against [EB2024] "
-    "(docs/LIMB_PROFILE.md sec. 9.7)"))
+_ROUNDING_XFAIL = pytest.mark.xfail(strict=True, reason=(
+    "1.1 km inside the northern limit the contacts move ~1000 s of duration per "
+    "degree of latitude, and the Bulletin's coordinates are rounded to 0.01 deg: "
+    "across that +-0.005 deg box our C2 residual spans about -1 to +14 s. At the "
+    "printed point: +6.0 / -3.5 s with the site's 149 m (+5.5 / -3.4 s at sea "
+    "level), so elevation does not explain it (docs/LIMB_PROFILE.md sec. 9.10)"))
 
 
 @pytest.mark.parametrize("site", [
-    pytest.param(_EB2024_NEAR[0], id="Effingham", marks=_ELEVATION_XFAIL),
-    pytest.param(_EB2024_NEAR[1], id="Crawfordsville"),  # 2.9 km: -0.88 / +0.19 s
+    pytest.param(_EB2024_NEAR[0], id="Effingham", marks=_ROUNDING_XFAIL),
+    pytest.param(_EB2024_NEAR[1], id="Crawfordsville"),  # 2.9 km: -0.44 / -0.02 s
 ])
 def test_limb_profile_contacts_near_the_limit_eb2024(site):
     if not _limb_ready():
         pytest.skip("limb band / lunar kernels not installed")
     assert np.max(np.abs(_eb_residuals(site, "profile"))) <= 1.2
+
+
+# [Irwin21] J. Irwin et al. (2021), arXiv:2107.09416, Table 3: a site near
+# Vale OR, ~1.5 km inside the 2017 southern limit, 43 57' 10.9" N,
+# 117 13' 09.8" W, h = 711 m (taken as orthometric; + EGM96 N = -17.2 m, as
+# above), and four independent limb-corrected predictions of C2 / C3 (UT).
+_VALE = (43.953028, -117.219389, 711.0 - 17.2)
+_VALE_C2 = ("17:25:31.6", "17:25:33.6", "17:25:32.9", "17:25:34.3")
+_VALE_C3 = ("17:26:07.7", "17:26:06.9", "17:26:07.0", "17:26:06.9")
+
+
+def test_limb_profile_contacts_at_vale_match_irwin_2021():
+    """Profile-mode C2/C3 at the Vale OR site against the four predictions of
+    [Irwin21] Table 3 (Solar Eclipse Maestro, Occult x2, Irwin et al.; they
+    span 2.7 s at C2).  Coordinates there are to 0.1 arcsec (3 m), so, unlike
+    the Bulletin's, they resolve a near-limit site, and the site's 694 m
+    matter: at sea level our C2 is 17:25:41.3, 7 s after the latest of the
+    four.  With the height: C2 17:25:34.5 (0.2 s after the latest, Irwin et
+    al.'s own 34.3), C3 17:26:07.0 (inside 06.9-07.7).  Gate: each contact
+    within 0.5 s of the four predictions' range."""
+    if not _limb_ready():
+        pytest.skip("limb band / lunar kernels not installed")
+    from app.besselian import BesselianModel
+    from app.circumstances import local_raw
+
+    model = BesselianModel(t0_utc="2017-08-21T17:25:50")
+    raw = local_raw(model, *_VALE[:2], "profile", _VALE[2])
+    assert raw.central
+    for ours_h, refs in ((raw.c2, _VALE_C2), (raw.c3, _VALE_C3)):
+        ours = _clock_s("17:25:50") + ours_h * 3600.0
+        ref = [_clock_s(r) for r in refs]
+        assert min(ref) - 0.5 <= ours <= max(ref) + 0.5, (ours, ref)
+
+
+def test_mean_limb_contacts_at_height_match_the_direct_3d_geometry():
+    """Mean-limb contacts for an observer 694 m up (Vale OR, 2017) against
+    geometry that shares nothing with ``geo_to_fund``: at each contact the
+    observer, placed by geodetic + h -> ECEF -> fundamental-plane axes
+    (``geodesy_oracle.direct_fundamental``), is on its shadow cone
+    (``m = L1'`` for C1/C4, ``m = |L2'|`` for C2/C3, [ES92] eq. 8.353) to
+    1e-10 Earth radii (0.6 mm), and the sea-level contacts are not (the height
+    moves the observer by ~1e-4).  Second, independent physics: a raised
+    observer sees what a sea-level one does at the foot of its line of sight,
+    shifted H cot(alt) away from the Sun (0.69 km here): C2/C3 agree with that
+    point's to 0.03 s (gate 0.1 s; totality 36.6 s vs 33.8 s at sea level)."""
+    from geodesy_oracle import direct_fundamental
+
+    from app.besselian import BesselianModel
+    from app.circumstances import local_raw
+    from app.geography import _destination
+
+    lat, lon, h = _VALE
+    model = BesselianModel(t0_utc="2017-08-21T17:25:50")
+    raw = local_raw(model, lat, lon, "mean", h)
+    sea = local_raw(model, lat, lon, "mean")
+    assert raw.central and sea.central
+
+    def cone_residual(t_hours, central, height):
+        e = model.evaluate_direct(np.array([t_hours]))
+        xi, eta, zeta = direct_fundamental(lat, lon, e["d"][0], e["mu"][0], height)
+        m = np.hypot(xi - e["x"][0], eta - e["y"][0])
+        if central:
+            return m - abs(e["l2"][0] - zeta * e["tan_f2"][0])
+        return m - (e["l1"][0] - zeta * e["tan_f1"][0])
+
+    for name, central in (("c1", False), ("c4", False), ("c2", True), ("c3", True)):
+        assert abs(cone_residual(getattr(raw, name), central, h)) <= 1e-10, name
+        assert abs(cone_residual(getattr(sea, name), central, h)) > 1e-7, name
+
+    alt, az = raw.alt_deg[1], raw.az_deg[1]
+    la2, lo2 = _destination(lat, lon, az + 180.0, h / 1000.0 / np.tan(np.radians(alt)))
+    foot = local_raw(model, float(la2), float(lo2), "mean")
+    assert abs(raw.c2 - foot.c2) * 3600.0 <= 0.1
+    assert abs(raw.c3 - foot.c3) * 3600.0 <= 0.1

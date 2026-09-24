@@ -122,6 +122,24 @@ def test_eop_ut1_is_continuous_across_leap_seconds():
 
 
 @requires_kernels
+def test_delta_t_is_continuous_at_the_end_of_the_iers_table(pool):
+    """Past the Bulletin A table's last row, Delta-T continues from the measured
+    value into the [Espenak] model (item C2): no step at the boundary (the
+    model alone was 6.8 s above the measurement at the 2027 table end), the
+    model itself from 2050, and the epoch round-trips through the era rule."""
+    _, hi = E.eop_mjd_range()
+    days = np.array([hi - 1.0, hi - 1e-3, hi + 1e-3, hi + 1.0])
+    dt = E.tt_minus_ut1((days - 51544.5) * 86400.0 + 69.0)
+    assert np.max(np.abs(np.diff(dt))) < 0.01  # < 3 ms/day of real change + rounding
+    y2060 = 2060.0
+    et2060 = (y2060 - 2000.0) * 365.25 * 86400.0
+    assert E.tt_minus_ut1(np.array([et2060]))[0] == pytest.approx(
+        E.delta_t_seconds(np.array([y2060]))[0], abs=1e-6)
+    for utc in ("2028-07-22T02:55:00", "2030-11-25T06:51:00"):
+        assert E.et_to_utc(E.utc_to_et(utc)) == utc
+
+
+@requires_kernels
 def test_time_and_position_agree_with_spiceypy(pool, spice):
     """The core's CSPICE and spiceypy's (a separate build of the same N0067
     toolkit) read the same kernels identically."""

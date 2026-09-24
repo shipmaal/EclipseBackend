@@ -1,5 +1,6 @@
 #include "eclipse/deltat.hpp"
 
+#include <algorithm>
 #include <initializer_list>
 #include <limits>
 
@@ -53,6 +54,16 @@ double delta_t_seconds(double y) {
     if (y < 2050.0) return polyval({0.005589, 0.32217, 62.92}, y - 2000.0);
     if (y < 2150.0) return parabola(y) - 0.5628 * (2150.0 - y);
     return parabola(y);
+}
+
+double delta_t_after_record(double year, double year_end, double dt_end_s) {
+    const double model = delta_t_seconds(year);
+    if (!(year > year_end)) return model;
+    // The horizon: the end of [Espenak]'s 2005-2050 segment, or ten years on.
+    const double y_h = std::max(2050.0, year_end + 10.0);
+    if (year >= y_h) return model;
+    const double offset = dt_end_s - delta_t_seconds(year_end);
+    return model + offset * ((y_h - year) / (y_h - year_end));
 }
 
 std::vector<double> delta_t_seconds(std::span<const double> years) {

@@ -17,6 +17,21 @@ namespace eclipse::deltat {
 /// Python oracle. Continuous at the segment boundaries to ~1 s.
 double delta_t_seconds(double year);
 
+/// Delta-T [s] at decimal ``year`` after the end of the measured record
+/// (item C2). The record ends at ``year_end`` with the measured value
+/// ``dt_end_s``; the [Espenak] model differs from it there (by +6.8 s at the
+/// end of the 2027 Bulletin A table: the 2005-2050 polynomial was fitted
+/// before Delta-T levelled off near 69 s), and switching to the model would
+/// move every later eclipse by that step. So the offset is carried and
+/// tapered linearly to zero at the end of the model's 2005-2050 segment
+/// [Espenak] sec. 2.5 (or ten years after ``year_end``, if later):
+///   dT(y) = model(y) + (dt_end - model(y_end)) * (y_h - y) / (y_h - y_end),
+/// continuous with the measurement at ``y_end`` and with the model at
+/// ``y_h``. The taper is this project's rule, not a published one: any
+/// Delta-T beyond the record is a prediction (a few seconds a decade).
+/// For ``year <= year_end`` this is the model alone.
+double delta_t_after_record(double year, double year_end, double dt_end_s);
+
 /// Vector form of ``delta_t_seconds``.
 std::vector<double> delta_t_seconds(std::span<const double> years);
 

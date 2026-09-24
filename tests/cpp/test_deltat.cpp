@@ -35,3 +35,21 @@ TEST_CASE("vector form equals scalar form") {
     const auto v = dt::delta_t_seconds(years);
     for (size_t i = 0; i < std::size(years); ++i) CHECK(v[i] == dt::delta_t_seconds(years[i]));
 }
+
+TEST_CASE("delta_t_after_record joins the measured record to the model continuously") {
+    using eclipse::deltat::delta_t_after_record;
+    using eclipse::deltat::delta_t_seconds;
+    const double y_end = 2027.7, dt_end = 69.3;  // the 2027 table end: model is ~76 s
+    // At (and before) the record's end: the measurement, then the model alone.
+    CHECK_THAT(delta_t_after_record(y_end + 1e-9, y_end, dt_end), WithinAbs(dt_end, 1e-6));
+    CHECK(delta_t_after_record(y_end, y_end, dt_end) == delta_t_seconds(y_end));
+    CHECK(delta_t_after_record(1990.0, y_end, dt_end) == delta_t_seconds(1990.0));
+    // Tapered linearly to the model at 2050, the end of [Espenak]'s segment.
+    const double mid = 0.5 * (y_end + 2050.0);
+    CHECK_THAT(delta_t_after_record(mid, y_end, dt_end),
+               WithinAbs(delta_t_seconds(mid) + 0.5 * (dt_end - delta_t_seconds(y_end)), 1e-9));
+    CHECK(delta_t_after_record(2050.0, y_end, dt_end) == delta_t_seconds(2050.0));
+    CHECK(delta_t_after_record(2100.0, y_end, dt_end) == delta_t_seconds(2100.0));
+    // A record ending after 2045 tapers over ten years instead.
+    CHECK(delta_t_after_record(2058.0, 2048.0, 80.0) == delta_t_seconds(2058.0));
+}

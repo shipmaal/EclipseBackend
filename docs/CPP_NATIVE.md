@@ -112,7 +112,7 @@ Each fix gets a test that fails before it.
 
 **Status: C1–C7 done** (one commit each, 2026-09-24). No golden moved. NAIF:
 131 passed, 2 skipped, 2 xfailed. Mirror: 118 passed, 15 skipped, 2 xfailed.
-`ctest` 86/86. Where the fixes differ from the plan below:
+`ctest` 88/88. Where the fixes differ from the plan below:
 - **C2**: the offset from the model tapers linearly to zero at 2050, the end
   of [Espenak]'s 2005–2050 segment. This is a project rule, recorded in
   `deltat.hpp`.

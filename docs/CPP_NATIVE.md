@@ -74,156 +74,282 @@ process, one scenario each. The grid and century-catalog lines are
 the old developer-host figures (0.38 s, 8.5 s) are not reached by the
 pre-change build either.
 
-The warm profile call is 5× the mean-limb one. `limb::g_total` rebuilds the
-7 200-point unit circle (14 400 trig calls) for every instant, over ~600
-instants. That is item B1.
+Where the warm profile call's time goes (re-measured by the 2026-09-24
+review; 0.29–0.35 s on this VM): the mean-limb part is 0.065 s. The rest is
+`profile_contacts`' 0.5-s grid, about 580 instants, costing 0.20 s. In that
+grid, elements take 0.02 s, `profiles_at` 0.01 s and the G loop 0.17 s. The
+G loop is 4.2 M sin/cos pairs (≈ 0.055 s) plus 4.2 M `atan2` (≈ 0.075 s).
+The number of instants is what dominates, not the unit circle.
 
-## Roadmap
+## Roadmap (revised by the 2026-09-24 review)
 
-Two tracks: A finishes the lunar-limb work, now in C++ only; B is structural
-and performance work from the survey of the core. They interleave because A3
-and A4 multiply the profile evaluations that B1 makes cheap.
+A review of the whole core against the first roadmap (A1–A5, B1–B8) found
+two things:
+- correctness bugs that no item covered (track **C**);
+- hygiene and CI gaps that let the goldens go unchecked (track **H**).
 
-**Order:** A1 → A2 → B1 → A3 → A4 → B2 → A5 → B3 → B4 → B5 → B6 → B7 → B8.
-Each is its own PR unless noted. Each PR:
+It also re-scoped several items. B1's target was not reachable as scoped. B3
+was aimed at the wrong loop. A3's parabola-minimum design is ill-posed. B7
+would cost more than it pays.
+
+The tracks:
+- **C**: correctness, first.
+- **H**: hygiene and CI; must precede any golden move.
+- **A**: lunar limb.
+- **B**: structure and performance.
+
+**Order:** C → H → A1+B1 (merged) → A2 → B3 → A3 → catalog fixes (C8) →
+A4 → A5 → B4 → B2 → B5 → B6. B7 is dropped. B8 is folded into H.
+
+Each item is its own PR unless noted. Each PR:
 - records the baseline table's rows it can move, before and after;
 - runs `pytest` on NAIF + mirror, `ctest` and `ruff`;
 - re-baselines any golden it moves, with the size of the move.
 
+### C. Correctness (the 2026-09-24 review)
+
+Each fix gets a test that fails before it.
+
+**C1. UT1 across a leap second** (`eop.cpp`).
+- UT1−UTC jumps by 1 s at each leap second, and `eop::interpolate` draws a
+  straight line across the jump. On the day before the jump that is up to
+  0.5 s wrong. Example: MJD 48803.5 gives −0.056 s, but the true value is
+  ≈ −0.557 s.
+- That day, 1992-06-30, is the day of a total eclipse (greatest ≈ 12:11 UT).
+  The error there is about 7″ in `mu` and about 0.2 km on the ground.
+- Fix: interpolate UT1−TAI (= UT1−UTC − (TAI−UTC)), the practice of the IERS
+  interpolation routines. That is linear across the step.
+
+**C2. ΔT continuity at the end of the EOP table** (`ephem.cpp`, `deltat`).
+- The table's last row is MJD 61659 (2027-09-11). TT−UT1 is 69.29 s the day
+  before and 76.13 s the day after, from the [Espenak] 2005–2050 polynomial.
+- So every eclipse after the table's end moves by about 7 s and about 3 km,
+  and the move depends on which `finals2000A` is installed.
+- Fix: past the last row, carry the last measured ΔT and blend it into the
+  model. The rule must be continuous and documented with its source. Add a
+  test that asserts continuity at the boundary.
+
+**C3. Magnitude when the profile removes totality**
+(`circumstances.cpp::local_circumstances`).
+- Case 1: the mean limb is central but the profile finds no central phase.
+  The partial formula `(L1−m)/(L1+L2)` then gives a magnitude > 1 inside the
+  mean umbra, labelled "partial", with obscuration 1.
+- Case 2, the reverse: "total" is reported with the mean limb's obscuration
+  below 1.
+- Fix: make both consistent with the reported type, and test both.
+- Related: `profile_g` picks G_T or G_A by the K_REF cone's L2′, but the type
+  follows K_UMBRA's `L2_x`. Near the hybrid transition these can disagree.
+
+**C4. Profile node-cache key and band snapshot** (`limb.cpp`).
+- The key holds the band generation, but not the kernel-pool generation or
+  the EOP table. A `furnish` / `kclear` or a new EOP table therefore serves
+  stale profiles.
+- The band is also read separately from its generation. Take the (band,
+  generation) pair once per call.
+
+**C5. Error model** (`app/main.py`, `besselian.cpp`).
+- Example: `window_hours ≤ 1.25` passes validation but yields fewer than 4
+  fit samples. The core's `ValueError` is then reported as 400 "invalid
+  epoch".
+- Fix: validate the real bound. Map core errors by kind, not all
+  `ValueError` as a parse error.
+
+**C6. OpenMP teams** (`app/core.py`, `ephem.cpp`).
+- `PARALLEL_LOCK` does not cover profile mode (the silhouette team) or
+  `/central-line`'s geocentric loop. `app/core.py` says it does.
+- A cold node is not de-duplicated between concurrent requests.
+- `threads=1` still opens a nested team in `ephem` (an inactive outer
+  region).
+
+**C7. Small items.**
+- `numerics::arange`: step 0 or non-finite is UB (a cast from inf), and
+  there is no length cap. Guard it in the core.
+- `format_clock` truncates to the second; it should round.
+- `spice_call` skips `reset_c` if a C++ exception follows a failed call.
+- `eop.hpp` promises a one-day boundary tolerance that the code does not
+  have.
+
+**C8. Catalog and global contacts** (after A3; these are scientific changes
+with golden moves).
+- The keep test and the partial / non-central split use the sphere
+  `hypot(x, y)`, while `global_contacts` uses the ellipse `hypot(x, y/ρ1)`.
+  Near the thresholds (about 20 km) a "partial" row can carry U1/U4.
+- `hybrid` reads `l2` at the first and last on-Earth 5-min samples. A central
+  line shorter than 5 min is never "hybrid". Bisect the central line's ends
+  instead.
+- `global_contacts` brackets on a 1-min grid, so a shorter grazing umbral
+  phase loses U2/U3. Add the `rho` minimum to the samples.
+- `/map`'s "visible" uses the Sun's altitude at maximum, while
+  `/circumstances` uses any event above the horizon. They disagree for
+  sunrise and sunset eclipses.
+
+### H. Hygiene and CI (before the first golden move)
+
+- **Strict goldens in CI.**
+  - The C++ golden tests `SKIP` without `de440s.bsp`. `native-tests`
+    bootstraps with `--source auto`, whose fallback is the mirror (DE432s),
+    so they can skip while the job stays green.
+  - Fix: use `--source naif` there and fail on skips.
+  - The ITRF93 rows always skip, and their comments cite the deleted
+    `tests/test_native.py`. Retire or re-home them.
+- **Sanitizers.** Add an `asan` (ASan + UBSan) `ctest` job; it passes today.
+  Consider a TSan run over the mutex, cache and OpenMP paths.
+- **Portability.** macOS runs no `ctest`, so "goldens stay portable" (arm64,
+  Apple libm, no OpenMP) is unchecked.
+- **Citations** (convention 1). About 70 `app.*` references remain.
+  - `ephem.hpp` and `deltat.hpp` / `.cpp` name deleted Python files as the
+    scientific reference.
+  - Rewrite them as descriptions with the source keys, in one PR.
+- **Retired rule.** Remove "PORT, DON'T IMPROVE / do not reassociate" from
+  `numerics.hpp`, `ellipsoid.hpp`, `geometry.hpp` and `catalog.hpp`.
+- **Fixture generator.** The fixture headers still name the deleted
+  `tools/dump_oracle.py`. Add a dumper from `_eclipse` before any B item moves
+  a golden, and record the writing commit in each header.
+- **Binding copies** (old B8; negligible payoff, do on touch):
+  - `limb_axes` flattens its output;
+  - nine capsules from `besselian_instants`;
+  - `limb_g_*` hold the GIL.
+
 ### A. Lunar limb (docs/LIMB_PROFILE.md)
 
-**A1. Bead-safe contact search** (`circumstances.cpp::profile_contacts`).
-- The problem: G is sampled every 0.5 s (`PROFILE_STEP_H`), so a sub-0.5 s
-  bead (a brief entry into totality near a limit) is caught or missed
-  depending on the grid phase. Vale at sea level on `LDEM_16` has a 0.38 s
-  bead that moves C2 by 0.9 s (§9.11).
-- The fix: G is Lipschitz in time with a constant L. An interval of length
-  Δt whose ends a, b have the same sign can hide a sign change only if
-  |a| + |b| < L·Δt. Subdivide such intervals, and those with a sign change,
-  down to Δt_min ≈ 0.05 s, one batch of midpoints per level. Then take the
-  first falling / last rising root.
-- First measure L:
-  - the planar speed |dP/dt| ≲ 1–1.5 km/s;
-  - the limb-slope term ((R_m / R_s) · dδρ/dψ / R_ref) near a steep valley;
-  - the lattice's time interpolation (small).
-  Take L with margin and cite the measurement.
-- Document the definition: a bead shorter than Δt_min is not a contact. Is a
-  bead the observer sees "C2"? Report beads explicitly if the answer is yes.
+**A1 + B1. Bead-safe, coarse-to-fine contact search and the G hot path**
+(`circumstances.cpp::profile_contacts`, `limb.cpp`).
+- The bead problem (§9.11): G is sampled every 0.5 s, so a sub-0.5 s bead is
+  caught or missed depending on the grid phase. Vale at sea level on
+  `LDEM_16` has a 0.38 s bead that moves C2 by 0.9 s.
+- The test: an interval Δt whose ends a, b have the same sign can hide a sign
+  change only if |a| + |b| < L·Δt.
+- Search coarse-to-fine:
+  - start at about 8–16 s;
+  - subdivide intervals that fail the test or bracket a change, down to
+    Δt_min ≈ 0.05 s.
+  - Deep in totality |G| is tens of km against L ≈ 1–1.5 km/s. So this takes
+    about 580 instants to 60–100, and that is the speed-up.
+  - Refining down from the 0.5 s grid would only add cost.
+- **L per lattice node:** the planar speed plus (R_m/R_s)·max|dδρ/dψ|·dψ/dt,
+  taken from the node's profile. A constant cannot cover `LDEM_64` crater
+  walls (≈ 0.3 km/s of slope term at dψ/dt ≈ 0.016°/s).
+- **Beads:** a bead shorter than Δt_min is not a contact. Decide whether a
+  seen bead is "C2", and report beads explicitly if so. The same rule defines
+  A3's graze zone.
+- **Hot path:**
+  - build the unit circle once per `n_bins`;
+  - replace `atan2` with arg Q = φ + asin(|P| sin(θ_P − φ)/|Q|), a short
+    series since |P| ≪ R_s;
+  - evaluate `p0 + w(p1 − p0)` per instant instead of materialising
+    `profiles_at` (33 MB at 580 instants; memory, not time);
+  - bisect about 15 iterations, not 30 (a 0.5 s bracket to sub-ns).
 - Gates:
   - [EB2024] median / max no worse;
   - Vale matches [Irwin21];
-  - profile warm time (baseline table) ≤ 1.5×.
+  - warm profile time ≤ 0.15 s (from 0.30 s). The old 0.06 s target was
+    below the mean-limb call alone.
 
-**A2. Oracle test, bead-agnostic** (`tests/test_limb_oracle.py`).
+**A2. Oracle test, bead-agnostic** (`tests/test_limb_oracle.py`). Unchanged.
 - Replace the bracket check with the mismatch that
   `tools/limb_study.py oracle` computes. Take all roots of each method within
   ±2.5 s of the contact, then evaluate each method at the other's roots, in
   metres of limb height.
-- Keep the 75 m gate. Exceedances are strict xfails with reasons, never a
-  wider gate. Measured maxima: `LDEM_16` / 7200 bins 82 m (Vale at sea level,
-  the profile's bead); `LDEM_64` / 7200 93 m; `LDEM_64` / 28800 57 m.
-- The Vale-at-height xfail should then pass (≤ 73 m).
-- Note or investigate the annular point's 22 / 34 m G_A systematic.
+- Keep the 75 m gate. Exceedances are strict xfails with reasons.
+- Measured maxima: `LDEM_16` / 7200 bins 82 m; `LDEM_64` / 7200 93 m;
+  `LDEM_64` / 28800 57 m.
+- The Vale-at-height xfail should then pass. Note the annular point's 22 /
+  34 m G_A systematic.
 
-**A3. Limb-corrected limits and catalog** (PR 3 of `LIMB_PROFILE.md` §6).
-- Add the profile residual to `geometry::shadow_edge_limits`' envelope: the
-  minimum over τ of G around closest approach (±2 min, parabolic
-  refinement). The limit is the interior one, where totality just occurs.
-- Add `limb=` to `/central-line` (`besselian::central_line`) and
-  `/eclipses?detail=true` (duration, width).
+**A3. Limb-corrected limits and catalog** (PR 3 of `LIMB_PROFILE.md` §6,
+redesigned).
+- The first design took the minimum over τ of G with a parabolic
+  refinement, inside `shadow_edge_limits`' 50-halving bisection. It is
+  ill-posed:
+  - G is a max of piecewise-linear functions (kinked), and its minimum near a
+    limit is a bead;
+  - it costs about 50 × 480 × 52 × 2 evaluations of G.
+- Instead, G depends on the observer only through P (and weakly ζ). So once
+  per instant:
+  - compute the **umbral outline in the fundamental plane**, the set of P
+    where the solar disk fits inside r_M(ψ);
+  - take its support distance perpendicular to the track;
+  - form the time envelope in the plane, map it with `fund_to_geo`, and
+    iterate once for ζ.
+- Report a **graze zone**: an outer limit (any bead) and an inner limit
+  (continuous totality), consistent with A1's bead rule. Otherwise a point
+  inside the limit can come back non-central from `/circumstances`.
+- Part of this PR, not B1:
+  - an LRU node cache with in-flight de-duplication, replacing today's
+    256-entry wholesale clear;
+  - a lattice pre-build for the path. Cold nodes dominate: about 50 per
+    ±2 h path, ≈ 3.5 s on `LDEM_16` and ≈ 60 s on `LDEM_64`;
+  - the catalog's per-event loop runs `silhouette` serially.
+- Add `limb=` to `/central-line` and `/eclipses?detail=true`.
 - Gates:
   - the 3D oracle at the limits (≤ 50 m);
   - the SVS limb- and terrain-corrected limits
-    (`docs/LIMB_VALIDATION_SOURCES.md`: 2024 at −97 / −86 / −80°, 2017 at
-    −121 / −100 / −89.2 / −84.5°), compared at the sea-level equivalent or
-    with the terrain noted.
-- Cost: G per limit point per τ step. B1 first.
+    (`docs/LIMB_VALIDATION_SOURCES.md`), at the sea-level equivalent or with
+    the terrain noted.
 
-**A4. `LDEM_64` at 0.05° bins** (§9.11: [EB2024] 36 mid-path 0.30 / 0.61 /
-1.10 → 0.28 / 0.59 / 0.98 s, bias halved, Vale inside [Irwin21]).
-- Band width: 14° covers libration ≤ 6°, while the 1900–2100 maximum is 6.65°.
-  So 16° (a view axis ≤ 8°) is needed for every eclipse; ~230 MB.
-- Hosting: add a commit to `limb-data` (never rewrite it) with the band split
-  into files under 100 MB. `kernels.bootstrap` reassembles them and checks the
-  SHA-256. The `naif` source cuts `ldem_64.img` from PDS locally.
-- Update the pins, `DEFAULT_BAND_FILE`, CI download size and every test
-  comment that states achieved numbers.
-- Cold start is 5.8 s (baseline table), mostly lattice nodes at 1.1–1.5 s
-  each. Consider building the two nodes around T0 at band load, or a
-  persistent node cache.
+**A4. `LDEM_64` at 0.05° bins.** Unchanged.
+- Expected gains (§9.11): [EB2024] 36 mid-path 0.30 / 0.61 / 1.10 →
+  0.28 / 0.59 / 0.98 s, bias halved, Vale inside [Irwin21].
+- A 16° band (≈ 230 MB) covers the 1900–2100 libration maximum of 6.65°.
+- Host it on `limb-data` as files under 100 MB, reassembled and
+  SHA-checked. Update the pins and every test comment that states achieved
+  numbers.
 
 **A5. Validation gate and the grid** (PR 4).
-- §5.4 external gate 0.3 s: gate the median; p90 (0.59 s) is a strict xfail
-  whose reason is site-to-site scatter, not resolution or elevation.
-- The default stays `limb=mean` (§8).
-- Give `circumstances_grid` a profile mode within ≤ 2× `/map`, or document it
-  as mean-only.
+- §5.4 external gate 0.3 s on the median. p90 (0.59 s) is a strict xfail for
+  site-to-site scatter.
+- The default stays `limb=mean`.
+- Profile mode on `/map`: reuse A3's per-instant outline as a
+  point-in-region test in P-space, shared by all observers. Per-observer G
+  cannot fit ≤ 2× `/map`.
+  - Only `central` changes. Document magnitude and obscuration as mean-limb.
 - Update the `CLAUDE.md` accuracy ceiling.
 
-### B. Structure and performance (survey of the core)
+### B. Structure and performance
 
-**B1. Profile-mode hot path** (`limb.cpp`, `circumstances.cpp::profile_g`).
-*Largest payoff; prerequisite for A3 and A4.*
-- Build the unit circle once per `n_bins` (cached), and add a per-instant
-  `g_total_one` / `g_annular_one(…, span profile, scratch)`.
-- `profiles_at` materialises n × 7200 doubles (~35 MB for a 600-sample
-  window). Interpolate `p0 + w (p1 − p0)` per instant instead.
-- Node cache: an LRU keyed by (node, frame, moon frame, band generation) with
-  in-flight de-duplication, instead of a `std::map` keyed by a string built
-  per lookup and cleared wholesale at 256 entries.
-- Target: warm profile `/circumstances` 0.25 s → ≤ 0.06 s; peak RSS down by
-  the `profiles_at` buffer.
+**B3. The limit envelope's inner loop** (`geometry.cpp`, `ellipsoid.hpp`).
+Before A3, which adds work to the same loop.
+- Production always passes `rates`. Each envelope residual then does 10
+  `geo_to_fund_one` calls: about 1 030 `reduction_aux` + `site()` calls per
+  instant per limit, not ~104. And `d` varies with τ, so `reduction_aux`
+  cannot be hoisted per instant.
+- The wins:
+  - `Site(lat)` once per trial point;
+  - an early exit when the centre is off-Earth or no edge is found
+    (bit-neutral);
+  - about 32 halvings instead of 50 (sub-millimetre; moves goldens, so
+    re-baseline).
 
-**B2. One geocentric evaluation per instant set** (`ephem.cpp`).
-- The grid computes elements and sub-solar points on the same `t` with two
-  full `spkpos` + `c2t06a` passes. Profile mode does the same for the `K_REF`
-  elements, and `limb_axes` repeats it.
-- One `Geocentric` (Moon, Sun, rotation) should feed all of them.
-- Target: `/map` and profile mode, fewer SPICE / ERFA calls, measured.
+**B4. The ephemeris out of the solvers** (`circumstances.cpp`,
+`numerics.hpp`).
+- Each bisection iteration of `local_circumstances` makes about 25
+  allocations. But it also makes 2 `spkpos` and a `c2t06a` per instant,
+  under the global mutex, and that dominates.
+- Replace those with a local interpolant of the elements over the window,
+  checked against the direct evaluation (moves goldens).
+- Then the allocation-free spans, and `sign_changes` → first falling / last
+  rising scans. Choose the rule for touching zeros deliberately.
+- `bisect` should check its bracket and the objective's result length.
 
-**B3. Innermost-loop hoisting** (`ellipsoid.hpp`, `geometry.cpp`).
-- `geo_to_fund_one` evaluates `cos θ` 2–4× and `sin θ` 1–2×.
-- `shadow_edge_limits` recomputes `reduction_aux(d[i])` ~104× per instant and
-  `sin` / `cos(lat0)` for all 52 steps.
-- May move goldens in the last bit: re-baseline.
+**B2. One geocentric evaluation per instant set.** The grid evaluates
+elements and sub-solar points on the same `t` in two passes, but only about
+181 instants per grid. Small; do it with B4's cache.
 
-**B4. Allocation-free solvers** (`numerics.hpp`, `circumstances.cpp`).
-- Objectives write to a caller span, with one workspace per call. Today each
-  bisection iteration of `local_circumstances` allocates ~25 vectors.
-- `sign_changes` / `roots` become scans for the first falling / last rising
-  crossing.
+**B5. EOP snapshot** (`eop.cpp`, `ephem.cpp`).
+- Take one `eop::Snapshot` per call:
+  - for consistency first: one call can read two tables today;
+  - then for speed: two locks and three `upper_bound`s per instant today.
+- `deltet` is already one lock per vector. The catalog is limited by the
+  SPICE mutex, not EOP, so expect little thread scaling from this.
 
-**B5. SPICE lock and EOP access** (`ephem.cpp`, `eop.cpp`).
-- Batch `deltet` into the `spkpos` locked call.
-- Take one `eop::Snapshot` per call, sharing the interval index across
-  columns. Today each instant locks the table twice and runs three
-  `upper_bound` searches.
-- Target: catalog scaling with threads (century benchmark, serial vs
-  default).
+**B6. Concrete models.**
+- Replace the `std::function` `Model` / `Sources` / `*At` hooks with a
+  concrete `EphemerisModel` and concept-constrained templates.
+- The value is structure, not speed. The main one: `add_detail` hard-wires
+  `ephem` and ignores the injected `Sources`, so detail cannot be tested
+  kernel-free.
 
-**B6. Concrete models** (`circumstances.hpp`, `geometry.hpp`, `catalog.hpp`).
-- `Model`, `Sources` and the `*At` hooks are `std::function`s that
-  production always binds to `ephem`.
-- Replace them with a concrete `EphemerisModel` (et0, frame, scratch, the
-  shared geocentric cache of B2) and templates constrained by a concept, so
-  the tests keep their fakes. This also retires the per-call
-  `check_elements` contracts.
-
-**B7. Element storage.** `Elements`, `Series`, `SubSolar`, `EarthRotation`,
-`EdgeLimits` and `GridResult` are struct-of-arrays filled by `push_back`. Use
-one block or AoS per instant in the hot loops, and SoA only at the NumPy
-boundary. It is the broadest change, so it goes last.
-
-**B8. Binding copies.**
-- `limb_axes` copies `vector<array<9>>` to a flat vector.
-- `besselian_instants` returns nine capsules.
-- `limb_g_*` and `limb_delta_rho_at` hold the GIL.
-
-### Housekeeping (any PR that touches the unit)
-
-- Doc comments still name the Python function each unit was ported from
-  (`app.geography.*` …, commit `fe1a64a`). Rewrite them as descriptions when
-  the unit is next edited.
-- The golden fixtures have no generator now. A PR that re-baselines adds a
-  small dumper for the records it touches (from `_eclipse`), and the fixture
-  headers say which commit wrote them.
+**B7. Dropped.**
+- The hot loops already read contiguous SoA, which suits SIMD.
+- AoS could lose SIMD, and it is the broadest change.
+- Revisit only with a profile that shows a storage cost.

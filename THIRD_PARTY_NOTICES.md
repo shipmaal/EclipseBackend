@@ -1,7 +1,8 @@
 # Third-party notices
 
 The native core (`libeclipse`, see `docs/CPP_ROADMAP.md`) statically links two
-vendored libraries under `third_party/`. Both trees are copied **unmodified**
+vendored libraries under `third_party/`, which also holds one vendored data
+file (the USNO ΔT predictions, below). All are copied **unmodified**
 from their upstream releases so that a version bump is a directory swap; the
 only build-time additions are in `cmake/`.
 

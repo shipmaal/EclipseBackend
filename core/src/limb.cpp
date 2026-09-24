@@ -325,7 +325,8 @@ std::vector<double> silhouette_on(const std::shared_ptr<const Band>& b,
     // j + 1 mod samples, south i + 1, both in the band). The max over points
     // and edges is the same whatever the order.
 #ifdef _OPENMP
-#pragma omp parallel if (!omp_in_parallel())
+// Serial inside any enclosing region, active or not (``threads=1``; item C6).
+#pragma omp parallel if (omp_get_level() == 0)
 #endif
     {
         std::vector<double> local(nb, neg_inf);

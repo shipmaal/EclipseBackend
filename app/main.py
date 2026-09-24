@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from .besselian import BesselianModel, normalize_utc
 from .catalog import find_eclipses
 from .circumstances import LIMB_MODES, circumstances_grid, local_circumstances
-from .core import DEFAULT_EARTH_FRAME, EARTH_FRAMES, SpiceError, load_kernels
+from .core import DEFAULT_EARTH_FRAME, EARTH_FRAMES, PARALLEL_LOCK, SpiceError, load_kernels
 from .formatting import format_clock, format_offset
 
 # Request-size guards: the work per point is small since the geometry is
@@ -161,7 +161,8 @@ def central_line(
     # umbral limits + width (the envelope of the shadow over time, item W2) and
     # the penumbral limits (the partial-eclipse region at each instant, clipped
     # to the terminator: a visualization bound), all from the core.
-    c = _eclipse.central_line(model.et0, frame, t)
+    with PARALLEL_LOCK:  # OpenMP element loop: one team per process (item C6)
+        c = _eclipse.central_line(model.et0, frame, t)
 
     def point(lat: float, lon: float) -> LimitPoint:
         return {"lat": round(float(lat), 5), "lon": round(float(lon), 5)}

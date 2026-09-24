@@ -215,10 +215,12 @@ Geocentric geocentric_vectors(std::span<const double> et, Frame frame) {
         // for long vectors. Each instant writes only its own slots and there
         // is no reduction, so the result is bit-identical for any thread
         // count. Nested inside another parallel region (the catalog's
-        // per-event detail loop) it stays serial.
+        // per-event detail loop) it stays serial -- including an inactive one
+        // (``threads=1``), which ``omp_in_parallel`` does not see but
+        // ``omp_get_level`` does (item C6).
         const auto count = static_cast<std::ptrdiff_t>(n);
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) if (n >= 64 && !omp_in_parallel())
+#pragma omp parallel for schedule(static) if (n >= 64 && omp_get_level() == 0)
 #endif
         for (std::ptrdiff_t ii = 0; ii < count; ++ii) {
             const auto i = static_cast<size_t>(ii);

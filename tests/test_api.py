@@ -215,3 +215,30 @@ def test_model_value_error_is_a_500_not_invalid_epoch(monkeypatch):
     assert r.status_code == 500
     r = c.get("/besselian", params={"epoch": "2024 APR 08"})
     assert r.status_code == 400 and "invalid epoch" in r.json()["detail"]
+
+
+def test_openmp_entry_points_hold_the_parallel_lock(client, monkeypatch):
+    """/circumstances (mean and profile) and /central-line run OpenMP teams in the
+    core, so they hold app.core.PARALLEL_LOCK: one team per process (item C6)."""
+    import _eclipse
+
+    from app import circumstances, main
+    from app.core import PARALLEL_LOCK
+
+    held = []
+
+    def spy(real):
+        def wrapped(*args, **kwargs):
+            held.append(PARALLEL_LOCK.locked())
+            return real(*args, **kwargs)
+        return wrapped
+
+    monkeypatch.setattr(circumstances._eclipse, "local_circumstances",
+                        spy(_eclipse.local_circumstances))
+    monkeypatch.setattr(main._eclipse, "central_line", spy(_eclipse.central_line))
+    r = client.get("/circumstances", params={"epoch": "2024-04-08T18:17:20", "lat": 32.0,
+                                             "lon": -104.0})
+    assert r.status_code == 200, r.text
+    r = client.get("/central-line", params={"epoch": "2024-04-08T18:17:20"})
+    assert r.status_code == 200, r.text
+    assert held == [True, True]

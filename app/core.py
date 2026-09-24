@@ -43,14 +43,17 @@ SpiceError = _eclipse.SpiceError
 EARTH_FRAMES = ("ITRS", "TOD", "ITRF93", "IAU_EARTH")
 DEFAULT_EARTH_FRAME = os.environ.get("SPICE_EARTH_FRAME", "ITRS")
 
-# Serializes the two long OpenMP-parallel entry points (``circumstances_grid``,
-# ``find_eclipses``) within a process.  Each already uses every core it is
+# Serializes the core's OpenMP-parallel entry points within a process: the
+# grid (``circumstances_grid``), the catalog (``find_eclipses``), the element
+# loop of ``local_circumstances`` and ``central_line`` (>= 64 instants) and the
+# cold-node silhouette of the limb profile (item C6).  Each already uses every core it is
 # given, and libgomp starts a separate team -- sized ``OMP_NUM_THREADS``,
 # default the host's core count -- for every calling thread, so K concurrent
 # requests on FastAPI's thread pool would run K x cores threads.  Holding this
 # lock bounds one worker process to one team; the Docker CMD sizes that team
 # to cores / workers (review item C9).  Results do not depend on it.  The limb
-# band load and profile silhouettes take it too.
+# band load takes it too.  It is not re-entrant: take it around a single core
+# call, never around code that takes it again (``ensure_limb_band``).
 PARALLEL_LOCK = threading.Lock()
 
 _STATE_LOCK = threading.Lock()

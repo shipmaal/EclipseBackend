@@ -152,10 +152,15 @@ def local_raw(model, lat: float, lon: float, limb: str = "mean",
     _check_limb(limb)
     if limb == "profile":
         ensure_limb_band()
-    raw = _eclipse.local_circumstances(
-        model.et0, model.earth_frame, float(model.half_window_hours), float(lat), float(lon),
-        limb == "profile", float(height_m),
-    )
+    # The core runs OpenMP teams here too (the element loop for the sampled
+    # window; the silhouette of a cold profile node): one team per process
+    # (``PARALLEL_LOCK``, item C6), which also stops concurrent requests from
+    # building the same cold node twice.
+    with PARALLEL_LOCK:
+        raw = _eclipse.local_circumstances(
+            model.et0, model.earth_frame, float(model.half_window_hours), float(lat),
+            float(lon), limb == "profile", float(height_m),
+        )
     return _LocalRaw(*raw)
 
 

@@ -24,6 +24,7 @@
 #endif
 
 #include "eclipse/constants.hpp"
+#include "eclipse/deltat.hpp"
 #include "eclipse/eop.hpp"
 #include "eclipse/ephem.hpp"
 
@@ -437,9 +438,10 @@ std::vector<double> delta_rho_at(std::span<const double> profile, std::span<cons
 namespace {
 
 // (node, frame, moon frame, band generation, kernel-pool generation, EOP
-// table generation): a profile depends on all of them (item C4).
-using NodeKey =
-    std::tuple<std::int64_t, int, std::string, std::uint64_t, std::uint64_t, std::uint64_t>;
+// table generation, delta-T prediction generation): a profile depends on all
+// of them (item C4).
+using NodeKey = std::tuple<std::int64_t, int, std::string, std::uint64_t, std::uint64_t,
+                           std::uint64_t, std::uint64_t>;
 
 std::mutex& cache_mutex() {
     static std::mutex m;
@@ -469,7 +471,9 @@ std::shared_ptr<const std::vector<double>> node_profile(std::int64_t node, Frame
     if (!b) throw std::logic_error("eclipse::limb: limb band not set (call set_band first)");
     const std::uint64_t kernels = ephem::kernel_generation();
     const std::uint64_t eops = eop::generation();
-    NodeKey key{node, static_cast<int>(frame), std::string(moon_frame), generation, kernels, eops};
+    const std::uint64_t preds = deltat::predictions_generation();
+    NodeKey key{node, static_cast<int>(frame), std::string(moon_frame), generation, kernels, eops,
+                preds};
     {
         std::scoped_lock lock(cache_mutex());
         if (auto it = cache().find(key); it != cache().end()) return it->second;
@@ -479,7 +483,9 @@ std::shared_ptr<const std::vector<double>> node_profile(std::int64_t node, Frame
     const ephem::LimbAxes la = ephem::limb_axes(et, frame, moon_frame);
     auto prof = std::make_shared<const std::vector<double>>(
         silhouette_on(b, la.axes[0], N_BINS, la.distance_km[0]));
-    if (ephem::kernel_generation() != kernels || eop::generation() != eops) return prof;
+    if (ephem::kernel_generation() != kernels || eop::generation() != eops ||
+        deltat::predictions_generation() != preds)
+        return prof;
     std::scoped_lock lock(cache_mutex());
     if (cache().size() >= kMaxCachedNodes) cache().clear();
     cache().emplace(key, prof);

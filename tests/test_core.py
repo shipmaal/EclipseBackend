@@ -121,6 +121,73 @@ def test_eop_ut1_is_continuous_across_leap_seconds():
     assert E.eop(np.array([48803.5]))[2][0] == pytest.approx(-0.5563, abs=5e-4)
 
 
+DELTAT_PREDS_SHA256 = "5d864fddd30b2c64d2a86d3debbb25604eb5de44370c96bccf2abd5463f3db08"
+
+
+def _tt_minus_ut1_at_mjd(mjd):
+    """TT - UT1 [s] as the core uses it at UTC ~ ``mjd`` (et = UTC + ~69 s)."""
+    return E.tt_minus_ut1((np.atleast_1d(np.asarray(mjd, dtype=float)) - 51544.5) * 86400.0
+                          + 69.0)
+
+
+def test_deltat_predictions_file_is_the_pinned_usno_copy():
+    """The vendored [USNO] table is the unmodified copy third_party/usno/README.md
+    describes, and load_kernels installs it."""
+    import hashlib
+
+    from app.core import DELTAT_PREDICTIONS_FILE
+
+    assert hashlib.sha256(DELTAT_PREDICTIONS_FILE.read_bytes()).hexdigest() == DELTAT_PREDS_SHA256
+    load_kernels()
+    assert E.deltat_predictions_source() == str(DELTAT_PREDICTIONS_FILE)
+
+
+@requires_kernels
+def test_usno_predictions_against_the_measured_iers_values(pool):
+    """The published predictions [USNO] against what was then measured (IERS
+    UT1-UTC, finals2000A.all) at every row up to 2026.50: <= 0.1 s, but up to
+    2.1x the file's own error column (measured: 0.098 s at 2025.00, error
+    0.088 s; 0.090 s at 2024.25, error 0.043 s). The gate records that: the
+    column is roughly 1 sigma and optimistic (third_party/usno/README.md)."""
+    rows = [line.split() for line in
+            open(E.deltat_predictions_source()).read().splitlines()[1:] if line.strip()]
+    checked = 0
+    for r in rows:
+        mjd, pred, err = float(r[0]), float(r[2]), float(r[-1])
+        if mjd > 61223.0:  # 2026.50: later rows are not yet measured
+            break
+        diff = abs(pred - _tt_minus_ut1_at_mjd(mjd)[0])
+        assert diff <= 0.1 and diff <= 2.5 * err, (r[1], pred, diff, err)
+        checked += 1
+    assert checked == 17
+
+
+@requires_kernels
+def test_delta_t_past_the_iers_table_is_the_usno_prediction(pool):
+    """Past the Bulletin A table's last row the epoch's delta-T is the [USNO]
+    prediction, interpolated linearly between its quarterly rows. The join
+    is not smoothed (CLAUDE.md convention 7); measured: -0.027 s, far inside
+    the prediction's own error there (0.44 s)."""
+    _, hi = E.eop_mjd_range()
+    before, after = _tt_minus_ut1_at_mjd([hi - 1e-3, hi + 1e-3])
+    pred, err = E.deltat_predicted(hi + 1e-3)
+    assert after == pytest.approx(pred, abs=1e-6)
+    assert abs(after - before) < 0.1 < err
+    for utc in ("2028-07-22T02:55:00", "2030-11-25T06:51:00"):
+        assert E.et_to_utc(E.utc_to_et(utc)) == utc
+
+
+@requires_kernels
+@pytest.mark.xfail(strict=True, reason=(
+    "known open discrepancy (CLAUDE.md convention 7): the [USNO] predictions end "
+    "at 2033.75 with 71.25 s and the [Espenak] model there is 80.16 s; no "
+    "published source joins them, so delta-T steps by +8.9 s"))
+def test_delta_t_is_continuous_where_the_usno_predictions_end(pool):
+    _, last = E.deltat_predictions_mjd_range()
+    before, after = _tt_minus_ut1_at_mjd([last - 1e-3, last + 1e-3])
+    assert abs(after - before) < 1.0
+
+
 @requires_kernels
 def test_time_and_position_agree_with_spiceypy(pool, spice):
     """The core's CSPICE and spiceypy's (a separate build of the same N0067

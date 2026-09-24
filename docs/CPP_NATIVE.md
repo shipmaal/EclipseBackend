@@ -110,12 +110,18 @@ Each item is its own PR unless noted. Each PR:
 
 Each fix gets a test that fails before it.
 
-**Status: C1–C7 done** (one commit each, 2026-09-24). No golden moved. NAIF:
-131 passed, 2 skipped, 2 xfailed. Mirror: 118 passed, 15 skipped, 2 xfailed.
-`ctest` 88/88. Where the fixes differ from the plan below:
+**Status: C1–C7 done** (2026-09-24). No golden moved. After the C2 / C3
+revisions below: NAIF 133 passed, 2 skipped, 3 xfailed; mirror 120 passed,
+15 skipped, 3 xfailed; `ctest` 89/89. Where the fixes differ from the plan below:
 - **C2**: first done with a taper of our own, then reverted (CLAUDE.md
-  convention 7). Replaced by the published USNO ΔT predictions past the IERS
-  table (see the C2 entry below).
+  convention 7). Replaced by the published USNO predictions [USNO]
+  (`third_party/usno/deltat.preds`, SHA-pinned) past the IERS table, to
+  2033.75; the [Espenak] model after that.
+  - Join at the IERS table's end: −0.027 s, inside the prediction's error
+    (0.44 s).
+  - Join at 2033.75: +8.9 s (71.25 → 80.16 s). A strict xfail, not smoothed.
+  - Checked against the measured IERS values over 2022.50–2026.50: within
+    0.1 s, but up to 2.1× the file's own error column.
 - **C3**: the mean limb had the same fault as the profile. A central phase
   shorter than the 30-s grid step came back "partial" with magnitude > 1;
   it is now bracketed from the refined maximum (a search bug, fixed).
@@ -133,6 +139,24 @@ Each fix gets a test that fails before it.
   open.
 
 C8 remains, after A3.
+
+### D. ΔT beyond the measurements
+
+Every ΔT past the IERS table is a prediction, so outputs there need an
+uncertainty, and any better prediction has to be earned by a hindcast.
+- **D1. Hindcast harness** (`tools/`, not the core).
+  - Freeze the measured record (IERS `finals2000A`, USNO `deltat.data`) at
+    year Y, predict Y+1 … Y+10, and score against what was measured, over
+    many Y.
+  - Baselines: [Espenak], hold-last-value, a linear trend, and archived USNO
+    predictions.
+  - It produces numbers, not rules: the ΔT uncertainty at each horizon.
+- **D2. Uncertainty in the outputs.** Propagate D1's (or [USNO]'s) ΔT error
+  into contact times and the path's east–west position (≈ 1 s and ≈ 0.4 km
+  per second of ΔT). Report it with the predictions.
+- **D3. Our own predictor**, only if one beats the published predictions in
+  D1's hindcasts over many start years. It is then a `[project rule]` whose
+  citation is that hindcast (CLAUDE.md convention 7).
 
 **C1. UT1 across a leap second** (`eop.cpp`).
 - UT1−UTC jumps by 1 s at each leap second, and `eop::interpolate` draws a

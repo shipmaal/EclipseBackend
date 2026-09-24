@@ -346,6 +346,21 @@ Position body_position(std::string_view target, double et, std::string_view fram
 
 // ------------------------------------------------------------- time scales
 
+namespace {
+
+// Delta-T [s] outside the IERS era at Julian date ``jd`` (TT, or the epoch
+// read as UT1: the ~70 s between them moves delta-T by < 1e-6 s): past the
+// Bulletin A table, the USNO prediction [USNO] while its table lasts; else
+// the [Espenak] model. The sources are not joined (CLAUDE.md convention 7).
+double delta_t_outside_era(double jd) {
+    const double mjd = jd - MJD_OFFSET;
+    if (eop::has_table() && mjd > eop::mjd_range().second)
+        if (const auto p = deltat::predicted(mjd)) return p->dt_s;
+    return deltat::delta_t_seconds(deltat::decimal_year_from_jd(jd));
+}
+
+}  // namespace
+
 double utc_to_et(std::string_view utc) {
     const std::string s(utc);
     // tparse_c: seconds past J2000 on the leap-second-free calendar. A parse
@@ -365,12 +380,12 @@ double utc_to_et(std::string_view utc) {
     });
     const double mjd = J2000_JD - MJD_OFFSET + formal / SECONDS_PER_DAY;
     if (errmsg[0] != '\0' || eop::in_iers_era(mjd)) return str_to_et(s);
-    return formal + deltat::delta_t_seconds(deltat::decimal_year_from_jd(formal / SECONDS_PER_DAY + J2000_JD));
+    return formal + delta_t_outside_era(formal / SECONDS_PER_DAY + J2000_JD);
 }
 
 std::string et_to_utc(double et) {
     if (eop::in_iers_era(J2000_JD - MJD_OFFSET + et / SECONDS_PER_DAY)) return et_to_utc_iso(et, 0);
-    const double ut1 = et - deltat::delta_t_seconds(deltat::decimal_year_from_jd(J2000_JD + et / SECONDS_PER_DAY));
+    const double ut1 = et - delta_t_outside_era(J2000_JD + et / SECONDS_PER_DAY);
     return spice_call([&] {
         SpiceChar buf[64];
         timout_c(ut1, "YYYY-MM-DDTHR:MN:SC ::TDB ::RND", sizeof buf, buf);
@@ -404,9 +419,9 @@ EarthRotation earth_rotation_times(std::span<const double> et) {
             r.xp[i] = e.xp_rad;
             r.yp[i] = e.yp_rad;
         } else {
-            // UT1 = TT - delta-T([Espenak] polynomial), no polar motion.
-            const double dt_model =
-                deltat::delta_t_seconds(deltat::decimal_year_from_jd(J2000_JD + tt2));
+            // UT1 = TT - delta-T (the [USNO] prediction or the [Espenak]
+            // model), no polar motion.
+            const double dt_model = delta_t_outside_era(J2000_JD + tt2);
             r.ut1[i] = tt2 - dt_model / SECONDS_PER_DAY;
             r.xp[i] = 0.0;
             r.yp[i] = 0.0;

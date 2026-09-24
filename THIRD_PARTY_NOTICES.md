@@ -44,6 +44,14 @@ only build-time additions are in `cmake/`.
   (http://www.iausofa.org), SOFA release 2023-10-11. ERFA is **not** SOFA;
   the IAU SOFA Board bears no responsibility for it or for this project.
 
+## USNO ΔT predictions
+
+- Source: `third_party/usno/deltat.preds`, unmodified from
+  https://maia.usno.navy.mil/ser7/deltat.preds (retrieval date and SHA-256 in
+  `third_party/usno/README.md`).
+- A work of the U.S. Government (U.S. Naval Observatory, Earth Orientation
+  Department), not subject to copyright in the United States.
+
 ## nanobind
 
 - Build dependency (from PyPI, not vendored): https://github.com/wjakob/nanobind,

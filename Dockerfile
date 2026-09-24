@@ -41,6 +41,7 @@ RUN uv pip install --python /app/.venv/bin/python --no-deps /tmp/wheels/*.whl \
 
 # Application code, frontend and kernel tooling.
 COPY app ./app
+COPY third_party/usno ./third_party/usno
 COPY frontend ./frontend
 COPY --chown=appuser:appuser kernels ./kernels
 

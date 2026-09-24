@@ -127,6 +127,22 @@ NB_MODULE(_eclipse, m) {
           nb::call_guard<nb::gil_scoped_release>(),
           "Parse an IERS finals2000A.all file and install its Bulletin A table; returns the rows.");
     m.def("eop_source", &eclipse::eop::source, "The file load_eop_file read ('' for none).");
+    m.def("load_deltat_predictions", &eclipse::deltat::load_predictions, "path"_a,
+          nb::call_guard<nb::gil_scoped_release>(),
+          "Parse the USNO deltat.preds file and install it; returns the rows.");
+    m.def("deltat_predictions_source", &eclipse::deltat::predictions_source,
+          "The file load_deltat_predictions read ('' for none).");
+    m.def("deltat_predictions_mjd_range", &eclipse::deltat::predictions_mjd_range,
+          "(first, last) MJD of the delta-T prediction table; NaNs when none.");
+    m.def(
+        "deltat_predicted",
+        [](double mjd) -> nb::object {
+            const auto p = eclipse::deltat::predicted(mjd);
+            if (!p) return nb::none();
+            return nb::make_tuple(p->dt_s, p->err_s);
+        },
+        "mjd"_a,
+        "(TT - UT1 [s], error [s]) from the prediction table at mjd; None outside it.");
     m.def("has_eop_table", &eclipse::eop::has_table);
     m.def("eop_mjd_range", &eclipse::eop::mjd_range, "(first, last) MJD of the table.");
     m.def(

@@ -2,7 +2,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <stdexcept>
+#include <utility>
+#include <vector>
+
 #include "eclipse/deltat.hpp"
+#include "fixtures.hpp"
 
 using Catch::Matchers::WithinAbs;
 namespace dt = eclipse::deltat;
@@ -34,4 +39,37 @@ TEST_CASE("vector form equals scalar form") {
     const double years[] = {-1000.0, 0.0, 1000.0, 1919.41, 2024.3, 2500.0};
     const auto v = dt::delta_t_seconds(years);
     for (size_t i = 0; i < std::size(years); ++i) CHECK(v[i] == dt::delta_t_seconds(years[i]));
+}
+
+TEST_CASE("delta-T predictions: linear between rows, none outside the table") {
+    namespace dt = eclipse::deltat;
+    const std::vector<double> mjd = {100.0, 200.0, 300.0}, v = {69.0, 70.0, 72.0},
+                              err = {0.1, 0.2, 0.4};
+    dt::set_predictions(mjd, v, err);
+    CHECK(dt::predictions_mjd_range() == std::pair<double, double>{100.0, 300.0});
+    const auto mid = dt::predicted(250.0);
+    REQUIRE(mid.has_value());
+    CHECK_THAT(mid->dt_s, WithinAbs(71.0, 1e-12));
+    CHECK_THAT(mid->err_s, WithinAbs(0.3, 1e-12));
+    CHECK(dt::predicted(100.0)->dt_s == 69.0);
+    CHECK(dt::predicted(300.0)->dt_s == 72.0);
+    CHECK_FALSE(dt::predicted(99.9).has_value());
+    CHECK_FALSE(dt::predicted(300.1).has_value());
+    const std::vector<double> bad = {100.0, 100.0};
+    CHECK_THROWS_AS(dt::set_predictions(bad, std::vector<double>{1, 2}, std::vector<double>{1, 2}),
+                    std::invalid_argument);
+}
+
+TEST_CASE("load_predictions reads the vendored USNO deltat.preds") {
+    namespace dt = eclipse::deltat;
+    const auto path = fixtures::kDir.parent_path().parent_path().parent_path() / "third_party" /
+                      "usno" / "deltat.preds";
+    REQUIRE(dt::load_predictions(path.string()) == 46);  // 2022.50 - 2033.75, quarterly
+    CHECK(dt::predictions_source() == path.string());
+    CHECK(dt::predictions_mjd_range() == std::pair<double, double>{59762.0, 63871.0});
+    CHECK(dt::predicted(59762.0)->dt_s == 69.29);  // a row with the UT1-UTC column
+    CHECK(dt::predicted(63871.0)->dt_s == 71.25);  // a row without it
+    CHECK(dt::predicted(63871.0)->err_s == 1.0);
+    CHECK_THROWS_AS(dt::load_predictions((fixtures::kDir / "no_such_file").string()),
+                    std::runtime_error);
 }

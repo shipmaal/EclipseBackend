@@ -33,6 +33,10 @@ from astropy_iers_data import IERS_A_FILE
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# Published USNO delta-T predictions [USNO], used past the IERS table
+# (third_party/usno/README.md: source, retrieval date, SHA-256).
+DELTAT_PREDICTIONS_FILE = ROOT / "third_party" / "usno" / "deltat.preds"
+
 # A CSPICE failure inside the core: a RuntimeError subclass carrying the four
 # CSPICE message fields (short_message, explanation, long_message,
 # traceback_text); short_message is e.g. "SPICE(SPKINSUFFDATA)".
@@ -73,7 +77,8 @@ def metakernel() -> Path:
 
 
 def load_kernels(path: str | os.PathLike | None = None) -> None:
-    """Furnish the core's kernel pool and install the EOP table (idempotent).
+    """Furnish the core's kernel pool and install the EOP table and the delta-T
+    predictions (idempotent).
 
     Resolution order: explicit argument, then :func:`metakernel`
     (``$SPICE_METAKERNEL``, then the repo default ``kernels/eclipse.tm``).
@@ -91,6 +96,8 @@ def load_kernels(path: str | os.PathLike | None = None) -> None:
             )
         if not _eclipse.has_eop_table():
             _eclipse.load_eop_file(str(IERS_A_FILE))
+        if not _eclipse.deltat_predictions_source():
+            _eclipse.load_deltat_predictions(str(DELTAT_PREDICTIONS_FILE))
         _eclipse.furnish(str(mk))
         _kernels_loaded = True
 

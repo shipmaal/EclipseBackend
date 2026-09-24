@@ -125,8 +125,11 @@ the published `/besselian` polynomials, as a reader of the table would).
    (`app.besselian.normalize_utc` is the single parser). ΔT = TT − UT1 is
    measured (leap-second kernel + IERS UT1−UTC) **only inside the IERS era,
    1973 – ~1 yr ahead**; outside it the epoch is read as UT1 and ΔT comes from
-   the Espenak & Meeus polynomial model in `deltat` [Espenak] — never rely on
-   SPICE's leap-second table there (it silently holds the first/last count).
+   the published USNO predictions [USNO] for the years right after the IERS
+   table (to 2033.75), and from the Espenak & Meeus polynomial model in
+   `deltat` [Espenak] otherwise — never rely on SPICE's leap-second table
+   there (it silently holds the first/last count). The steps where these
+   sources meet are known open discrepancies (strict xfails), not smoothed.
    Inside the era, UT1−UTC is interpolated as UT1−TAI across a leap second.
    Published Besselian elements are tabulated in **TDT/TT** (use
    `_eclipse.str_to_et(".. TDT")` to compare). Published `mu` is the
@@ -263,6 +266,9 @@ Cite these by key in code.
   and sec. 2.5 the polynomial ΔT expressions (also
   https://eclipse.gsfc.nasa.gov/SEhelp/deltatpoly2004.html). Per-eclipse Besselian
   elements: NASA Eclipse Web Site, e.g. `SEgoogle/SEgoogle2001/SE2024Apr08Tgoogle.html`.
+- **[USNO]** U.S. Naval Observatory, Earth Orientation Department, ΔT
+  predictions `deltat.preds` (https://maia.usno.navy.mil/ser7/deltat.preds;
+  the copy used is `third_party/usno/`, with its retrieval date and SHA-256).
 - **[SOFA]** IAU SOFA / ERFA: `pnm06a`, `gst06a`, `c2t06a`; P. T. Wallace &
   N. Capitaine (2006), *A&A* 459, 981.
 - **[IERS2010]** G. Petit & B. Luzum (eds.), *IERS Conventions (2010)*, IERS TN 36.

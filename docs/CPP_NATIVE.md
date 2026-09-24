@@ -110,6 +110,26 @@ Each item is its own PR unless noted. Each PR:
 
 Each fix gets a test that fails before it.
 
+**Status: C1–C7 done** (one commit each, 2026-09-24). No golden moved. NAIF:
+131 passed, 2 skipped, 2 xfailed. Mirror: 118 passed, 15 skipped, 2 xfailed.
+`ctest` 86/86. Where the fixes differ from the plan below:
+- **C2**: the offset from the model tapers linearly to zero at 2050, the end
+  of [Espenak]'s 2005–2050 segment. This is a project rule, recorded in
+  `deltat.hpp`.
+- **C3**: the mean limb had the same fault as the profile. A central phase
+  shorter than the 30-s grid step came back "partial" with magnitude > 1;
+  it is now bracketed from the refined maximum.
+  - A profile partial's magnitude is 1 − G_T/(2 R_s) at maximum, which is
+    [Espenak]'s partial magnitude for a smooth limb.
+  - Its obscuration stays the mean limb's: a bead is ~1e-6 of the disk.
+- **C5**: the API bounds were kept. A fit window under 1.5 h is sampled at
+  2 hw / 3 instead.
+- **C6**: the nested-region guards now use `omp_get_level() == 0`.
+- **C7**: the `et_to_utc` era test (it classifies by the ET MJD) remains
+  open.
+
+C8 remains, after A3.
+
 **C1. UT1 across a leap second** (`eop.cpp`).
 - UT1−UTC jumps by 1 s at each leap second, and `eop::interpolate` draws a
   straight line across the jump. On the day before the jump that is up to

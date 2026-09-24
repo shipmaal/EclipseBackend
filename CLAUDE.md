@@ -127,6 +127,10 @@ the published `/besselian` polynomials, as a reader of the table would).
    1973 – ~1 yr ahead**; outside it the epoch is read as UT1 and ΔT comes from
    the Espenak & Meeus polynomial model in `deltat` [Espenak] — never rely on
    SPICE's leap-second table there (it silently holds the first/last count).
+   After the table's end the model is joined continuously to the last measured
+   ΔT, the offset tapering to zero at 2050 (`deltat::delta_t_after_record`, a
+   project rule). Inside the era, UT1−UTC is interpolated as UT1−TAI across a
+   leap second.
    Published Besselian elements are tabulated in **TDT/TT** (use
    `_eclipse.str_to_et(".. TDT")` to compare). Published `mu` is the
    *ephemeris hour angle* (Earth rotation evaluated as if TT were UT); ours is

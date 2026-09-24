@@ -1,5 +1,11 @@
 # C++ core (`libeclipse`) — approach review and roadmap
 
+> **Status (2026-09-24):** historical. The phases below are done, and the
+> Python oracle they relied on was retired after commit `fe1a64a`: the C++
+> core is now the implementation (`docs/CPP_NATIVE.md`, the current plan and
+> roadmap). References to `app/*.py` modules and parity gates describe that
+> period.
+
 Companion to `HANDOFF_CPP_CORE.md` (the *why*). This is the *how*: a review of
 the choices already made in the local vertical slice (link CSPICE from C++;
 C++20; Ninja; vendored SPICE sources), and a phased roadmap for the codebase

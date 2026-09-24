@@ -1,16 +1,14 @@
-// Bindings for eclipse/catalog.hpp (app.catalog find_eclipses), phase 4 of
-// docs/CPP_ROADMAP.md.
+// Bindings for eclipse/catalog.hpp (``find_eclipses``, formatted by app/catalog.py).
 //
 // ``find_eclipses`` hands each ``catalog::Event`` back as a tuple in the
-// Python ``_EventRaw`` NamedTuple's FIELD ORDER (et_g, kind, central, gamma,
-// magnitude, lat, lon, et0, contacts, local, width_km): ``kind`` the oracle's
+// ``app.catalog._EventRaw`` NamedTuple's FIELD ORDER (et_g, kind, central,
+// gamma, magnitude, lat, lon, et0, contacts, local, width_km): ``kind`` a
 // string, ``contacts`` a list of ``(name, t_hours)`` pairs in
 // ``global_contacts`` insertion order, ``local`` the phase-3 ``_LocalRaw``
 // tuple (``local_raw_tuple``, shared with bind_circumstances.cpp) and
-// ``width_km`` / ``et0`` floats -- ``None`` in every detail slot that the
-// oracle leaves ``None`` (no detail; not central; no on-Earth track point), so
-// ``_EventRaw(*t)`` on the Python side reconstructs the oracle's row type for
-// type. The GIL is released around the whole scan: the ephemeris calls take
+// ``width_km`` / ``et0`` floats -- ``None`` in every absent detail slot (no
+// detail; not central; no on-Earth track point), so ``_EventRaw(*t)`` rebuilds
+// the row type for type. The GIL is released around the whole scan: the ephemeris calls take
 // the C++ SPICE lock and the per-event hybrid / detail loop is OpenMP-parallel
 // (``threads``: 0 = the default, 1 = serial; results identical).
 // ``std::invalid_argument`` maps to ``ValueError`` through nanobind.
@@ -69,9 +67,9 @@ void bind_catalog(nb::module_& m) {
             return out;
         },
         "et_a"_a, "et_b"_a, "earth_frame"_a, "detail"_a, "threads"_a = 0,
-        "app.catalog._catalog_raw(et_a, et_b, earth_frame, detail): every eclipse with\n"
+        "Every solar eclipse with\n"
         "greatest eclipse in [et_a, et_b] (TDB s, inclusive) in scan order, each an _EventRaw\n"
         "tuple (et_g, kind, central, gamma, magnitude, lat, lon, et0, contacts, local,\n"
-        "width_km); the detail slots are None where the oracle's are. threads: 0 = OpenMP\n"
+        "width_km); the detail slots are None where absent. threads: 0 = OpenMP\n"
         "default, 1 = serial, n = that many (results identical).");
 }

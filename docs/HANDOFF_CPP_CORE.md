@@ -1,5 +1,11 @@
 # Handoff: native C++ core (`libeclipse`) with Python bindings — Path B
 
+> **Status (2026-09-24):** historical. The phases below are done, and the
+> Python oracle they relied on was retired after commit `fe1a64a`: the C++
+> core is now the implementation (`docs/CPP_NATIVE.md`, the current plan and
+> roadmap). References to `app/*.py` modules and parity gates describe that
+> period.
+
 > **See `CPP_ROADMAP.md`** for the review of the vertical slice's build choices
 > (C++20 / Ninja / vendored CSPICE), the measured native dependency surface,
 > the port map with parity gates, and the phased plan. This file keeps the

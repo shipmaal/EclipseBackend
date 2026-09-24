@@ -6,9 +6,8 @@ geographic track of the shadow axis.
 
 ## Ephemeris engine
 
-Positions of the Sun, Moon and Earth come from **NASA/NAIF SPICE**
-([SpiceyPy](https://github.com/AndrewAnnex/SpiceyPy)) with the **JPL DE440**
-planetary ephemeris. SPICE is used because a solar eclipse needs the Sun *and*
+Positions of the Sun, Moon and Earth come from **NASA/NAIF CSPICE** (vendored
+and linked into the C++ core) with the **JPL DE440** planetary ephemeris. SPICE is used because a solar eclipse needs the Sun *and*
 Moon in one consistent framework, with **apparent** positions (light-time +
 stellar aberration, `LT+S`) and a high-precision Earth-rotation model — exactly
 the corrections the Besselian method depends on. (The earlier astropy /
@@ -39,26 +38,20 @@ each is needed. The mirror set has no high-precision Earth PCK, so the `ITRF93`
 frame is unavailable there; the default `ITRS` frame (ERFA + IERS EOP from
 PyPI) needs none and is verified equivalent.
 
-### Native core (`libeclipse`)
+### The core (`libeclipse`, C++)
 
-The C++20 core under `core/` + `bindings/` links the **vendored** NAIF CSPICE
-N0067 and liberfa 2.0.1 (`third_party/`, unmodified; see
-`THIRD_PARTY_NOTICES.md`) and is exposed to Python as `_eclipse`. Roadmap
-phase 4 is done (`docs/CPP_ROADMAP.md`): kernel management, time scales,
-delta-T, IERS EOP, the Besselian elements, the ellipsoid reduction, the
-shadow-edge limits/path width, the global contacts P1–P4, the local
-circumstances (contacts, duration, magnitude, obscuration, horizon flags and
-the OpenMP-parallel global map grid) and the eclipse catalog (scan, greatest
-eclipse, classification, greatest-eclipse detail) all run natively,
-parity-tested against the Python oracle to ~1e-13 (`/central-line`,
-`/circumstances`, `/map` and `/eclipses` are byte-identical through either
-backend; the 0.5° global map grid takes 0.4 s against 4 s in Python, a
-century catalog scan with detail 9 s). **The native core is the default**:
-`ECLIPSE_BACKEND` unset means `auto`, which resolves to `native` when
-`_eclipse` is built and otherwise falls back to the pure-Python backend with a
-`RuntimeWarning`; set `ECLIPSE_BACKEND=python` to force the oracle (CI runs
-the whole suite through both) or `native` to make a missing build an error.
-The Docker image builds the core in a two-stage build (wheel on the full
+All of the computation is the C++20 core under `core/`, which links the
+**vendored** NAIF CSPICE N0067 and liberfa 2.0.1 (`third_party/`, unmodified;
+see `THIRD_PARTY_NOTICES.md`) and is exposed to Python as `_eclipse`
+(`bindings/`): time scales, delta-T, IERS EOP, the Besselian elements and
+their polynomial fit, the ellipsoid reduction, the central line with its
+limits and path width, the global contacts P1–P4, the local circumstances
+(contacts, duration, magnitude, obscuration, horizon flags, the lunar limb
+profile, the observer's height; the OpenMP-parallel global map grid) and the
+eclipse catalog. `app/` is a thin FastAPI layer that formats the core's
+results. There is no pure-Python fallback: `uv sync` builds the core (it was
+ported from a Python implementation that served as its oracle and was retired
+after commit `fe1a64a`; `docs/CPP_NATIVE.md`). The Docker image builds the core in a two-stage build (wheel on the full
 `bookworm` image, installed into the slim runtime with `libgomp1`); gunicorn
 there must not `--preload`, since libgomp is not fork-safe once its pool has
 started.
@@ -141,7 +134,7 @@ folded into `k2`).
 **Time scales.** Inside the IERS era (1973 – about a year ahead) the epoch is
 UTC and ΔT = TT − UT1 comes from the leap-second kernel plus the measured
 UT1−UTC. Outside it the epoch is read as UT1 and ΔT comes from the Espenak &
-Meeus polynomial model (`app/deltat.py`, the ΔT of the *Five Millennium Canon*),
+Meeus polynomial model (`core/src/deltat.cpp`, the ΔT of the *Five Millennium Canon*),
 with zero polar motion; historical/future geometry is only as good as that
 model (a few seconds in the 20th century, minutes by the 16th).
 

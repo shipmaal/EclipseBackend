@@ -1,19 +1,17 @@
 [project]
 name = "eclipsebackend"
 version = "0.1.0"
-description = "Solar eclipse visualizer backend (SPICE / JPL DE440 ephemeris)"
+description = "Solar eclipse backend: a C++ core (CSPICE + ERFA, JPL DE ephemeris) behind a FastAPI API"
 authors = [{ name = "Alan Shipman", email = "shipmaal@bc.edu" }]
 requires-python = ">=3.10,<3.13"
 readme = "README.md"
 
-# Core runtime. The ephemeris engine is SPICE (SpiceyPy + JPL DE440);
-# astropy / basemap are intentionally gone.
+# Runtime. Every number comes from the native core `_eclipse` (built from this
+# project: vendored CSPICE + ERFA); the IERS EOP file comes from
+# astropy-iers-data, and `requests` serves kernels/bootstrap.py.
 dependencies = [
-    "spiceypy>=6.0.0",
-    "pyerfa>=2.0.0",
     "astropy-iers-data>=0.2024.1.1.0.0.0",
     "numpy>=1.26,<2.1",
-    "pandas>=2.2",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "gunicorn>=22.0",
@@ -27,13 +25,19 @@ viz = ["matplotlib>=3.8"]
 
 [dependency-groups]
 # nanobind here too so `cmake --preset release` (Catch2 tests) finds it in .venv.
-dev = ["pytest>=8.0", "ruff>=0.6", "httpx>=0.27", "nanobind>=2.0"]
+# spiceypy / pyerfa: the tests' independent references (the 3D limb oracle, the
+# raw SPICE calls), a separate CSPICE / ERFA build from the core's; pandas
+# reads the reference central-line table (tests/reference.py).
+dev = [
+    "pytest>=8.0", "ruff>=0.6", "httpx>=0.27", "nanobind>=2.0",
+    "spiceypy>=6.0.0", "pyerfa>=2.0.0", "pandas>=2.2",
+]
 
 [build-system]
 # The native core (libeclipse: vendored CSPICE + ERFA, nanobind) is built by
 # scikit-build-core from CMakeLists.txt; `uv sync` builds it into .venv as the
 # `_eclipse` extension. Needs a C/C++ compiler and CMake >= 3.20 (Ninja comes
-# from PyPI if absent). See docs/CPP_ROADMAP.md.
+# from PyPI if absent). See docs/CPP_NATIVE.md.
 requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
 build-backend = "scikit_build_core.build"
 

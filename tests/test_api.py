@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.ephemeris import default_metakernel
+from app.core import default_metakernel
 
 pytestmark = pytest.mark.skipif(
     not default_metakernel().exists(),
@@ -108,8 +108,8 @@ def test_central_line_subnormal_step_is_a_400(client):
 
 def test_eclipses_on_a_fresh_worker_loads_the_kernels(client):
     # The range guard converts the epochs before find_eclipses loads the kernels;
-    # on a fresh worker (empty pools) that was a 400 "SPICE error".
-    from app.ephemeris import load_kernels, unload_kernels
+    # on a fresh worker (an empty pool) that was a 400 "SPICE error".
+    from app.core import load_kernels, unload_kernels
 
     unload_kernels()
     try:
@@ -143,7 +143,7 @@ def test_circumstances_limb_parameter(client):
     """limb= selects the lunar limb model (docs/LIMB_PROFILE.md); it is echoed,
     an unknown value is a 400, and the profile mode is a 503 (not a 500) when
     its inputs are missing."""
-    from app import limb
+    from app.core import default_band_path
 
     params = {"epoch": "2024-04-08T19:08:00", "lat": 39.77, "lon": -86.15}
     r = client.get("/circumstances", params={**params, "limb": "watts"})
@@ -151,7 +151,7 @@ def test_circumstances_limb_parameter(client):
     mean = client.get("/circumstances", params=params).json()
     assert mean["limb"] == "mean"
     r = client.get("/circumstances", params={**params, "limb": "profile"})
-    if not limb.default_band_path().exists():
+    if not default_band_path().exists():
         assert r.status_code == 503
         return
     if r.status_code == 503:

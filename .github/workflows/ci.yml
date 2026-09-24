@@ -11,9 +11,9 @@ env:
 
 jobs:
   # Fast job: lint + the pure-function tests. `uv sync` also builds the native
-  # core (vendored CSPICE + ERFA, ~1 min cold, seconds with ccache), so the
-  # default backend (`auto`) resolves to native here. The numerical-validation
-  # tests need SPICE kernels and skip cleanly without them.
+  # core (vendored CSPICE + ERFA, ~1 min cold, seconds with ccache), which the
+  # API requires. The numerical-validation tests need SPICE kernels and skip
+  # cleanly without them.
   lint-and-test:
     strategy:
       matrix:
@@ -33,13 +33,11 @@ jobs:
         run: uv run python -c "import _eclipse as e; print(e.toolkit_version(), e.erfa_version())"
       - name: Ruff (lint)
         run: uv run ruff check .
-      - name: Pure-function tests, default backend (auto -> native; kernels auto-skip)
+      - name: Pure-function tests (kernels auto-skip)
         run: uv run pytest -q
-      - name: Backend fallback (subprocess; an unbuilt core -> python + RuntimeWarning)
-        run: uv run pytest -q tests/test_backend_switch.py
 
-  # C++ unit/parity tests (Catch2) through the CMake presets, without Python
-  # packaging in the loop.
+  # C++ unit / golden-fixture tests (Catch2) through the CMake presets, without
+  # Python packaging in the loop.
   native-tests:
     runs-on: ubuntu-latest
     steps:
@@ -61,9 +59,7 @@ jobs:
           ctest --preset release
 
   # Full job: download the pinned GitHub-mirror kernels (DE432s + IAU_EARTH) and
-  # run the reference-eclipse validation end to end through BOTH backends: the
-  # pure-Python oracle explicitly (the default is now `auto` -> native, and the
-  # oracle must stay tested), then the native core with its benchmarks.
+  # run the reference-eclipse validation end to end, with the benchmarks.
   full-validation:
     runs-on: ubuntu-latest
     steps:
@@ -78,15 +74,13 @@ jobs:
         run: uv sync
       - name: Download SPICE kernels + limb profile inputs (GitHub mirror)
         run: uv run python -m kernels.bootstrap --source mirror --limb
-      - name: Full validation through the Python oracle (reference eclipses + parity)
-        run: ECLIPSE_BACKEND=python uv run pytest -q
-      # The 0.5-degree grid benchmark (roadmap §5 phase 3) is gated at 0.5 s and
-      # the century catalog scan (phase 4) at 10 s on the developer host
+      # The 0.5-degree grid benchmark is gated at 0.5 s and the century catalog
+      # scan at 10 s on the developer host
       # (4 cores); here they are regression guards on shared 2-4 vCPU runners,
       # so the gates are 2.0 s (ECLIPSE_BENCH_MAX_S) and 30 s
       # (ECLIPSE_CATALOG_BENCH_MAX_S). The mirror's DE432s ends in 2050, so the
       # catalog benchmark scans 1950-2050 there.
-      - name: Full validation through the native core (+ grid and catalog benchmarks)
+      - name: Full validation (reference eclipses, oracles, grid and catalog benchmarks)
         run: >-
-          ECLIPSE_BACKEND=native ECLIPSE_BENCH=1 ECLIPSE_BENCH_MAX_S=2.0
+          ECLIPSE_BENCH=1 ECLIPSE_BENCH_MAX_S=2.0
           ECLIPSE_CATALOG_BENCH_MAX_S=30 uv run pytest -q

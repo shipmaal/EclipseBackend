@@ -3,15 +3,19 @@ ECEF -> fundamental-plane axes as plain vectors.
 
 Shared by ``test_geography`` (the proof of ``geo_to_fund``'s height term),
 ``test_limb_oracle`` (the 3D ray tracer's observer) and the mean-limb height
-check in ``test_besselian_integration``.  It shares nothing with
-``app.geography`` but the WGS-84 constants, so it is an oracle for it.
+check in ``test_besselian_integration``.  It shares nothing with the core's
+ellipsoid reduction (``core/include/eclipse/ellipsoid.hpp``) -- not even the
+constants, which it takes from [WGS84] itself -- so it is an oracle for it.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from app.constants import WGS84_A_KM, WGS84_E2
+# [WGS84] NIMA TR8350.2: a = 6378137 m, 1/f = 298.257223563; e^2 = f (2 - f).
+WGS84_A_KM = 6378.137
+WGS84_F = 1.0 / 298.257223563
+WGS84_E2 = WGS84_F * (2.0 - WGS84_F)
 
 
 def observer_ecef_km(lat_deg: float, lon_deg: float, height_m: float = 0.0) -> np.ndarray:

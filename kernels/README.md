@@ -6,9 +6,9 @@ These are **not committed** (they are large and versioned by NAIF). Fetch them:
 uv run python -m kernels.bootstrap
 ```
 
-The generated `eclipse.tm` metakernel loads the set below. The engine
-(`app/ephemeris.py`) furnishes `eclipse.tm` by default, overridable with the
-`SPICE_METAKERNEL` environment variable.
+The generated `eclipse.tm` metakernel loads the set below. The API
+(`app/core.py`) furnishes `eclipse.tm` into the core by default, overridable
+with the `SPICE_METAKERNEL` environment variable.
 
 | Kernel | Type | Why it's needed |
 | --- | --- | --- |

@@ -52,8 +52,8 @@ USER appuser
 
 # Download SPICE kernels if they are not already present (idempotent), then
 # serve. Mount a volume at /app/kernels to pre-bake them and skip the download.
-# ECLIPSE_BACKEND is unset, so app/native.py resolves `auto` -> native (the
-# wheel above). Do NOT add `--preload` to gunicorn: libgomp is not fork-safe
+# The API computes with the native core (the wheel above). Do NOT add
+# `--preload` to gunicorn: libgomp is not fork-safe
 # once its thread pool has started, and a preloaded parent that warmed the
 # native grid or catalog would hand forked workers a dead pool.
 #
@@ -61,7 +61,7 @@ USER appuser
 # cgroup CPU quota) and every worker runs its own team, so split the cores
 # between the workers unless OMP_NUM_THREADS is set (at least 1). Idle teams
 # sleep rather than spin (OMP_WAIT_POLICY). WEB_CONCURRENCY is gunicorn's own
-# worker-count variable. See app/native.py PARALLEL_LOCK.
+# worker-count variable. See app/core.py PARALLEL_LOCK.
 ENV WEB_CONCURRENCY=4 \
     OMP_WAIT_POLICY=PASSIVE
 CMD ["sh", "-c", "python -m kernels.bootstrap || true; : \"${OMP_NUM_THREADS:=$(( $(nproc) / WEB_CONCURRENCY > 0 ? $(nproc) / WEB_CONCURRENCY : 1 ))}\"; export OMP_NUM_THREADS; exec gunicorn -w \"$WEB_CONCURRENCY\" -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 app.main:app"]

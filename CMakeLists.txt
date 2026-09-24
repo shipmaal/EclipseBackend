@@ -47,6 +47,7 @@ add_library(eclipse STATIC
   core/src/circumstances.cpp
   core/src/catalog.cpp
   core/src/limb.cpp
+  core/src/besselian.cpp
 )
 target_include_directories(eclipse PUBLIC core/include)
 target_link_libraries(eclipse PUBLIC cspice erfa)
@@ -89,12 +90,12 @@ if(ECLIPSE_BUILD_PYTHON)
 
   nanobind_add_module(_eclipse NB_STATIC
     bindings/_eclipse.cpp
-    bindings/bind_numerics.cpp
     bindings/bind_ellipsoid.cpp
     bindings/bind_geometry.cpp
     bindings/bind_circumstances.cpp
     bindings/bind_catalog.cpp
     bindings/bind_limb.cpp
+    bindings/bind_besselian.cpp
   )
   target_link_libraries(_eclipse PRIVATE eclipse)
   target_compile_options(_eclipse PRIVATE ${ECLIPSE_FP_FLAGS})

@@ -290,12 +290,8 @@ dependencies = [
     { name = "fastapi" },
     { name = "gunicorn" },
     { name = "numpy" },
-    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "pandas", version = "3.0.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "pyerfa" },
     { name = "python-dotenv" },
     { name = "requests" },
-    { name = "spiceypy" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -309,8 +305,12 @@ viz = [
 dev = [
     { name = "httpx" },
     { name = "nanobind" },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pandas", version = "3.0.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "pyerfa" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "spiceypy" },
 ]
 
 [package.metadata]
@@ -320,11 +320,8 @@ requires-dist = [
     { name = "gunicorn", specifier = ">=22.0" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.8" },
     { name = "numpy", specifier = ">=1.26,<2.1" },
-    { name = "pandas", specifier = ">=2.2" },
-    { name = "pyerfa", specifier = ">=2.0.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "requests", specifier = ">=2.31" },
-    { name = "spiceypy", specifier = ">=6.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
 ]
 provides-extras = ["viz"]
@@ -333,8 +330,11 @@ provides-extras = ["viz"]
 dev = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "nanobind", specifier = ">=2.0" },
+    { name = "pandas", specifier = ">=2.2" },
+    { name = "pyerfa", specifier = ">=2.0.0" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.6" },
+    { name = "spiceypy", specifier = ">=6.0.0" },
 ]
 
 [[package]]

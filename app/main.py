@@ -1,15 +1,16 @@
 """FastAPI surface for the eclipse backend.
 
 Endpoints are parameterized (no hard-coded eclipse) and do only computation --
-no plotting in the request path. Positions come from SPICE / a JPL DE ephemeris
-via :mod:`app.besselian`.
+no plotting in the request path.  Every number comes from the native core
+(``_eclipse``, :mod:`app.core`); this module validates the request, calls the
+core and shapes the JSON.
 
 Concurrency: the handlers are plain ``def`` functions, so FastAPI runs them in
 its thread pool and a long computation does not stall ``/health`` or other
-requests.  CSPICE is not thread-safe; every SPICE call in :mod:`app.ephemeris`
-takes :data:`app.ephemeris.SPICE_LOCK`, so only the (fast) ephemeris lookups
-are serialized and the NumPy geometry runs in parallel.  Do not switch these
-back to ``async def`` (the whole event loop blocks) and do not bypass the lock.
+requests.  The core releases the GIL while it computes and serializes its own
+CSPICE calls (CSPICE is not thread-safe), so only the ephemeris lookups are
+serialized and the geometry runs in parallel.  Do not switch these back to
+``async def`` (the whole event loop blocks).
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TypedDict
 
+import _eclipse
 import numpy as np
-import spiceypy
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -28,22 +29,8 @@ from fastapi.staticfiles import StaticFiles
 from .besselian import BesselianModel, normalize_utc
 from .catalog import find_eclipses
 from .circumstances import LIMB_MODES, circumstances_grid, local_circumstances
-from .ephemeris import (
-    DEFAULT_EARTH_FRAME,
-    EARTH_FRAMES,
-    load_kernels,
-    sub_solar_point,
-    utc_to_et,
-)
-from .geography import (
-    central_track,
-    element_rates,
-    format_clock,
-    format_offset,
-    global_contacts,
-    shadow_edge_limits_v,
-    shadow_radii,
-)
+from .core import DEFAULT_EARTH_FRAME, EARTH_FRAMES, SpiceError, load_kernels
+from .formatting import format_clock, format_offset
 
 # Request-size guards: the work per point is small since the geometry is
 # vectorized, but the parameters are user-controlled and unbounded otherwise.
@@ -115,7 +102,7 @@ def _build_model(epoch: str, window_hours: float, frame: str) -> BesselianModel:
     except ValueError as exc:
         # normalize_utc: not an ISO-8601 epoch (the single accepted format).
         raise HTTPException(status_code=400, detail=f"invalid epoch: {exc}") from exc
-    except spiceypy.utils.exceptions.SpiceyError as exc:
+    except SpiceError as exc:
         # Missing body / kernel coverage (SPICE); narrowed from a blanket
         # `except Exception` so genuine bugs surface (M2).
         raise HTTPException(status_code=400, detail=f"SPICE error: {exc}") from exc
@@ -166,61 +153,41 @@ def central_line(
 
     model = _build_model(epoch, window_hours, frame)
     t = np.arange(start_hours, end_hours + 1e-9, step_minutes / 60.0)
-    # Central-line reduction with along-track bearing, from direct per-instant
-    # evaluation (exact beyond the polynomial fit window; items A2/R3).
-    elems, track = central_track(model, t)
+    # The on-Earth points of the shadow axis with the along-track bearing, the
+    # umbral limits + width (the envelope of the shadow over time, item W2) and
+    # the penumbral limits (the partial-eclipse region at each instant, clipped
+    # to the terminator: a visualization bound), all from the core.
+    c = _eclipse.central_line(model.et0, frame, t)
 
-    # Per-point umbral limits + accurate width (perpendicular to the along-track
-    # bearing carried by each TrackPoint), all points bisected at once; then the
-    # penumbral limits (the partial-eclipse region, up to a quarter
-    # circumference away and clipped to the terminator) as the shadow outline at
-    # each instant -- a visualization bound, not the time envelope.
-    idx = np.array([tp.i for tp in track], dtype=int)
-    bearings = np.array([tp.bearing for tp in track])
-    # The umbral limits are the path's: the envelope of the shadow over time,
-    # from the element rates at each point (item W2).
-    rates = element_rates(model, np.array([tp.t_hours for tp in track]))
-    n_lat, n_lon, s_lat, s_lon, widths = shadow_edge_limits_v(
-        elems["x"][idx], elems["y"][idx], elems["d"][idx], elems["mu"][idx],
-        elems["l2"][idx], elems["tan_f2"][idx], bearings,
-        rates=(rates["x"], rates["y"], rates["d"], rates["mu"], rates["l2"]),
-    )
-    pn_lat, pn_lon, ps_lat, ps_lon, _pw = shadow_edge_limits_v(
-        elems["x"][idx], elems["y"][idx], elems["d"][idx], elems["mu"][idx],
-        elems["l1"][idx], elems["tan_f1"][idx], bearings, max_km=10_000.0,
-    )
+    def point(lat: float, lon: float) -> LimitPoint:
+        return {"lat": round(float(lat), 5), "lon": round(float(lon), 5)}
 
     points = []
-    for k, tp in enumerate(track):
-        i = tp.i
-        pen_km, _umb_km, is_total = shadow_radii(
-            elems["x"][i], elems["y"][i], elems["d"][i],
-            elems["l1"][i], elems["l2"][i], elems["tan_f1"][i], elems["tan_f2"][i],
-        )
+    for k in range(len(c["t_hours"])):
+        th = float(c["t_hours"][k])
         pt: CentralLinePoint = {
-            "t_hours": round(tp.t_hours, 4),
-            "offset": format_offset(tp.t_hours),
-            "lon": round(tp.lon, 5),
-            "lat": round(tp.lat, 5),
-            "penumbra_km": round(pen_km, 1),
-            "is_total": is_total,
-            "width_km": round(float(widths[k]), 2),
+            "t_hours": round(th, 4),
+            "offset": format_offset(th),
+            "lon": round(float(c["lon"][k]), 5),
+            "lat": round(float(c["lat"][k]), 5),
+            "penumbra_km": round(float(c["penumbra_km"][k]), 1),
+            "is_total": bool(c["is_total"][k]),
+            "width_km": round(float(c["width_km"][k]), 2),
         }
-        if not np.isnan(n_lat[k]):
-            pt["north_limit"] = {"lat": round(float(n_lat[k]), 5), "lon": round(float(n_lon[k]), 5)}
-            pt["south_limit"] = {"lat": round(float(s_lat[k]), 5), "lon": round(float(s_lon[k]), 5)}
-        if not np.isnan(pn_lat[k]):
-            pt["penumbra_north_limit"] = {"lat": round(float(pn_lat[k]), 5),
-                                          "lon": round(float(pn_lon[k]), 5)}
-            pt["penumbra_south_limit"] = {"lat": round(float(ps_lat[k]), 5),
-                                          "lon": round(float(ps_lon[k]), 5)}
+        if not np.isnan(c["north_lat"][k]):
+            pt["north_limit"] = point(c["north_lat"][k], c["north_lon"][k])
+            pt["south_limit"] = point(c["south_lat"][k], c["south_lon"][k])
+        if not np.isnan(c["pen_north_lat"][k]):
+            pt["penumbra_north_limit"] = point(c["pen_north_lat"][k], c["pen_north_lon"][k])
+            pt["penumbra_south_limit"] = point(c["pen_south_lat"][k], c["pen_south_lon"][k])
         points.append(pt)
 
     # Sub-solar point at T0 drives the frontend's sunlight / day-night terminator.
-    ss_lon, ss_lat = sub_solar_point(model.et0, frame)
+    ss_lon, ss_lat = (float(v[0]) for v in _eclipse.sub_solar_points(np.array([model.et0]), frame))
 
     # Global contacts: when the penumbra (P1/P4) and umbra (U1-U4) touch the Earth.
-    contacts = {name: format_clock(model.t0_utc, th) for name, th in global_contacts(model).items()}
+    contacts = {name: format_clock(model.t0_utc, th)
+                for name, th in _eclipse.global_contacts(model.et0, frame, 5.0)}
 
     return {
         "t0_utc": model.t0_utc,
@@ -267,7 +234,7 @@ def circumstances(
         return local_circumstances(model, lat, lon, limb, elev)
     except FileNotFoundError as exc:  # the limb band is not installed
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except spiceypy.utils.exceptions.SpiceyError as exc:
+    except SpiceError as exc:
         if limb == "profile":  # MOON_ME undefined: the lunar kernels are not loaded
             raise HTTPException(
                 status_code=503,
@@ -335,10 +302,10 @@ def eclipses(
         raise HTTPException(status_code=400, detail=f"frame must be one of {EARTH_FRAMES}")
     try:
         # The range guard converts the epochs before find_eclipses would load
-        # the kernels, so load them here (both pools) first (review item C1).
+        # the kernels, so load them here first (review item C1).
         load_kernels()
-        et_start = utc_to_et(normalize_utc(start))
-        et_end = utc_to_et(normalize_utc(end))
+        et_start = _eclipse.utc_to_et(normalize_utc(start))
+        et_end = _eclipse.utc_to_et(normalize_utc(end))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
@@ -346,7 +313,7 @@ def eclipses(
         # ValueError: one from the computation below is a bug and must be a
         # 500, not "invalid epoch" (review item C7).
         raise HTTPException(status_code=400, detail=f"invalid epoch: {exc}") from exc
-    except spiceypy.utils.exceptions.SpiceyError as exc:
+    except SpiceError as exc:
         raise HTTPException(status_code=400, detail=f"SPICE error: {exc}") from exc
     span_years = (et_end - et_start) / 3.15576e7
     if span_years <= 0:
@@ -359,7 +326,7 @@ def eclipses(
         )
     try:
         events = find_eclipses(start, end, earth_frame=frame, detail=detail)
-    except spiceypy.utils.exceptions.SpiceyError as exc:
+    except SpiceError as exc:
         # E.g. a range outside the SPK's coverage.
         raise HTTPException(status_code=400, detail=f"SPICE error: {exc}") from exc
     return {"start": start, "end": end, "frame": frame, "count": len(events), "eclipses": events}

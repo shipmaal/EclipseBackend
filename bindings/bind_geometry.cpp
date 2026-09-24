@@ -1,13 +1,11 @@
-// Bindings for eclipse/geometry.hpp (app.geography shadow_radii, the
-// great-circle helpers, shadow_edge_limits_v and global_contacts).
+// Bindings for eclipse/geometry.hpp (shadow radii, the great-circle helpers,
+// the shadow-edge limits and the global contacts).
 //
-// Arrays cross as equal-length 1-D float64 (spans in, fresh ndarrays out);
-// NumPy broadcasting of the Python signatures is the glue's job on the Python
-// side, not the core's. The array forms and the SPICE-backed global_contacts
-// release the GIL around the compute. Contacts come back as a list of
-// (name, t_hours) pairs in the oracle's insertion order (P1, P4, U1, U4, U2,
-// U3, absent ones omitted) so ``dict(...)`` on the Python side reproduces the
-// oracle's dict exactly — never a mapping here, which would lose the order.
+// Arrays cross as equal-length 1-D float64 (spans in, fresh ndarrays out); the
+// core does not broadcast. The array forms and the SPICE-backed
+// global_contacts release the GIL around the compute. Contacts come back as a
+// list of (name, t_hours) pairs in a fixed order (P1, P4, U1, U4, U2, U3,
+// absent ones omitted) -- never a mapping here, which would lose the order.
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/tuple.h>
@@ -37,7 +35,7 @@ void bind_geometry(nb::module_& m) {
             return nb::make_tuple(r.penumbra_km, r.umbra_km, r.is_total);
         },
         "x"_a, "y"_a, "d_deg"_a, "l1"_a, "l2"_a, "tan_f1"_a, "tan_f2"_a,
-        "app.geography.shadow_radii: (penumbra_km, umbra_km, is_total) at the central point\n"
+        "(penumbra_km, umbra_km, is_total) at the central point\n"
         "(x, y in Earth equatorial radii; d in degrees) [ES92] eq. 8.353; (0, 0, False) off Earth.");
     m.def(
         "destination",
@@ -46,11 +44,11 @@ void bind_geometry(nb::module_& m) {
             return nb::make_tuple(p.lat_deg, p.lon_deg);
         },
         "lat_deg"_a, "lon_deg"_a, "bearing_deg"_a, "dist_km"_a,
-        "app.geography._destination: (lat_deg, lon_deg) dist_km along the great circle at\n"
+        "(lat_deg, lon_deg) dist_km along the great circle at\n"
         "bearing_deg from (lat_deg, lon_deg), on the IUGG mean-radius sphere.");
     m.def("haversine_km", &geo::haversine_km, "lat1_deg"_a, "lon1_deg"_a, "lat2_deg"_a,
           "lon2_deg"_a,
-          "app.geography._haversine_km: great-circle distance [km] between two points [deg].");
+          "Great-circle distance [km] on the mean-radius sphere between two points [deg].");
     m.def(
         "bearing",
         [](In1D lat1, In1D lon1, In1D lat2, In1D lon2) {
@@ -62,7 +60,7 @@ void bind_geometry(nb::module_& m) {
             return to_numpy(std::move(b));
         },
         "lat1_deg"_a, "lon1_deg"_a, "lat2_deg"_a, "lon2_deg"_a,
-        "app.geography.bearing on equal-length 1-D arrays: initial great-circle bearing\n"
+        "On equal-length 1-D arrays: initial great-circle bearing\n"
         "[deg, [0, 360)] from point 1 to point 2.");
     m.def(
         "shadow_edge_limits",
@@ -86,7 +84,7 @@ void bind_geometry(nb::module_& m) {
         },
         "x"_a, "y"_a, "d_deg"_a, "mu_deg"_a, "l"_a, "tan_f"_a, "path_bearing_deg"_a,
         "max_km"_a = 600.0, "sunlit_only"_a = true, "rates"_a = nb::none(),
-        "app.geography.shadow_edge_limits_v on equal-length 1-D arrays:\n"
+        "Shadow-edge limits on equal-length 1-D arrays:\n"
         "(north_lat, north_lon, south_lat, south_lon, width_km); NaN / 0 where no edge.\n"
         "x, y, l in Earth equatorial radii; d, mu, bearing in degrees; max_km in km.\n"
         "rates: optional (dx, dy, dd_deg, dmu_deg, dl) per hour -> the path envelope.");
@@ -105,6 +103,6 @@ void bind_geometry(nb::module_& m) {
             return out;
         },
         "et0"_a, "earth_frame"_a = "ITRS", "half_window_hours"_a = 5.0,
-        "app.geography.global_contacts for a model at et0 [TDB s] in earth_frame: list of\n"
-        "(name, t_hours) in the oracle's order P1, P4, U1, U4, U2, U3 (absent ones omitted).");
+        "Global contacts for a model at et0 [TDB s] in earth_frame: list of\n"
+        "(name, t_hours) in the order P1, P4, U1, U4, U2, U3 (absent ones omitted).");
 }

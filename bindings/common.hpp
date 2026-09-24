@@ -50,9 +50,9 @@ nb::tuple local_raw_tuple(const eclipse::circumstances::LocalRaw& r);
 
 // One binding unit per core header (roadmap §3), so later work packages stay
 // file-disjoint. Declared here, defined in bind_<name>.cpp, called from NB_MODULE.
-void bind_numerics(nb::module_& m);
 void bind_ellipsoid(nb::module_& m);
 void bind_geometry(nb::module_& m);
 void bind_circumstances(nb::module_& m);
 void bind_catalog(nb::module_& m);
 void bind_limb(nb::module_& m);
+void bind_besselian(nb::module_& m);

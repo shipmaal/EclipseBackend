@@ -5,6 +5,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -13,6 +17,7 @@
 #include <numbers>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -25,14 +30,18 @@ namespace eclipse::limb {
 
 namespace {
 
+// The band as the silhouette reads it: row runs, DN in run order and the
+// pixel-centre trig tables. No per-point neighbour indices: two points are
+// grid neighbours exactly when both are in the band, which the silhouette's
+// row buffers already know (``Proj::line``), so the DEM costs 2 bytes a point.
 struct Band {
     std::vector<std::int32_t> line, first, count;
     std::vector<std::size_t> offset;  // first point of each run
     std::vector<std::size_t> line_runs;  // runs of line i: [line_runs[i], line_runs[i + 1])
     std::vector<std::int16_t> dn;
-    std::vector<std::int32_t> right, down;  // neighbour point index, -1: none
     std::vector<double> cos_lat, sin_lat, cos_lon, sin_lon;
     double offset_km = 0.0, scale_km = 0.0, band_deg = 0.0;
+    std::string source;  // the band file's path; empty for set_band
 };
 
 std::mutex& band_mutex() {
@@ -58,8 +67,8 @@ std::shared_ptr<const Band> band() {
     return b;
 }
 
-// app.limb._fill_empty: periodic linear interpolation across empty bins,
-// ``a + (b - a) * (m / L)``; too many empty bins is an error.
+}  // namespace
+
 void fill_empty(std::vector<double>& rho) {
     const std::size_t n = rho.size();
     std::vector<std::size_t> filled;
@@ -82,11 +91,72 @@ void fill_empty(std::vector<double>& rho) {
     }
 }
 
+
+namespace {
+
+// Validate the runs against the grid, index them and publish the band (bumps
+// the generation, so cached profiles of a previous band are never reused).
+void install(std::shared_ptr<Band> b) {
+    b->offset.clear();
+    b->offset.reserve(b->line.size());
+    std::size_t total = 0;
+    for (std::size_t r = 0; r < b->line.size(); ++r) {
+        if (b->line[r] < 0 || static_cast<std::size_t>(b->line[r]) >= b->cos_lat.size() ||
+            b->first[r] < 0 || b->count[r] < 0 ||
+            static_cast<std::size_t>(b->first[r]) + static_cast<std::size_t>(b->count[r]) >
+                b->cos_lon.size())
+            throw std::invalid_argument("eclipse::limb: band run outside the DEM grid");
+        if (r > 0 && (b->line[r] < b->line[r - 1] ||
+                      (b->line[r] == b->line[r - 1] &&
+                       b->first[r] < b->first[r - 1] + b->count[r - 1])))
+            throw std::invalid_argument("eclipse::limb: band runs must be in grid order");
+        b->offset.push_back(total);
+        total += static_cast<std::size_t>(b->count[r]);
+    }
+    if (total != b->dn.size())
+        throw std::invalid_argument("eclipse::limb: band runs do not cover the DN array");
+    b->line_runs.assign(b->cos_lat.size() + 1, 0);
+    for (const std::int32_t li : b->line) ++b->line_runs[static_cast<std::size_t>(li) + 1];
+    for (std::size_t i = 1; i < b->line_runs.size(); ++i) b->line_runs[i] += b->line_runs[i - 1];
+    std::scoped_lock lock(band_mutex());
+    band_slot() = std::move(b);
+    ++band_generation();
+}
+
+// ---- the limb-band file (kernels/limb_band.py; format ECLLIMB1) ----------
+
+// Little-endian integers assembled from bytes: independent of the host's
+// byte order and of alignment (the DN array starts at an odd offset).
+template <class T>
+T read_le(const std::vector<char>& raw, std::size_t& pos) {
+    static_assert(std::is_integral_v<T>);
+    if (pos + sizeof(T) > raw.size()) throw std::runtime_error("truncated");
+    using U = std::make_unsigned_t<T>;
+    U u = 0;
+    for (std::size_t k = 0; k < sizeof(T); ++k)
+        u = static_cast<U>(u | (static_cast<U>(static_cast<unsigned char>(raw[pos + k])) << (8 * k)));
+    pos += sizeof(T);
+    return static_cast<T>(u);
+}
+
+// A number from the header's flat JSON object (``json.dumps(sort_keys=True,
+// separators=(",", ":"))``): ``"key":<number>``. Python writes floats with
+// repr (shortest round trip), so strtod gives back the same double.
+double header_number(const std::string& json, const std::string& key) {
+    const std::string pat = "\"" + key + "\":";
+    const std::size_t at = json.find(pat);
+    if (at == std::string::npos) throw std::runtime_error("header has no " + key);
+    const char* begin = json.c_str() + at + pat.size();
+    char* end = nullptr;
+    const double v = std::strtod(begin, &end);
+    if (end == begin) throw std::runtime_error("header " + key + " is not a number");
+    return v;
+}
+
 }  // namespace
 
 void set_band(std::span<const std::int32_t> line, std::span<const std::int32_t> first,
               std::span<const std::int32_t> count, std::span<const std::int16_t> dn,
-              std::span<const std::int32_t> right, std::span<const std::int32_t> down,
               std::span<const double> cos_lat, std::span<const double> sin_lat,
               std::span<const double> cos_lon, std::span<const double> sin_lon,
               double offset_km, double scale_km, double band_deg) {
@@ -94,33 +164,10 @@ void set_band(std::span<const std::int32_t> line, std::span<const std::int32_t> 
         cos_lat.size() != sin_lat.size() || cos_lon.size() != sin_lon.size())
         throw std::invalid_argument("eclipse::limb::set_band: mismatched array lengths");
     auto b = std::make_shared<Band>();
-    b->offset.reserve(line.size());
-    std::size_t total = 0;
-    for (std::size_t r = 0; r < line.size(); ++r) {
-        if (line[r] < 0 || static_cast<std::size_t>(line[r]) >= cos_lat.size() || first[r] < 0 ||
-            count[r] < 0 ||
-            static_cast<std::size_t>(first[r]) + static_cast<std::size_t>(count[r]) > cos_lon.size())
-            throw std::invalid_argument("eclipse::limb::set_band: run outside the DEM grid");
-        b->offset.push_back(total);
-        total += static_cast<std::size_t>(count[r]);
-    }
-    if (total != dn.size() || right.size() != total || down.size() != total)
-        throw std::invalid_argument("eclipse::limb::set_band: runs do not cover dn/right/down");
-    for (std::size_t p = 0; p < total; ++p)
-        if (right[p] >= static_cast<std::int32_t>(total) || down[p] >= static_cast<std::int32_t>(total))
-            throw std::invalid_argument("eclipse::limb::set_band: neighbour index out of range");
-    for (std::size_t r = 1; r < line.size(); ++r)
-        if (line[r] < line[r - 1])
-            throw std::invalid_argument("eclipse::limb::set_band: runs must be in line order");
-    b->line_runs.assign(cos_lat.size() + 1, 0);
-    for (const std::int32_t li : line) ++b->line_runs[static_cast<std::size_t>(li) + 1];
-    for (std::size_t i = 1; i < b->line_runs.size(); ++i) b->line_runs[i] += b->line_runs[i - 1];
     b->line.assign(line.begin(), line.end());
     b->first.assign(first.begin(), first.end());
     b->count.assign(count.begin(), count.end());
     b->dn.assign(dn.begin(), dn.end());
-    b->right.assign(right.begin(), right.end());
-    b->down.assign(down.begin(), down.end());
     b->cos_lat.assign(cos_lat.begin(), cos_lat.end());
     b->sin_lat.assign(sin_lat.begin(), sin_lat.end());
     b->cos_lon.assign(cos_lon.begin(), cos_lon.end());
@@ -128,9 +175,77 @@ void set_band(std::span<const std::int32_t> line, std::span<const std::int32_t> 
     b->offset_km = offset_km;
     b->scale_km = scale_km;
     b->band_deg = band_deg;
+    install(std::move(b));
+}
+
+void load_band_file(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("eclipse::limb: cannot open limb band " + path);
+    const std::vector<char> raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    auto b = std::make_shared<Band>();
+    try {
+        if (raw.size() < 8 || std::memcmp(raw.data(), "ECLLIMB1", 8) != 0)
+            throw std::runtime_error("not a limb-band file");
+        std::size_t pos = 8;
+        const auto hlen = read_le<std::uint32_t>(raw, pos);
+        if (pos + hlen > raw.size()) throw std::runtime_error("truncated");
+        const std::string json(raw.data() + pos, hlen);
+        pos += hlen;
+        if (header_number(json, "format_version") != 1.0)
+            throw std::runtime_error("unsupported limb-band format");
+        const auto n_runs = read_le<std::uint32_t>(raw, pos);
+        b->line.resize(n_runs);
+        b->first.resize(n_runs);
+        b->count.resize(n_runs);
+        for (std::uint32_t r = 0; r < n_runs; ++r) {
+            b->line[r] = read_le<std::int32_t>(raw, pos);
+            b->first[r] = read_le<std::int32_t>(raw, pos);
+            b->count[r] = read_le<std::int32_t>(raw, pos);
+        }
+        const auto n_pts = read_le<std::uint32_t>(raw, pos);
+        if (pos + 2 * static_cast<std::size_t>(n_pts) != raw.size())
+            throw std::runtime_error("truncated or inconsistent");
+        b->dn.resize(n_pts);
+        for (auto& v : b->dn) v = read_le<std::int16_t>(raw, pos);
+
+        // Pixel centres, PDS map projection of the LDEM label (kernels/limb_band.py):
+        // latitude (LINE_PROJECTION_OFFSET - i) / ppd, east longitude
+        // (j - SAMPLE_PROJECTION_OFFSET) / ppd + CENTER_LONGITUDE, in degrees, then
+        // radians and libm cos/sin -- app.limb.band_from_file's order.
+        const double ppd = header_number(json, "map_resolution");
+        const double lpo = header_number(json, "line_projection_offset");
+        const double spo = header_number(json, "sample_projection_offset");
+        const double clon = header_number(json, "center_longitude");
+        const auto lines = static_cast<std::size_t>(header_number(json, "lines"));
+        const auto samples = static_cast<std::size_t>(header_number(json, "line_samples"));
+        b->cos_lat.resize(lines);
+        b->sin_lat.resize(lines);
+        for (std::size_t i = 0; i < lines; ++i) {
+            const double lat = ((lpo - static_cast<double>(i)) / ppd) * constants::DEG_TO_RAD;
+            b->cos_lat[i] = std::cos(lat);
+            b->sin_lat[i] = std::sin(lat);
+        }
+        b->cos_lon.resize(samples);
+        b->sin_lon.resize(samples);
+        for (std::size_t j = 0; j < samples; ++j) {
+            const double lon = ((static_cast<double>(j) - spo) / ppd + clon) * constants::DEG_TO_RAD;
+            b->cos_lon[j] = std::cos(lon);
+            b->sin_lon[j] = std::sin(lon);
+        }
+        // radius_m = DN * SCALING_FACTOR + OFFSET (label), here in km.
+        b->offset_km = header_number(json, "offset") / 1000.0;
+        b->scale_km = header_number(json, "scaling_factor") / 1000.0;
+        b->band_deg = header_number(json, "band_deg");
+    } catch (const std::runtime_error& e) {
+        throw std::runtime_error("eclipse::limb: " + path + ": " + e.what());
+    }
+    b->source = path;
+    install(std::move(b));
+}
+
+std::string band_source() {
     std::scoped_lock lock(band_mutex());
-    band_slot() = std::move(b);
-    ++band_generation();
+    return band_slot() ? band_slot()->source : std::string();
 }
 
 bool has_band() {
@@ -168,6 +283,7 @@ std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins, do
     struct Proj {
         double s, u;
         bool near;
+        std::ptrdiff_t line;  // the DEM line this slot holds (-1: none yet)
     };
     auto project = [&](std::size_t li, std::size_t j, std::size_t p) {
         const double cl = b->cos_lat[li];
@@ -179,7 +295,8 @@ std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins, do
         const double qy = (px * y0 + py * y1) + pz * y2;
         const double w = (px * z0 + py * z1) + pz * z2;
         // Perspective from distance D along -z^ (app.limb.silhouette).
-        Proj r{std::sqrt(qx * qx + qy * qy) / (1.0 + w / distance_km), 0.0, false};
+        Proj r{std::sqrt(qx * qx + qy * qy) / (1.0 + w / distance_km), 0.0, false,
+               static_cast<std::ptrdiff_t>(li)};
         if (r.s > floor_km) {
             r.near = true;
             r.u = (std::atan2(qy, qx) + pi) * per_rad;
@@ -196,14 +313,17 @@ std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins, do
 
     // Lines are processed in order with two row buffers (this line, the next),
     // so each point is projected once per block of lines: its right neighbour
-    // is in the same row buffer and its down neighbour in the next one. The
-    // max over points and edges is the same whatever the order.
+    // is in the same row buffer and its down neighbour in the next one. A slot
+    // is a band point of line L exactly when it was filled for L (``line``), so
+    // grid adjacency needs no neighbour index (app.limb._neighbours: east
+    // j + 1 mod samples, south i + 1, both in the band). The max over points
+    // and edges is the same whatever the order.
 #ifdef _OPENMP
 #pragma omp parallel if (!omp_in_parallel())
 #endif
     {
         std::vector<double> local(nb, neg_inf);
-        std::vector<Proj> cur(samples), nxt(samples);
+        std::vector<Proj> cur(samples, Proj{0.0, 0.0, false, -1}), nxt(cur);
         auto put = [&](std::size_t k, double v) {
             if (v > local[k]) local[k] = v;
         };
@@ -251,21 +371,18 @@ std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins, do
             for (std::size_t r = b->line_runs[li]; r < b->line_runs[li + 1]; ++r) {
                 const auto j0 = static_cast<std::size_t>(b->first[r]);
                 const auto cnt = static_cast<std::size_t>(b->count[r]);
-                const std::size_t p0 = b->offset[r];
                 for (std::size_t c = 0; c < cnt; ++c) {
-                    const std::size_t j = j0 + c, p = p0 + c;
+                    const std::size_t j = j0 + c;
                     const Proj& a = cur[j];
                     if (!a.near) continue;
                     auto k = static_cast<std::ptrdiff_t>(std::floor(a.u));
                     k = std::min<std::ptrdiff_t>(k, n_bins - 1);
                     put(static_cast<std::size_t>(k), a.s);
-                    if (b->right[p] >= 0) {
-                        const Proj& e = cur[(j + 1) % samples];
-                        if (e.near) edge(a, e);
-                    }
-                    if (b->down[p] >= 0 && has_below) {
-                        const Proj& e = nxt[j];
-                        if (e.near) edge(a, e);
+                    const Proj& e_right = cur[(j + 1) % samples];
+                    if (e_right.line == ll && e_right.near) edge(a, e_right);
+                    if (has_below) {
+                        const Proj& e_down = nxt[j];
+                        if (e_down.line == ll + 1 && e_down.near) edge(a, e_down);
                     }
                 }
             }

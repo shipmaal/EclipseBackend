@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-DEFAULT_DATA_FILE = Path(__file__).resolve().parent / "data.txt"
+DEFAULT_DATA_FILE = Path(__file__).resolve().parent / "data" / "data.txt"
 
 _COLUMNS = [
     "Universal",

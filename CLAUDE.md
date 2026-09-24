@@ -9,70 +9,98 @@ citation. Read the "Scientific conventions" section before touching any math.
 EclipseBackend computes the **Besselian elements** of a solar eclipse and
 everything that follows from them — the central line, the northern/southern
 limits and path width, and per-observer local circumstances (contact times,
-duration, magnitude, obscuration). A FastAPI service exposes it and a
-dependency-free Three.js globe (`frontend/`) visualizes it.
+duration, magnitude, obscuration), the lunar-limb-profile contacts, a global
+map and an eclipse catalog.
 
-Positions come from **NASA/NAIF SPICE** (SpiceyPy) + a **JPL DE** ephemeris;
-Earth orientation from **ERFA** (IAU 2006/2000A) with **IERS** EOP. Packaging is
-**uv**. The project deliberately does **not** use astropy (it was removed; SPICE
-+ ERFA + NumPy cover the need with a smaller, more explicit surface).
+**The C++ core (`libeclipse`, `core/`) is the implementation.** It is exposed
+to Python as the nanobind extension `_eclipse` (`bindings/`), and a thin
+FastAPI service (`app/`) parses requests, calls the core and formats JSON; a
+dependency-free Three.js globe (`frontend/`) visualizes it. There is no Python
+implementation of the math (the pure-Python `app/` that the core was ported
+from was retired after commit `fe1a64a`; see `docs/CPP_NATIVE.md`).
+
+Positions come from **NASA/NAIF CSPICE** + a **JPL DE** ephemeris; Earth
+orientation from **ERFA** (IAU 2006/2000A) with **IERS** EOP — both vendored in
+`third_party/` and linked statically into the core. Packaging is **uv** +
+scikit-build-core. The project deliberately does **not** use astropy (only its
+`astropy-iers-data` file bundle).
 
 ## Setup & commands
 
 ```bash
-uv sync                                  # install into .venv (also builds the native core)
+uv sync                                  # install into .venv; builds the core (_eclipse)
 uv run python -m kernels.bootstrap       # download SPICE kernels (auto: NAIF else GitHub mirror)
 uv run python -m kernels.bootstrap --limb  # + lunar limb profile inputs (LOLA band, MOON_ME kernels)
-uv run pytest                            # tests (integration tests auto-skip without kernels)
+uv run pytest                            # tests (kernel-dependent tests auto-skip without kernels)
 uv run uvicorn app.main:app --reload     # API + viewer at http://localhost:8000/ui/
 cmake --preset release && cmake --build --preset release && ctest --preset release  # C++ tests
 ```
 
 Environment: `SPICE_EARTH_FRAME` overrides the default frame (`ITRS`);
-`SPICE_METAKERNEL` overrides the kernel path; `ECLIPSE_BACKEND=python|native|auto`
-selects the compute backend (`app/native.py`; default `auto` = `native` when the
-`_eclipse` extension is built, else `python` with one `RuntimeWarning`; an
-explicit `native` that cannot import is an `ImportError`).
+`SPICE_METAKERNEL` overrides the kernel path (`app.core.metakernel()`; the
+mirror kernel set is run this way); `ECLIPSE_LIMB_BAND` overrides the limb-band
+file. `uv sync` rebuilds the core when `core/`, `bindings/`, `cmake/`,
+`CMakeLists.txt` or `third_party/` change (`tool.uv.cache-keys`); install
+`ccache` to make that seconds instead of a minute.
 
-## Architecture (`app/`)
+## Architecture
 
-Data flows one direction: **ephemeris → besselian → geography/circumstances → main/frontend**.
+Data flows one direction: **ephemeris → elements → geometry → circumstances /
+catalog → bindings → `app/` → frontend**.
+
+The core, `core/include/eclipse/*.hpp` + `core/src/*.cpp`:
+
+| Unit | Responsibility |
+| --- | --- |
+| `ephem` | The only CSPICE / ERFA user: kernels, time scales (UTC / UT1 / TDB, the IERS-era rule), apparent Sun/Moon (`LT+S`), `besselian_instants` (the 8 elements + `z`, [ES92] 8.322-8.323), the four Earth-orientation frames (`ITRS`/`TOD`/`ITRF93`/`IAU_EARTH`), `sub_solar_points`, `axis_separation` (frame-free `rho`, `z`), `limb_axes` (fundamental-plane axes in `MOON_ME`). |
+| `eop` | IERS polar motion + UT1−UTC: parses `finals2000A.all` (`load_file`) and interpolates it. |
+| `deltat` | ΔT = TT − UT1 polynomial model [Espenak] for epochs outside the IERS era. |
+| `constants` | WGS-84, the lunar radii `K_PENUMBRA`/`K_UMBRA` [Espenak], the solar radius (IAU 1976), unit conversions — their one home (exposed to Python as `_eclipse` attributes). |
+| `besselian` | One model (`et0`, frame): `elements_direct` (mu unwrapped), `element_rates`, the tabular polynomial fit `fit_polynomials` (`/besselian`), `central_line` (the whole `/central-line` product). |
+| `ellipsoid` | The WGS-84 reduction: `fund_to_geo` (fundamental→geographic), `geo_to_fund` (its exact inverse, with the observer's height, [Meeus98] ch. 11). |
+| `geometry` | `shadow_radii`, great-circle helpers, `geodesic_km` (Andoyer), `shadow_edge_limits` (N/S limits + width, umbral or penumbral, with the time envelope), `global_contacts` (P1–U4). |
+| `circumstances` | Per-observer local circumstances (mean limb, or C2/C3 from the limb profile; `height_m` above the ellipsoid), the `/map` grid (OpenMP), the profile contact function `profile_g` and search `profile_contacts`. |
+| `catalog` | `find_eclipses`: scan a date range, refine greatest eclipse, classify P/A/T/H, Canon-style rows, detail (OpenMP). |
+| `limb` | Lunar limb profile from the LOLA DEM (`docs/LIMB_PROFILE.md`): reads the band file, `silhouette()` (δρ per 0.05° bin, perspective), `profiles_at()` (5-min cached lattice), `g_total()` / `g_annular()`. |
+| `numerics` | Bisection, sign changes, parabolic extremum, `arange`/`unwrap`/`remainder` with NumPy semantics. |
+
+The Python side:
 
 | Module | Responsibility |
 | --- | --- |
-| `ephemeris.py` | SPICE apparent Sun/Moon positions; `besselian_instant()` builds the 8 elements at one instant; the four Earth-orientation frames (`ITRS`/`TOD`/`ITRF93`/`IAU_EARTH`); `sub_solar_point()`; `limb_axes()` (fundamental-plane axes in `MOON_ME`). Owns the lunar-radius constants `K_PENUMBRA`/`K_UMBRA`. |
-| `eop.py` | IERS polar motion + UT1−UTC, interpolated from the `astropy-iers-data` bundle. |
-| `besselian.py` | Samples the elements around T0 and polynomial-fits them (`BesselianModel`). |
-| `geography.py` | The ellipsoid geometry: `fund_to_geo` (fundamental→geographic), `geo_to_fund` (its exact inverse; `height_m` adds the observer's height above the ellipsoid, exactly, [Meeus98] ch. 11), `shadow_edge_limits` (N/S limits + true width, umbral or penumbral), `global_contacts` (P1–U4), `shadow_radii`, great-circle helpers. |
-| `deltat.py` | ΔT = TT − UT1 polynomial model [Espenak] for epochs outside the IERS era. |
-| `circumstances.py` | Per-observer local circumstances from a `BesselianModel` (`limb="mean"` k2, or `"profile"`: C2/C3 from the LOLA limb profile; `height_m` above the WGS-84 ellipsoid); `circumstances_grid` for maps (sea level). |
-| `catalog.py` | `find_eclipses`: scan a date range, refine greatest eclipse, classify P/A/T/H, Canon-style rows. |
-| `limb.py` | Lunar limb profile from the LOLA DEM (`docs/LIMB_PROFILE.md`): loads the limb band, `silhouette()` (δρ per 0.05° bin, points + grid edges, in perspective from the Moon's distance), `profiles_at()` (5-min cached lattice), the contact functions `g_total()` / `g_annular()`. Used by `/circumstances?limb=profile`. |
-| `numerics.py` | Vectorized bisection / parabolic-extremum helpers shared by circumstances, contacts and the catalog. |
-| `reference.py` | Parses `app/data.txt` (a reference central-line track). |
-| `main.py` | FastAPI: `/health`, `/besselian`, `/central-line`, `/circumstances` (`limb=mean|profile`, `elev=` m above the ellipsoid), `/map`, `/eclipses`; serves `frontend/` at `/ui`. |
+| `bindings/` | nanobind: one `bind_<unit>.cpp` per core header; arrays in and out as NumPy float64, the GIL released around compute; `_eclipse.SpiceError` carries the CSPICE message fields. |
+| `app/core.py` | The process state the core needs: kernels (`load_kernels`), the EOP file, the limb band (`ensure_limb_band`), `PARALLEL_LOCK`, the frame list. |
+| `app/besselian.py` | `normalize_utc` (the single epoch parser) and `BesselianModel`, a handle (`t0_utc`, `et0`, frame, fit window, the fitted polynomials). |
+| `app/circumstances.py`, `app/catalog.py` | Format the core's raw tuples (`_LocalRaw`, `_EventRaw`) into the API's dicts. |
+| `app/formatting.py` | Clock / offset strings. |
+| `app/main.py` | FastAPI: `/health`, `/besselian`, `/central-line`, `/circumstances` (`limb=mean|profile`, `elev=`), `/map`, `/eclipses`; serves `frontend/` at `/ui`. |
 | `kernels/bootstrap.py` | Downloads kernels (`--source auto|naif|mirror`, `--limb`) and writes `eclipse.tm`. |
 | `kernels/limb_band.py` | Cuts LOLA `LDEM_*` to the lunar limb band (deterministic, SHA-pinned file) and reads it back. |
+
+**New math goes into the core**, with a binding if the API or a test needs
+it. `app/` holds no numerics beyond formatting (the one exception: evaluating
+the published `/besselian` polynomials, as a reader of the table would).
 
 ## Scientific conventions — READ BEFORE EDITING MATH
 
 1. **Every non-trivial equation and physical constant carries a citation** in
-   the nearest docstring or an inline comment, using the keys in "References"
-   below (e.g. `# Explanatory Supplement eq. 11.323` or `[Espenak]`). New math
+   the nearest doc comment or an inline comment, using the keys in "References"
+   below (e.g. `// Explanatory Supplement eq. 11.323` or `[Espenak]`). New math
    without a source is not done. Prefer the equation number, not just the book.
 
 2. **Reuse, don't re-derive.** Shared geometry lives in one place:
-   - ellipsoid reduction and great-circle math → `geography.py`
-   - Earth-orientation / apparent positions → `ephemeris.py`
-   - EOP → `eop.py`
+   - ellipsoid reduction → `ellipsoid.hpp`; great-circle math, limits → `geometry`
+   - Earth orientation / apparent positions / time scales → `ephem`
+   - EOP → `eop`; ΔT → `deltat`; constants → `constants.hpp`
    If you find the same formula (parametric latitude, ρ1/d1 auxiliaries, a
    root-find, a constant) written twice, factor it out rather than copying.
 
 3. **Units are explicit and stated in every signature.** Conventions:
-   angles in **degrees** at module boundaries (radians internally), distances in
+   angles in **degrees** at interfaces (radians internally), distances in
    **Earth equatorial radii** for fundamental-plane quantities and **km**
-   otherwise, times in **seconds**/**hours-from-T0** as labelled. There is no
-   units library — the docstring is the contract, so keep it accurate.
+   otherwise, times in **seconds** (TDB past J2000) / **hours from T0** as
+   labelled. There is no units library — the doc comment is the contract, so
+   keep it accurate.
 
 4. **Validate against an independent published source.** Every capability that
    produces a number has a test in `tests/test_besselian_integration.py`
@@ -82,128 +110,100 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
    when you add a capability; state the achieved agreement in the test comment.
    Known, open discrepancies are strict xfails, never widened gates
    (`docs/CODE_REVIEW_FOLLOWUPS.md` §6). Path limits/widths are the time
-   envelope of the shadow (`shadow_edge_limits_v(..., rates=element_rates(...))`),
+   envelope of the shadow (`shadow_edge_limits` with `element_rates`),
    measured with `geodesic_km`; the solar radius is the constant
-   `constants.SUN_RADIUS_KM` (IAU 1976), never the PCK's. Limb-profile
+   `constants::SUN_RADIUS_KM` (IAU 1976), never the PCK's. Limb-profile
    contacts are checked against an independent 3D ray-traced oracle
    (`tests/test_limb_oracle.py`, gated in limb-height metres) and against
    [EB2024] and [Irwin21] at the sites' heights (`docs/LIMB_VALIDATION_SOURCES.md`).
+   Independent checks must stay independent: the test oracles
+   (`tests/geodesy_oracle.py`, `tests/test_limb_oracle.py`) take their
+   constants from the sources and their SPICE / ERFA from spiceypy / pyerfa
+   (separate builds, dev dependencies), never from the core.
 
 5. **Frames & epochs.** Input epochs are **UTC** and must be ISO-8601
-   (`besselian.normalize_utc` is the single parser). ΔT = TT − UT1 is measured
-   (leap-second kernel + IERS UT1−UTC) **only inside the IERS era, 1973 – ~1 yr
-   ahead**; outside it the epoch is read as UT1 and ΔT comes from the
-   Espenak & Meeus polynomial model in `deltat.py` [Espenak] — never rely on
+   (`app.besselian.normalize_utc` is the single parser). ΔT = TT − UT1 is
+   measured (leap-second kernel + IERS UT1−UTC) **only inside the IERS era,
+   1973 – ~1 yr ahead**; outside it the epoch is read as UT1 and ΔT comes from
+   the Espenak & Meeus polynomial model in `deltat` [Espenak] — never rely on
    SPICE's leap-second table there (it silently holds the first/last count).
-   Published Besselian elements are tabulated in **TDT/TT** (use `str2et(".. TDT")`
-   to compare). Published `mu` is the *ephemeris hour angle* (Earth rotation
-   evaluated as if TT were UT); ours is the true Greenwich hour angle, so
-   `mu_published = mu_ours + ΔT·1.002738·15″/s` [ES92] 8.36 — see
-   `ephemeris.py` and the mu test.
+   Published Besselian elements are tabulated in **TDT/TT** (use
+   `_eclipse.str_to_et(".. TDT")` to compare). Published `mu` is the
+   *ephemeris hour angle* (Earth rotation evaluated as if TT were UT); ours is
+   the true Greenwich hour angle, so
+   `mu_published = mu_ours + ΔT·1.002738·15″/s` [ES92] 8.36 — see the mu test.
+
 6. **Horizon.** The cone geometry is valid on the whole ellipsoid, including
    the night side; every local circumstance must be checked against the Sun's
-   altitude (`circumstances.HORIZON_ALT_DEG`, [Meeus98] ch. 15) before being
-   reported. Vectorize new geometry (array-native NumPy, broadcasting over
-   observers × instants) rather than looping; the scalar functions are thin
-   wrappers over the array ones.
+   altitude (`circumstances::HORIZON_ALT_DEG`, [Meeus98] ch. 15) before being
+   reported.
 
-## Native core (`libeclipse`, phases 0–4 done)
+## The core (C++)
 
-`docs/CPP_ROADMAP.md` is the plan for the C++20 `libeclipse` core: the Python
-`app/` stays the API *and the oracle*; every C++ unit is parity-tested
-against it at the tolerances listed there before a reference-eclipse test is
-routed through it. Layout: `core/include/eclipse/*.hpp` + `core/src/*.cpp`
-(library), `bindings/_eclipse.cpp` (nanobind), `tests/cpp/` (Catch2),
-`cmake/` (build of the vendored libs), `third_party/{cspice,erfa}` (vendored,
-**unmodified** — never edit; see `THIRD_PARTY_NOTICES.md`). Rules that are
-structural, not stylistic:
+`docs/CPP_NATIVE.md` is the plan and the roadmap. Rules that are structural,
+not stylistic:
 
 - Only `core/src/ephem.cpp` includes `SpiceUsr.h`/`erfa.h`; every CSPICE call
   goes through its `spice_call` (global mutex + RETURN mode + `failed_c()` →
   `eclipse::spice_error`). Everything else is pure math and lock-free.
-- **Port, don't improve.** C++ bodies keep the Python's operation order
-  (left-to-right as NumPy evaluates; `np.polyval` = Horner; `np.interp`
-  semantics in `eop.cpp`; `np.remainder` in `wrap_180`). A change to a
-  formula goes into both languages in the same PR, then
-  `uv run python tools/dump_oracle.py` regenerates `tests/cpp/fixtures/`.
-- Parity is checked live in `tests/test_native.py` (Python vs native over
-  dense windows; `tests/test_backend_switch.py` covers the backend resolution
-  in subprocesses) and offline in `tests/cpp/test_*.cpp` (fixtures).
-  Residuals are documented there; do not widen a tolerance to make a test
-  pass. `tools/dump_oracle.py` pins `ECLIPSE_BACKEND=python` itself.
-- The EOP table is injected from `app.eop` (`set_eop_table`); the C++ never
-  parses `finals2000A.all`.
-- Dispatch under the native backend (`native.is_native()`, read at call
-  time): the five `app/ephemeris.py` functions plus `axis_separation` (phases
-  1 / 4) and, in `app/geography.py` (phase 2), `fund_to_geo_v`,
-  `geo_to_fund`, `shadow_radii`, `bearing`, `shadow_edge_limits_v` and
-  `global_contacts` — a dispatch line plus broadcast/ravel/reshape glue at the
-  top of each, the Python body untouched. The scalar `fund_to_geo`,
-  `_reduction_aux`, the private great-circle helpers, `central_track` and the
-  formatters stay Python.
-- Phase 3, in `app/circumstances.py`: `local_circumstances` (the numbers —
-  `_local_raw` — come from C++ as a `_LocalRaw` tuple; `_format_local` stays
-  Python) and `circumstances_grid` (same keys/dtypes; `chunk` bounds only the
-  Python path's memory and is ignored natively). The grid's observer loop is
-  OpenMP-parallel (`ECLIPSE_OPENMP` CMake option, default ON; serial fallback
-  when no OpenMP is found, e.g. Apple Clang without libomp; results are
-  identical for any thread count). libgomp is **not fork-safe once it has
-  started its thread pool**, so a forking server must not warm the native
-  grid in the parent: run gunicorn without `--preload` (the Dockerfile's CMD
-  does not).  `native.PARALLEL_LOCK` holds one grid/catalog OpenMP team per process;
-  the Docker CMD sizes it with `OMP_NUM_THREADS` = cores / `WEB_CONCURRENCY`.
-- Phase 4, in `app/catalog.py`: `find_eclipses` takes the core's `_EventRaw`
-  tuples (`_eclipse.find_eclipses`, `local` rebuilt as `_LocalRaw`) in place
-  of `_catalog_raw` and formats them with the same `_format_event`; the
-  per-event hybrid / detail loop is OpenMP-parallel (identical for any thread
-  count). The catalog's one formula change, made in both languages: the scan
-  and refinement objective is the frame-free `ephemeris.axis_separation`
-  (`rho`, `z` from the un-rotated J2000 vectors — the same [ES92] eq. 8.322-6,
-  invariant under any Earth-orientation rotation) instead of `hypot(x, y)` of
-  the ITRS elements, so the C++ scan needs no ERFA / EOP per sample; only the
-  elements *at* greatest eclipse use the configured frame. Parity consequence:
-  `rho` is flat at its minimum (and carries ~3e-12 of SPK evaluation jitter,
-  identical in both backends), so `et_g` is conditioned to ~1 ms and its gate
-  is 1e-2 s, with rows required identical up to a whole-second `greatest_utc`
-  flip at a rounding boundary inside that band (`catalog.hpp` "CONDITIONING
-  OF et_g", `app/catalog.py::_rho_at`, `tests/test_native.py` phase 4).
-- Lunar limb profile (`docs/LIMB_PROFILE.md`, PRs 1-2): `ephem::limb_axes`
-  (adds `pxform_c`; also returns the viewing distance), `core/src/limb.cpp`
-  (`silhouette`, `delta_rho_at`, `profiles_at` with a mutex-guarded node cache
-  keyed by the band generation, `g_total` / `g_annular`) and, in
-  `circumstances.cpp`, `profile_g` / `profile_contacts` / the `profile` flag of
-  `local_circumstances` (the `Model` carries `elements_ref_at` = the elements
-  with `limb::K_REF` for both cones, and `profiles_at`); `besselian_instants`
-  takes the cones' `k1`/`k2`. Profiles and contact functions are
-  bit-identical to `app.ephemeris.limb_axes` / `app.limb`; profile-mode
-  local circumstances are gated like the mean-limb ones (1e-9 h). The band is
-  injected from Python like the EOP table (`app.limb.install_native` ->
-  `set_limb_band`: runs, DN, neighbour indices, pixel-centre trig tables),
-  so the C++ never parses the band file. The Python side calls libm's
-  `atan2` (`app.limb._atan2`), not `np.arctan2` (SIMD, 1 ulp off), to keep
-  the parity exact; the native silhouette holds `native.PARALLEL_LOCK`.
+- `third_party/{cspice,erfa}` are vendored **unmodified** — never edit; see
+  `THIRD_PARTY_NOTICES.md`. `_eclipse` links its own CSPICE statically, so
+  its kernel pool is separate from spiceypy's (which the tests use as an
+  independent reference).
+- **Arithmetic is C++'s to design** (layout, ownership, allocation,
+  hoisting, caching, parallelism, and the operation order itself). What
+  guards the numbers:
+  - the reference-eclipse and oracle tests (the physics), which must hold;
+  - the golden fixtures in `tests/cpp/fixtures/` (written by the retired
+    Python oracle; `tests/cpp/fixtures.hpp`), which pin today's results. A
+    change that moves a golden value re-baselines those records in the same
+    PR, says by how much, and shows the reference tests still hold. A
+    tolerance is never widened to hide a change nobody explained.
+- No `-ffast-math`; `-ffp-contract=off` is set, so results do not depend on
+  the compiler's FMA choices across platforms (goldens stay portable).
+- Parallelism: the grid's observer loop, the catalog's per-event loop and the
+  limb silhouette are OpenMP-parallel (`ECLIPSE_OPENMP` CMake option, default
+  ON; serial fallback when no OpenMP is found, e.g. Apple Clang without
+  libomp); results are identical for any thread count. libgomp is **not
+  fork-safe once it has started its thread pool**, so a forking server must
+  not warm the grid in the parent: run gunicorn without `--preload` (the
+  Dockerfile's CMD does not). `app.core.PARALLEL_LOCK` holds one OpenMP team
+  per process; the Docker CMD sizes it with `OMP_NUM_THREADS` = cores /
+  `WEB_CONCURRENCY`.
+- The catalog's scan and refinement objective is the frame-free
+  `axis_separation` (`rho`, `z` from the un-rotated J2000 vectors, [ES92] eq.
+  8.322-6); only the elements *at* greatest eclipse use the configured frame.
+  `rho` is flat at its minimum, so `et_g` is conditioned to ~1 ms
+  (`catalog.hpp` "CONDITIONING OF et_g").
+- The limb band: the core reads the band file itself
+  (`limb::load_band_file`, via `app.core.ensure_limb_band`; 2 bytes a point;
+  `LDEM_64` 14° in 0.44 GB); `set_limb_band` remains for in-memory
+  (synthetic) bands. Profiles are cached on a 5-min lattice keyed by the band
+  generation.
 - Observer height (`docs/LIMB_PROFILE.md` §9.10): `ellipsoid::geo_to_fund_one`
-  takes a per-observer `ellipsoid::Site` (parametric-latitude factors, `h = H/a`,
-  geodetic cos/sin) and adds the rotated normal only when `h != 0`, so sea level
-  is bit-identical to the reduction alone; `ReductionAux` also carries `cos_d` /
-  `sin_d` for it (the Python recomputes `np.cos(d)` / `np.sin(d)`, the same
-  values, so `_ReductionAux` and the `red` fixtures are unchanged).
-  `height_m` rides through `series` / `profile_g` / `local_circumstances` and
-  the bindings; the grid (`/map`) stays sea level.
-- No `-ffast-math`; `-ffp-contract=off` is set. Keep the Python's operation
-  order so parity is bit-level, not "close".
-- `_eclipse` links its own CSPICE statically: its kernel pool is separate from
-  spiceypy's in the same process.
-- `uv sync` rebuilds it when `core/`, `bindings/`, `cmake/`, `CMakeLists.txt`
-  or `third_party/` change (`tool.uv.cache-keys`); install `ccache` to make
-  that seconds instead of a minute.
+  takes a per-observer `ellipsoid::Site` and adds the rotated normal only when
+  `h != 0`, so sea level is exactly the reduction alone. `height_m` rides
+  through `series` / `profile_g` / `local_circumstances`; the grid (`/map`)
+  stays sea level.
+- Doc comments in older units still name the Python function each was ported
+  from (`app.geography.*` etc.); those names refer to commit `fe1a64a` and are
+  rewritten as each unit is next touched.
 
 ## Testing
 
-`uv run pytest`. Pure-function tests (geography, reference parsing) always run;
-the numerical-validation tests require kernels and skip cleanly without them.
-Keep the suite green and prefer adding a reference-eclipse assertion over a
-hand-picked expected value.
+- `uv run pytest`: the reference eclipses (`test_besselian_integration.py`),
+  the catalog, the API, frame consistency, the limb profile (synthetic DEMs in
+  closed form, the real band), the 3D limb oracle, the geodesy oracle, and the
+  core's behaviour as an extension (`test_core.py`: errors, kernel pool, EOP,
+  thread-count independence; `ECLIPSE_BENCH=1` adds the grid / catalog
+  benchmarks). Kernel-dependent tests skip cleanly without kernels.
+- `ctest --preset release`: the Catch2 unit tests and the golden fixtures.
+- Before pushing: both on the NAIF kernels and, for CI parity, on the mirror
+  set (`SPICE_METAKERNEL=<dir>/eclipse.tm ECLIPSE_LIMB_BAND=<dir>/lola_ldem16_limb20.bin
+  uv run pytest`, the set from `kernels.bootstrap --source mirror --limb` run in a
+  short-path directory: SPICE `PATH_VALUES` ≤ 80 chars); `ruff check .`.
+- Prefer adding a reference-eclipse assertion over a hand-picked expected
+  value.
 
 ## Gotchas
 
@@ -212,6 +212,8 @@ hand-picked expected value.
   `raw.githubusercontent.com` work — the `mirror` source uses a pinned GitHub
   copy (DE432s + IAU_EARTH; the ERFA `ITRS`/`TOD` frames need no binary PCK).
 - **No model identifier** goes into commits/PRs/code.
+- **There is no pure-Python fallback**: an unbuilt or stale core is an
+  `ImportError` / a missing attribute; `uv sync` rebuilds it.
 - **Accuracy ceiling today**: DE432s (mirror) vs DE440 (both sub-km for Sun/Moon);
   the mean limb (`K_UMBRA`) everywhere except `/circumstances?limb=profile`
   (C2/C3 from the LOLA profile; limits, catalog and maps are PRs 3–4); and

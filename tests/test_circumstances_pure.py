@@ -1,15 +1,15 @@
 """Pure-function tests for the circle-overlap obscuration math (item M5).
 
-These run without SPICE kernels: they exercise the geometry helpers
-``_overlap_area`` and ``_obscuration`` against closed-form values.
+These run without SPICE kernels: they exercise the core's geometry helpers
+``overlap_area`` and ``obscuration`` against closed-form values.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
-
-from app.circumstances import _obscuration, _overlap_area
+from _eclipse import obscuration as _obscuration
+from _eclipse import overlap_area as _overlap_area
 
 
 def test_overlap_area_disjoint():

@@ -163,3 +163,20 @@ def test_circumstances_limb_parameter(client):
     assert prof["central_duration_s"] == pytest.approx(mean["central_duration_s"] - 3.2, abs=0.3)
     assert (prof["C1"], prof["C4"], prof["magnitude"]) == (mean["C1"], mean["C4"],
                                                          mean["magnitude"])
+
+
+def test_circumstances_elev_parameter(client):
+    """elev= is the observer's height above the WGS-84 ellipsoid [m], echoed
+    as elev_m (0 by default); out of [-500, 9000] is a 422.  At Vale OR (2017,
+    ~1.5 km inside the southern limit, [Irwin21]) its 694 m lengthen the
+    mean-limb totality from 33.8 s to 36.6 s: the raised observer sees the
+    shadow as the ground 0.69 km deeper in the path does."""
+    params = {"epoch": "2017-08-21T17:25:50", "lat": 43.953028, "lon": -117.219389}
+    sea = client.get("/circumstances", params=params).json()
+    assert sea["elev_m"] == 0.0
+    up = client.get("/circumstances", params={**params, "elev": 693.8}).json()
+    assert up["elev_m"] == 693.8
+    assert sea["central_duration_s"] == pytest.approx(33.8, abs=0.1)
+    assert up["central_duration_s"] == pytest.approx(36.6, abs=0.1)
+    for bad in (-501.0, 9001.0):
+        assert client.get("/circumstances", params={**params, "elev": bad}).status_code == 422

@@ -129,13 +129,16 @@ struct Series {
 /// instants of ``e`` (``mu`` unwrapped): ``(xi, eta, zeta) =
 /// geo_to_fund(lat, lon, d, mu)``, ``m = hypot(xi - x, eta - y)``,
 /// ``L1' = l1 - zeta tan_f1``, ``L2' = l2 - zeta tan_f2``. N-vectors out.
-Series series(const Elements& e, double lat_deg, double lon_deg);
+/// ``height_m`` is the observer's height above the WGS-84 ellipsoid [m]
+/// (``ellipsoid::geo_to_fund_one``).
+Series series(const Elements& e, double lat_deg, double lon_deg, double height_m = 0.0);
 
 /// ``_series`` for P observers over the N instants of ``e`` — the Python's
 /// ``(P, 1) x (N,)`` broadcast — as P x N row-major vectors (observer-major:
 /// element ``[p * N + i]``). ``lat_deg`` and ``lon_deg`` [deg] are
-/// equal-length. Implementations hoist the per-observer parametric latitude
-/// and the per-instant ``reduction_aux`` through the hoisted
+/// equal-length, all at sea level (the map grid). Implementations hoist the
+/// per-observer ``ellipsoid::site`` and the per-instant ``reduction_aux``
+/// through the hoisted
 /// ``ellipsoid::geo_to_fund_one`` overload (bit-identical to the scalar one).
 Series series(const Elements& e, std::span<const double> lat_deg,
               std::span<const double> lon_deg);
@@ -217,17 +220,19 @@ struct Bracketed {
 /// ``m - L1' > 0`` at both ends (observer outside the penumbra) or
 /// ``hw >= MAX_HALF_WINDOW_HOURS``. Direct evaluation stays exact outside the
 /// fit window, so C1/C4 are bracketed even when the partial phase runs past
-/// it.
-Bracketed bracketed_series(const Model& model, double lat_deg, double lon_deg);
+/// it. ``height_m`` [m] above the ellipsoid, as in ``series``.
+Bracketed bracketed_series(const Model& model, double lat_deg, double lon_deg,
+                           double height_m = 0.0);
 
 /// ``_refine_contacts``: ``numerics::bisect`` (30 iterations) of the contact
 /// conditions inside the 30-s brackets ``[t_lo[k], t_hi[k]]`` [hours]; where
 /// ``central[k]`` the objective is ``m - |L2'|`` (C2/C3), else ``m - L1'``
 /// (C1/C4). All brackets are refined together, one ``series`` per iteration.
-/// Equal-length spans; returns the refined times [hours].
+/// Equal-length spans; returns the refined times [hours]. ``height_m`` [m] as
+/// in ``series``.
 std::vector<double> refine_contacts(const Model& model, double lat_deg, double lon_deg,
                                     std::span<const double> t_lo, std::span<const double> t_hi,
-                                    std::span<const std::uint8_t> central);
+                                    std::span<const std::uint8_t> central, double height_m = 0.0);
 
 /// ``_refine_maximum``: parabolic refinement of the time of maximum [hours]
 /// through the three grid points around ``imax`` — ``denom = y0 - 2 y1 + y2``
@@ -271,9 +276,10 @@ inline constexpr int PROFILE_MAX_WIDEN = 10;
 
 /// ``_profile_g``: the limb-profile contact function at offsets ``t_hours``
 /// (``G_T`` where ``L2' < 0``, else ``G_A``; negative = central phase), from
-/// ``model.elements_ref_at`` and ``model.profiles_at``.
+/// ``model.elements_ref_at`` and ``model.profiles_at``; ``height_m`` [m] as in
+/// ``series``.
 std::vector<double> profile_g(const Model& model, double lat_deg, double lon_deg,
-                              std::span<const double> t_hours);
+                              std::span<const double> t_hours, double height_m = 0.0);
 
 /// ``_profile_contacts``: ``(central, c2, c3)`` [hours] in ``[t_lo, t_hi]``,
 /// a central window end pushed out by ``PROFILE_MARGIN_H`` up to
@@ -283,7 +289,7 @@ struct ProfileContacts {
     double c2, c3;
 };
 ProfileContacts profile_contacts(const Model& model, double lat_deg, double lon_deg, double t_lo,
-                                 double t_hi);
+                                 double t_hi, double height_m = 0.0);
 
 /// ``_local_raw``: local circumstances of the observer ``(lat_deg, lon_deg)``
 /// [deg]. T0 should be near the observer's maximum. ``bracketed_series``,
@@ -294,15 +300,17 @@ ProfileContacts profile_contacts(const Model& model, double lat_deg, double lon_
 /// brackets together, ``refine_maximum``, the series re-evaluated at the
 /// refined maximum, and ``sun_altaz`` at every event.
 /// ``profile`` (``limb="profile"``) takes the central phase from
-/// ``profile_contacts`` as the Python does.
+/// ``profile_contacts`` as the Python does. ``height_m`` is the observer's
+/// height above the WGS-84 ellipsoid [m]: it enters every series (the
+/// observer's fundamental-plane position); the horizon test is unchanged.
 LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg,
-                             bool profile = false);
+                             bool profile = false, double height_m = 0.0);
 
 /// ``local_circumstances`` through ``model_from_ephem(et0, frame,
 /// half_window_hours)`` — what ``/circumstances`` computes for a
 /// ``BesselianModel`` at ``et0`` [TDB s].
 LocalRaw local_circumstances(double et0, Frame frame, double half_window_hours, double lat_deg,
-                             double lon_deg, bool profile = false);
+                             double lon_deg, bool profile = false, double height_m = 0.0);
 
 // --------------------------------------------------------------------- grid
 

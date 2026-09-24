@@ -334,16 +334,13 @@ Settled:
   hosted on the `limb-data` branch (§2).
 
 Open:
-0. **Observer elevation (new, from PR 2).** Local circumstances assume a
-   sea-level observer: `geo_to_fund` has no height. Near a limit, a few
-   hundred metres of elevation moves C2/C3 by seconds (§9.7: Effingham, 182 m,
-   is +5.5 / −3.4 s off [EB2024]; Vale, 711 m, is ~8 s off Irwin et al.).
-   Mid-path it is likely part of the remaining ~0.35 s median.
-   - It is a separate capability ([ES92] 8.331 / [Meeus98] eq. 11.2–11.3:
-     ρ sin φ′, ρ cos φ′ with height H).
-   - It touches both languages and the API (`elev=`).
-   - Recommendation: its own PR before PR 4's external gate, which needs
-     it to reach 0.3 s.
+0. **Observer elevation — done** (§9.10). `geo_to_fund` takes the observer's
+   height above the WGS-84 ellipsoid, exactly ([Meeus98] eq. 11.2–11.3, the
+   geodetic normal rotated into the fundamental plane), in both languages;
+   `/circumstances?elev=`. It explains Vale ([Irwin21]) but not Effingham
+   ([EB2024], whose coordinates are too coarse there), and moves the
+   mid-path median from 0.35 s to 0.30 s. `/map`, the limits and the catalog
+   stay sea-level.
 1. **`LDEM_64`?** PR 1's study (§9.1) crossed the 0.1 s threshold: C2/C3
    move 0.1–0.2 s typically and up to 0.5 s near the edge. The cost:
    - a ~200 MB band (16° cut), which has to be split across files for GitHub
@@ -456,7 +453,7 @@ exceeded **6.65°** (2089-04-11); p99 was 6.17°. The 20° band covers 12°.
 
 **Orthographic vs perspective.** With PR 1's orthographic silhouette, the
 fundamental-plane contacts were 0.2–0.6 s off the oracle, at Indianapolis
-and at Effingham (1.1 km inside the southern limit). With the perspective
+and at Effingham (1.1 km inside the northern limit). With the perspective
 silhouette (§3.2) they agree to within the two methods' different DEM
 interpolation:
 
@@ -513,7 +510,8 @@ the path there.
 
 Near a limit the contacts are seconds-sensitive to where the observer
 stands. Effingham is at 182 m and Vale at 711 m, so elevation (§8, open
-item 0) is the prime suspect; the oracle agrees with us there (§9.6).
+item 0) was the prime suspect; the oracle agrees with us there (§9.6).
+§9.10 has the outcome: elevation closes Vale, not Effingham.
 Effingham is a strict xfail against [EB2024]; Crawfordsville (2.9 km,
 −0.9 / +0.2 s) passes.
 
@@ -539,3 +537,123 @@ model cannot.
 - **Speed:** one site in profile mode takes 0.2–0.8 s native (the first
   call builds 2–3 lattice nodes at 70 ms each) and 3–12 s in the Python
   oracle.
+
+## 9 (cont.). Observer elevation
+
+### 9.10 Height above the ellipsoid
+
+**Formula.** A point at height H above the ellipsoid, along the geodetic
+normal, has ρ sin φ′ = (b/a) sin u + (H/a) sin φ and ρ cos φ′ = cos u +
+(H/a) cos φ ([Meeus98] eq. 11.2–11.3). So it is the ellipsoid point plus
+H/a times the unit normal. The existing reduction ([ES92] eq. 8.331) is an
+exact rotation of the ellipsoid point into the fundamental-plane axes. The
+rotation is linear, so the height adds the rotated normal, in the spherical
+form of [ES92] §8.35 / [MeeusSE]:
+
+    ξ += (H/a) cos φ sin θ
+    η += (H/a) (sin φ cos d − cos φ cos θ sin d)
+    ζ += (H/a) (sin φ sin d + cos φ cos θ cos d)
+
+This is exact, not a first-order term:
+- `tests/test_geography.py` checks it against geodetic + H → ECEF → axes, to
+  1.1e-15 Earth radii, up to H = 1000 km.
+- The term is skipped at H = 0, so every sea-level result, fixture and
+  reference test is bit-identical. The regenerated fixtures only *add*
+  records.
+
+**What it is.** A raised observer sees what a sea-level one sees at the foot
+of its line of sight to the Sun, H cot(alt) away from the Sun's azimuth.
+`test_mean_limb_contacts_at_height_match_the_direct_3d_geometry` checks
+that to 0.03 s at Vale (a 0.69 km shift). So a height moves C2/C3 by seconds
+near a limit and by ~0.1–0.3 s mid-path, towards or away from the centre
+line depending on the Sun's azimuth.
+
+**Heights.** `elev` / `height_m` is above the **ellipsoid**. A map, SRTM or
+GPS-with-geoid height H is above the geoid, so h = H + N [EGM96]. In the test
+sites N is −30 to −35 m (Illinois/Indiana) and −17 m (Vale). SRTM90 [SRTM]
+ground heights and EGM96 undulations, with provenance, are in
+`docs/LIMB_VALIDATION_SOURCES.md`.
+
+**Against [EB2024] (36 mid-path sites, 72 contacts).** The Bulletin has no
+elevation column, so these are our heights:
+
+| model | sea level: median / p90 / max | at h = H + N |
+| --- | --- | --- |
+| mean limb (k2) | 0.79 / 2.72 / 3.27 s | 0.94 / 2.83 / 3.42 s |
+| **profile** | 0.35 / 0.68 / 1.15 s | **0.30 / 0.61 / 1.10 s** |
+
+- Elevation helps the profile, and the mean contacts move both later (C2
+  −0.01 → +0.14 s, C3 −0.28 → −0.15 s).
+- It is not the remaining error. The site-to-site scatter (±0.5 s) is larger
+  than the elevation effect (0.1–0.3 s), so the planned 0.3 s gate (§5.4) is
+  met at the median only: p90 is 0.61 s.
+- The mean limb gets worse with elevation. Its errors are the limb itself,
+  and the right geometry does not help them.
+- The 14 sites in the test: 0.37 → 0.39 s median, 1.15 → 1.10 s max. The
+  gates hold.
+
+**Effingham ([EB2024], 1.1 km inside the northern limit, FDCL 0.981): not
+explained.** At 149 m: +6.0 / −3.5 s, against +5.5 / −3.4 s at sea level.
+The site sits near the northern limit (§9.6 said southern; that was wrong),
+and its height shifts it 0.10 km towards the limit.
+
+The Bulletin's coordinates are 0.01° (±0.5 km). Duration there changes by
+~1000 s per degree of latitude, so across the rounding box our C2 residual
+ranges from −1 to +14 s. Some points in the box (e.g. 39.115, −88.5475)
+match the Bulletin to < 1 s. The comparison can't resolve a near-limit site,
+so it stays a strict xfail, with that reason. Crawfordsville (2.9 km):
+−0.44 / −0.02 s, against −0.88 / +0.19 s at sea level.
+
+**Vale OR ([Irwin21], coordinates to 0.1″): explained.**
+
+| | C2 | C3 |
+| --- | --- | --- |
+| four predictions | 17:25:31.6 – 34.3 | 17:26:06.9 – 07.7 |
+| ours, sea level | 17:25:41.3 | 17:26:05.3 |
+| ours, h = 711 − 17.2 m | **17:25:34.5** | **17:26:07.0** |
+
+The 8 s gap closes to 0.2 s after Irwin et al.'s own prediction. That is
+now a test (0.5 s margin on the four predictions' range). Using 711 m as
+ellipsoidal instead moves C2 by 0.1 s.
+
+**3D oracle at the sites' heights** (`tests/test_limb_oracle.py`; the oracle
+places the observer by plain ECEF with H):
+
+| site, height | profile − oracle C2 / C3 | height equivalent |
+| --- | --- | --- |
+| 2024 Indianapolis, 185 m | +0.001 / +0.083 s | 1 / 57 m |
+| 2024 Effingham, 149 m | −0.092 / +0.283 s | 8 / 39 m |
+| 2023 annular (open sea), 5 m | +0.035 / −0.017 s | 19 / 9 m |
+| 2017 Vale, 0 m | −1.114 / +0.372 s | 45 / 52 m |
+| 2017 Vale, 694 m | **−1.846** / +0.050 s | **94** / 7 m |
+
+Vale's C2 at its height exceeds the 75 m gate. It is **not** the height
+handling:
+- At the sea-level point on the same line of sight (0.69 km away), with no
+  height code in either method, the difference is −1.88 s, 85 m.
+- The oracle is converged there (4× rays: 0 ms; 0.1 km steps: 6 ms).
+- With the observer 0.69 km deeper in the path, C2 grazes a different stretch
+  of limb. There the two DEM interpolations (grid edges with perspective
+  binning, §9.2, vs the oracle's bilinear surface) differ by more than
+  anywhere measured before.
+
+It is a strict xfail; the gate is not widened. For context, the profile's
+C2 (34.5) is closer to the four published predictions than the oracle's
+would be (≈ 36.3). An `LDEM_64` band (§8, item 1) is the natural next test
+of which interpolation is right.
+
+**Parity.** Python and native agree at the sea-level gates:
+- contacts bit-identical at 693.8 m, 3 km and −400 m;
+- `geo_to_fund` with heights to 2.8e-16 Earth radii;
+- the profile-mode sites at 149 m (Effingham) and 694 m (Vale) at the
+  `_LOCAL_*` gates.
+
+C++ fixtures: `g2fh` (geometry) and `localh` (local circumstances) records.
+
+**Not modelled.**
+- The horizon dip from a height: the Sun's altitude test stays the
+  sea-level one.
+- Refraction.
+- Heights in `/map`, `/central-line` limits and the catalog: published
+  limits are sea-level lines by convention.
+- A height input in the frontend.

@@ -91,18 +91,21 @@ class LocalCircumstances(TypedDict, total=False):
     central_duration_s: float  # totality/annularity duration (central phase only)
     below_horizon: list[str]   # events ("C1", "C2", "max", "C3", "C4") with Sun below h0
     limb: str                  # lunar limb model: "mean" (k2) or "profile" (LOLA)
+    elev_m: float              # observer height above the WGS-84 ellipsoid [m]
 
 
-def _series(model, lat, lon, t):
+def _series(model, lat, lon, t, height_m=0.0):
     """Arrays ``(m, L1', L2', magnitude)`` over offsets ``t`` (hours from T0).
 
     Direct per-instant evaluation (:meth:`~app.besselian.BesselianModel.
     evaluate_direct`, item A2) and the array-native :func:`geo_to_fund`, so
     ``lat``/``lon`` may be scalars (1-D results over ``t``) or column arrays of
     shape ``(P, 1)`` (results of shape ``(P, N)`` for a grid of observers).
+    ``height_m`` is the observer's height above the WGS-84 ellipsoid [m]
+    (:func:`~app.geography.geo_to_fund`).
     """
     e = model.evaluate_direct(t)
-    xi, eta, zeta = geo_to_fund(lat, lon, e["d"], e["mu"])
+    xi, eta, zeta = geo_to_fund(lat, lon, e["d"], e["mu"], height_m)
     m = np.hypot(xi - e["x"], eta - e["y"])
     L1p = e["l1"] - zeta * e["tan_f1"]
     L2p = e["l2"] - zeta * e["tan_f2"]
@@ -185,7 +188,7 @@ _MAX_HALF_WINDOW_HOURS = 6.0
 _GRID_STEP_HOURS = 0.5 / 60.0  # 30-second grid
 
 
-def _bracketed_series(model, lat, lon):
+def _bracketed_series(model, lat, lon, height_m=0.0):
     """Sample (t, m, L1', L2', mag) on a 30-second grid wide enough to contain C1..C4.
 
     Starts at the model's fit half-window and widens (direct evaluation stays
@@ -195,7 +198,7 @@ def _bracketed_series(model, lat, lon):
     hw = model.half_window_hours
     while True:
         t = np.arange(-hw, hw + 1e-9, _GRID_STEP_HOURS)
-        m, L1p, L2p, mag = _series(model, lat, lon, t)
+        m, L1p, L2p, mag = _series(model, lat, lon, t, height_m)
         outside = m - L1p  # > 0 when the observer is outside the penumbra
         edges_clear = outside[0] > 0 and outside[-1] > 0
         if edges_clear or hw >= _MAX_HALF_WINDOW_HOURS:
@@ -203,7 +206,7 @@ def _bracketed_series(model, lat, lon):
         hw = min(hw * 1.5, _MAX_HALF_WINDOW_HOURS)
 
 
-def _refine_contacts(model, lat, lon, t_lo, t_hi, central):
+def _refine_contacts(model, lat, lon, t_lo, t_hi, central, height_m=0.0):
     """Bisect the contact conditions to machine precision inside 30-s brackets.
 
     ``t_lo``/``t_hi`` are arrays of bracket ends (hours) and ``central`` a bool
@@ -213,21 +216,22 @@ def _refine_contacts(model, lat, lon, t_lo, t_hi, central):
     central = np.asarray(central, dtype=bool)
 
     def f(t):
-        m, L1p, L2p, _ = _series(model, lat, lon, t)
+        m, L1p, L2p, _ = _series(model, lat, lon, t, height_m)
         return np.where(central, m - np.abs(L2p), m - L1p)
 
     return bisect(f, t_lo, t_hi)
 
 
-def _profile_g(model, lat, lon, t):
+def _profile_g(model, lat, lon, t, height_m=0.0):
     """The profile contact function at offsets ``t`` [h]: ``G_T`` where the
     reduced umbral radius ``L2' < 0`` (total), else ``G_A`` (annular); the
     observer is in the central phase where it is negative.  Elements from the
-    LOLA sphere for both cones (``limb.K_REF``) [ES92] eq. 8.353-8.354."""
+    LOLA sphere for both cones (``limb.K_REF``) [ES92] eq. 8.353-8.354;
+    ``height_m`` [m] above the ellipsoid as in :func:`_series`."""
     t = np.atleast_1d(np.asarray(t, dtype=float))
     k = limb_profile.K_REF
     e = model.evaluate_direct(t, k, k)
-    xi, eta, zeta = geo_to_fund(lat, lon, e["d"], e["mu"])
+    xi, eta, zeta = geo_to_fund(lat, lon, e["d"], e["mu"], height_m)
     px = xi - e["x"]
     py = eta - e["y"]
     L1p = e["l1"] - zeta * e["tan_f1"]
@@ -244,7 +248,7 @@ def _profile_g(model, lat, lon, t):
     return out
 
 
-def _profile_contacts(model, lat, lon, t_lo: float, t_hi: float):
+def _profile_contacts(model, lat, lon, t_lo: float, t_hi: float, height_m: float = 0.0):
     """``(central, c2, c3)`` [h] from the limb profile inside ``[t_lo, t_hi]``.
 
     ``_profile_g`` is sampled every ``_PROFILE_STEP_H``; C2 is the first
@@ -258,7 +262,7 @@ def _profile_contacts(model, lat, lon, t_lo: float, t_hi: float):
     """
     for _ in range(_PROFILE_MAX_WIDEN + 1):
         t = np.arange(t_lo, t_hi + 1e-12, _PROFILE_STEP_H)
-        g = _profile_g(model, lat, lon, t)
+        g = _profile_g(model, lat, lon, t, height_m)
         if not (g[0] < 0.0 or g[-1] < 0.0):
             break
         if g[0] < 0.0:
@@ -270,7 +274,7 @@ def _profile_contacts(model, lat, lon, t_lo: float, t_hi: float):
     ch = sign_changes(t, g)
     i2 = min(i for i, rising in ch if not rising)
     i3 = max(i for i, rising in ch if rising)
-    c2, c3 = bisect(lambda tt: _profile_g(model, lat, lon, tt),
+    c2, c3 = bisect(lambda tt: _profile_g(model, lat, lon, tt, height_m),
                     [t[i2], t[i3]], [t[i2 + 1], t[i3 + 1]])
     return True, float(c2), float(c3)
 
@@ -320,7 +324,8 @@ _NO_ECLIPSE_RAW = _LocalRaw(False, False, *([float("nan")] * 8), _NAN5, _NAN5,
                             (False,) * 5, False)
 
 
-def _local_raw(model, lat: float, lon: float, limb: str = "mean") -> _LocalRaw:
+def _local_raw(model, lat: float, lon: float, limb: str = "mean",
+               height_m: float = 0.0) -> _LocalRaw:
     """The numbers behind :func:`local_circumstances` (the math; formatting is separate).
 
     The sampling window starts at the model's fit window and is expanded as
@@ -331,8 +336,11 @@ def _local_raw(model, lat: float, lon: float, limb: str = "mean") -> _LocalRaw:
     comes from :func:`_profile_contacts`, searched around the mean-limb
     contacts or, for an observer within ``_PROFILE_NEAR_KM`` of the mean
     umbra, around maximum; C1/C4, the maximum and the magnitude stay mean-limb.
+    ``height_m`` is the observer's height above the WGS-84 ellipsoid [m]: it
+    moves the observer in the fundamental plane (:func:`~app.geography.
+    geo_to_fund`) for every contact; the horizon test stays the sea-level one.
     """
-    t, m, L1p, L2p, mag = _bracketed_series(model, lat, lon)
+    t, m, L1p, L2p, mag = _bracketed_series(model, lat, lon, height_m)
 
     partial = _roots(t, m - L1p)
     if len(partial) < 2 or mag.max() <= 0:
@@ -356,7 +364,7 @@ def _local_raw(model, lat: float, lon: float, limb: str = "mean") -> _LocalRaw:
         else:
             central_phase = False
     times = _refine_contacts(model, lat, lon, [b[0] for b in brackets],
-                             [b[1] for b in brackets], [b[2] for b in brackets])
+                             [b[1] for b in brackets], [b[2] for b in brackets], height_m)
     c1, c4 = float(times[0]), float(times[1])
     tmax = _refine_maximum(model, lat, lon, t, mag, imax)
     if central_phase:
@@ -372,12 +380,14 @@ def _local_raw(model, lat: float, lon: float, limb: str = "mean") -> _LocalRaw:
             search = bool(m[imax] - abs(L2p[imax]) < _PROFILE_NEAR_KM / EARTH_EQUATORIAL_RADIUS_KM)
             lo, hi = t[imax] - _PROFILE_GRAZE_H, t[imax] + _PROFILE_GRAZE_H
         if search:
-            central_phase, c2, c3 = _profile_contacts(model, lat, lon, float(lo), float(hi))
+            central_phase, c2, c3 = _profile_contacts(model, lat, lon, float(lo), float(hi),
+                                                      height_m)
         else:
             central_phase = False
 
     # Quantities at the refined maximum.
-    m_x, L1_x, L2_x, _ = (float(v[0]) for v in _series(model, lat, lon, np.array([tmax])))
+    m_x, L1_x, L2_x, _ = (float(v[0]) for v in _series(model, lat, lon, np.array([tmax]),
+                                                       height_m))
     # Eclipse magnitude: for total/annular it is the Moon/Sun apparent diameter
     # ratio (Espenak convention); for a partial eclipse it is the fraction of the
     # Sun's diameter covered.
@@ -463,7 +473,8 @@ def _check_limb(limb: str) -> None:
         raise ValueError(f"limb must be one of {LIMB_MODES}, not {limb!r}")
 
 
-def local_raw(model, lat: float, lon: float, limb: str = "mean") -> _LocalRaw:
+def local_raw(model, lat: float, lon: float, limb: str = "mean",
+              height_m: float = 0.0) -> _LocalRaw:
     """The :class:`_LocalRaw` numbers of :func:`local_circumstances` at (lat, lon).
 
     Dispatches to the native core under ``ECLIPSE_BACKEND=native`` (the
@@ -473,7 +484,8 @@ def local_raw(model, lat: float, lon: float, limb: str = "mean") -> _LocalRaw:
     greatest-eclipse detail (:mod:`app.catalog`) both format from it.
     ``limb`` is ``"mean"`` or ``"profile"`` (module docstring); the profile
     mode needs the limb band and lunar kernels (``kernels.bootstrap --limb``,
-    ``FileNotFoundError`` / a SPICE error otherwise).
+    ``FileNotFoundError`` / a SPICE error otherwise).  ``height_m`` is the
+    observer's height above the WGS-84 ellipsoid [m] (:func:`_local_raw`).
     """
     _check_limb(limb)
     if native.is_native():
@@ -481,13 +493,14 @@ def local_raw(model, lat: float, lon: float, limb: str = "mean") -> _LocalRaw:
             limb_profile.ensure_native_band()
         raw = native.module().local_circumstances(
             model.et0, model.earth_frame, model.half_window_hours, float(lat), float(lon),
-            limb == "profile",
+            limb == "profile", float(height_m),
         )
         return _LocalRaw(*raw)
-    return _local_raw(model, lat, lon, limb)
+    return _local_raw(model, lat, lon, limb, height_m)
 
 
-def local_circumstances(model, lat: float, lon: float, limb: str = "mean") -> LocalCircumstances:
+def local_circumstances(model, lat: float, lon: float, limb: str = "mean",
+                        height_m: float = 0.0) -> LocalCircumstances:
     """Compute the eclipse circumstances at (lat, lon).
 
     T0 should be near the observer's maximum eclipse (e.g. the greatest-eclipse
@@ -501,10 +514,12 @@ def local_circumstances(model, lat: float, lon: float, limb: str = "mean") -> Lo
     The numbers are :func:`local_raw` (:func:`_local_raw`, or the native core
     under ``ECLIPSE_BACKEND=native``); the dict shape is :func:`_format_local`.
     ``limb`` selects the lunar limb model (``"mean"`` or ``"profile"``) and is
-    echoed in the result.
+    echoed in the result, as is ``height_m``, the observer's height above the
+    WGS-84 ellipsoid [m] (``elev_m``).
     """
-    out = _format_local(model.t0_utc, lat, lon, local_raw(model, lat, lon, limb))
+    out = _format_local(model.t0_utc, lat, lon, local_raw(model, lat, lon, limb, height_m))
     out["limb"] = limb
+    out["elev_m"] = float(height_m)
     return out
 
 

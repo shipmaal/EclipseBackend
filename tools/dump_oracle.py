@@ -22,6 +22,7 @@ radii / km as the Python signatures say::
     red <d_deg> rho1 rho2 sin_d1 cos_d1 sin_d1_d2 cos_d1_d2   # _reduction_aux
     f2g x y d mu lon lat                                       # fund_to_geo_v (nan = off Earth)
     g2f lat lon d mu xi eta zeta                               # geo_to_fund
+    g2fh lat lon d mu h xi eta zeta                            # geo_to_fund at height h [m]
     gc  lat lon brg dist lat2 lon2 hav brg12                   # _destination/_haversine_km/bearing
     lim x y d mu l tan_f bearing max_km sunlit n_lat n_lon s_lat s_lon width
                                                                # shadow_edge_limits_v (sunlit 0/1)
@@ -55,6 +56,8 @@ in hours from T0, ``et0`` in TDB seconds)::
                                          #   alt_deg[5] az_deg[5] below[5] eclipse
                                          #   (bools 0/1, nan where absent; events
                                          #   C1, max, C4, C2, C3)
+    localh <label> <frame> <et0> <half_window_h> <lat> <lon> <height_m> <_LocalRaw fields>
+                                         # _local_raw at a height above the ellipsoid [m]
     grid <label> <frame> <et0> <half_window_h> <step_min> <lat> <lon>
          magnitude obscuration t_max_hours sun_alt visible central
                                          # circumstances_grid on the single point
@@ -207,6 +210,10 @@ OFF_EARTH = [  # |x| or |y/rho1| > 1: fund_to_geo_v -> NaN, limits -> NaN / widt
 ]
 G2F_LATS = np.array([-90.0, -60.0, -30.0, 0.0, 30.0, 60.0, 90.0])
 G2F_LONS = np.array([-180.0, -120.0, -60.0, 0.0, 60.0, 120.0, 180.0])
+# Observer heights above the ellipsoid [m] for the g2fh / localh records: the
+# Dead Sea shore, Effingham IL, Vale OR (docs/LIMB_PROFILE.md sec. 9.10), Everest.
+HEIGHTS_M = (-400.0, 149.4, 693.8, 8848.0)
+LOCAL_HEIGHTS_M = (693.8, 3000.0)
 GEOD_CASES = [  # (lat1, lon1, lat2, lon2): Andoyer geodesic_km, incl. the antimeridian
     (-75.0, -46.0, -78.5, -46.5), (4.4, -16.7, 6.5, -17.3), (25.3, -104.1, 26.2, -105.3),
     (0.0, 179.5, 0.5, -179.8), (48.8, 2.35, 52.5, 13.4), (-10.0, 125.0, -9.8, 125.3),
@@ -424,6 +431,13 @@ def circumstances_records(label: str) -> str:
                     *raw.below, raw.eclipse]
             out.append(f"local {label} {CONTACT_FRAME} {model.et0!r} {model.half_window_hours!r} "
                        f"{lat!r} {lon!r} {row(*vals)}\n")
+    for h in LOCAL_HEIGHTS_M:
+        raw = _local_raw(local, lat0, lon0, height_m=h)
+        vals = [raw.geometric, raw.central, raw.c1, raw.c4, raw.c2, raw.c3, raw.t_max,
+                raw.magnitude, raw.obscuration, raw.L2_x, *raw.alt_deg, *raw.az_deg,
+                *raw.below, raw.eclipse]
+        out.append(f"localh {label} {CONTACT_FRAME} {local.et0!r} {local.half_window_hours!r} "
+                   f"{lat0!r} {lon0!r} {h!r} {row(*vals)}\n")
     grid = _quiet_model(t0_utc=CONTACT_EPOCHS[label], earth_frame=CONTACT_FRAME,
                         half_window_hours=MAP_HALF_WINDOW_H)
     for lat, lon in sites:
@@ -626,6 +640,17 @@ def write_geometry_cases(path: Path) -> int:
                 vals = (lat_g.flat[k], lon_g.flat[k], d, mu, xi.flat[k], eta.flat[k], zeta.flat[k])
                 fh.write(f"g2f {row(*vals)}\n")
                 n_rec += 1
+
+        fh.write("# g2fh lat lon d mu h xi eta zeta  (geo_to_fund at height h [m])\n")
+        for elems, _ in tracks.values():
+            d, mu = float(elems["d"][N // 2]), float(elems["mu"][N // 2])
+            for h in HEIGHTS_M:
+                xi, eta, zeta = geo_to_fund(lat_g, lon_g, d, mu, h)
+                for k in range(lat_g.size):
+                    vals = (lat_g.flat[k], lon_g.flat[k], d, mu, h,
+                            xi.flat[k], eta.flat[k], zeta.flat[k])
+                    fh.write(f"g2fh {row(*vals)}\n")
+                    n_rec += 1
 
         fh.write("# gc lat lon brg dist lat2 lon2 hav brg12  "
                  "(_destination, _haversine_km, bearing)\n")

@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 
 #include "eclipse/constants.hpp"
@@ -133,6 +134,71 @@ TEST_CASE("geo_to_fund parity: geo_to_fund [ES92] 8.331, [Meeus98] 11.1", "[pari
     }
     const double one[] = {0.0};
     CHECK_THROWS_AS(ell::geo_to_fund(lat, one, d, mu), std::invalid_argument);
+}
+
+TEST_CASE("geo_to_fund at height parity: g2fh records [Meeus98] 11.2-11.3", "[parity]") {
+    // The observer-height term (ellipsoid.hpp geo_to_fund_one) at -400, 149.4,
+    // 693.8 and 8848 m against the Python oracle, one-point, span and hoisted
+    // (Site) forms; the span form is bit-identical to the one-point one.
+    const auto recs = records("g2fh");
+    REQUIRE(recs.size() >= 196);
+    std::vector<double> lat, lon, d, mu, h;
+    for (const auto& r : recs) {
+        INFO("lat=" << r.tokens.at(0) << " lon=" << r.tokens.at(1) << " d=" << r.tokens.at(2)
+                    << " mu=" << r.tokens.at(3) << " h=" << r.tokens.at(4));
+        const ell::Fund f = ell::geo_to_fund_one(r.num(0), r.num(1), r.num(2), r.num(3), r.num(4));
+        CHECK_THAT(f.xi, WithinAbs(r.num(5), kTol));
+        CHECK_THAT(f.eta, WithinAbs(r.num(6), kTol));
+        CHECK_THAT(f.zeta, WithinAbs(r.num(7), kTol));
+        const ell::Fund g = ell::geo_to_fund_one(
+            ell::site(r.num(0), r.num(4)), r.num(1),
+            ell::reduction_aux(r.num(2) * eclipse::constants::DEG_TO_RAD), r.num(3));
+        CHECK(g.xi == f.xi);
+        CHECK(g.eta == f.eta);
+        CHECK(g.zeta == f.zeta);
+        lat.push_back(r.num(0));
+        lon.push_back(r.num(1));
+        d.push_back(r.num(2));
+        mu.push_back(r.num(3));
+        h.push_back(r.num(4));
+    }
+    const ell::Fundamental f = ell::geo_to_fund(lat, lon, d, mu, h);
+    REQUIRE(f.xi.size() == recs.size());
+    for (size_t i = 0; i < recs.size(); ++i) {
+        const ell::Fund p = ell::geo_to_fund_one(lat[i], lon[i], d[i], mu[i], h[i]);
+        CHECK(f.xi[i] == p.xi);
+        CHECK(f.eta[i] == p.eta);
+        CHECK(f.zeta[i] == p.zeta);
+    }
+    const double one[] = {0.0};
+    CHECK_THROWS_AS(ell::geo_to_fund(lat, lon, d, mu, one), std::invalid_argument);
+}
+
+TEST_CASE("geo_to_fund: height 0 is the reduction alone, bit for bit") {
+    // The height term is skipped at h == 0, so sea level is exactly the
+    // pre-height result (every g2f fixture and the reference tests rely on it).
+    for (const double lat : {-89.0, -33.3, 0.0, 39.12, 71.0}) {
+        for (const double lon : {-170.0, -88.55, 0.0, 117.2}) {
+            const ell::Fund a = ell::geo_to_fund_one(lat, lon, 7.5862, 89.6);
+            const ell::Fund b = ell::geo_to_fund_one(lat, lon, 7.5862, 89.6, 0.0);
+            const ell::Fund c = ell::geo_to_fund_one(
+                ell::site(lat), lon, ell::reduction_aux(7.5862 * eclipse::constants::DEG_TO_RAD),
+                89.6);
+            CHECK(a.xi == b.xi);
+            CHECK(a.eta == b.eta);
+            CHECK(a.zeta == b.zeta);
+            CHECK(a.xi == c.xi);
+            CHECK(a.eta == c.eta);
+            CHECK(a.zeta == c.zeta);
+        }
+    }
+    // A height moves the point along the geodetic normal by exactly h / a
+    // (the rotation is orthonormal): |P(h) - P(0)| = h / a.
+    const ell::Fund p0 = ell::geo_to_fund_one(39.12, -88.55, 7.5862, 89.6);
+    const ell::Fund p1 = ell::geo_to_fund_one(39.12, -88.55, 7.5862, 89.6, 1000.0);
+    const double dx = p1.xi - p0.xi, dy = p1.eta - p0.eta, dz = p1.zeta - p0.zeta;
+    CHECK_THAT(std::sqrt(dx * dx + dy * dy + dz * dz),
+               WithinAbs(1.0 / eclipse::constants::WGS84_A_KM, 1e-15));
 }
 
 TEST_CASE("geo_to_fund / fund_to_geo round trip on the near side") {

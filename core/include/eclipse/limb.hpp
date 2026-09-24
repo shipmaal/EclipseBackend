@@ -89,7 +89,9 @@ double sphere_radius(double distance_km);
 /// ``app.limb.profiles_at``: n profiles (row-major n x N_BINS) at TDB ``et``,
 /// linear in time between cached ``LATTICE_S`` nodes (each node the
 /// silhouette along ``ephem::limb_axes`` of ``node * LATTICE_S``). The cache
-/// is keyed by node, frames and the installed band, and thread-safe.
+/// is keyed by node, frames, the installed band and the kernel-pool and EOP
+/// generations (``ephem::kernel_generation``, ``eop::generation``), so a
+/// reload of any of them is never served a stale profile; thread-safe.
 std::vector<double> profiles_at(std::span<const double> et, Frame frame,
                                 std::string_view moon_frame = "MOON_ME");
 

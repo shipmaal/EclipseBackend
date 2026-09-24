@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
@@ -100,9 +101,16 @@ double number(const std::string& f, const std::string& path) {
     return v;
 }
 
+// Bumped by every install (under table_mutex).
+std::uint64_t& table_generation() {
+    static std::uint64_t g = 0;
+    return g;
+}
+
 void install(std::shared_ptr<Table> t) {
     std::scoped_lock lock(table_mutex());
     table_slot() = std::move(t);
+    ++table_generation();
 }
 
 }  // namespace
@@ -147,6 +155,11 @@ void set_table(std::span<const double> mjd, std::span<const double> xp_arcsec,
     t->yp.assign(yp_arcsec.begin(), yp_arcsec.end());
     t->dut1.assign(dut1_s.begin(), dut1_s.end());
     install(std::move(t));
+}
+
+std::uint64_t generation() {
+    std::scoped_lock lock(table_mutex());
+    return table_generation();
 }
 
 bool has_table() {

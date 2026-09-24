@@ -14,6 +14,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
@@ -44,6 +45,10 @@ void furnish(std::string_view path);
 
 /// Unload every kernel and clear the pool (``kclear_c``).
 void kclear();
+
+/// A counter bumped by every ``furnish`` / ``kclear``: identifies the loaded
+/// kernel set (caches of kernel-dependent results key on it).
+std::uint64_t kernel_generation();
 
 /// Number of loaded kernels of ``kind`` (``ktotal_c``; default "ALL").
 int kernel_count(std::string_view kind = "ALL");

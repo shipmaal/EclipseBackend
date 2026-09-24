@@ -7,6 +7,7 @@
 // UT1-UTC is interpolated as UT1-TAI across a leap second (``interpolate``).
 #pragma once
 
+#include <cstdint>
 #include <span>
 #include <string>
 #include <utility>
@@ -29,6 +30,10 @@ std::size_t load_file(const std::string& path);
 
 /// The file ``load_file`` read ("" for none, or a table from ``set_table``).
 std::string source();
+
+/// A counter bumped by every ``set_table`` / ``load_file``: identifies the
+/// installed table (caches of EOP-dependent results key on it).
+std::uint64_t generation();
 
 /// True once ``set_table`` has been called.
 bool has_table();

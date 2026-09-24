@@ -6,6 +6,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cmath>
+#include <filesystem>
 #include <cstdint>
 #include <limits>
 #include <numbers>
@@ -202,4 +203,36 @@ TEST_CASE("fill_empty: periodic linear interpolation across empty bins") {
     std::vector<double> sparse = rho;
     for (int k = 0; k < 3; ++k) sparse.push_back(-inf);  // 7 of 43 empty: > 10 %
     CHECK_THROWS_AS(limb::fill_empty(sparse), std::invalid_argument);
+}
+
+TEST_CASE("profiles_at never serves a profile cached under another kernel set (C4)",
+          "[kernels]") {
+    // A profile depends on the kernels (limb_axes), so a kernel-pool change
+    // must invalidate the node cache: after kclear the same instant has to
+    // fail (no MOON_ME), not return the profile cached a moment before.
+    if (!std::filesystem::exists(fixtures::kMetakernel)) SKIP("kernels not bootstrapped");
+    std::vector<double> mjd, xp, yp, dut1;
+    for (const auto& r : fixtures::read("eop_subset.txt")) {
+        if (r.kind != "eop") continue;
+        mjd.push_back(r.num(0));
+        xp.push_back(r.num(1));
+        yp.push_back(r.num(2));
+        dut1.push_back(r.num(3));
+    }
+    eclipse::eop::set_table(mjd, xp, yp, dut1);
+    install_fixture_band();
+    ephem::kclear();
+    ephem::furnish(fixtures::kMetakernel.string());
+    const std::vector<double> et = {ephem::str_to_et("2024-04-08 18:17:20 UTC")};
+    std::vector<double> before;
+    try {
+        before = limb::profiles_at(et, eclipse::Frame::ITRS, "MOON_ME");
+    } catch (const eclipse::spice_error&) {
+        SKIP("MOON_ME not defined by the kernels on disk (kernels.bootstrap --limb)");
+    }
+    CHECK(limb::profiles_at(et, eclipse::Frame::ITRS, "MOON_ME") == before);  // cached
+    ephem::kclear();
+    CHECK_THROWS_AS(limb::profiles_at(et, eclipse::Frame::ITRS, "MOON_ME"), eclipse::spice_error);
+    ephem::furnish(fixtures::kMetakernel.string());
+    CHECK(limb::profiles_at(et, eclipse::Frame::ITRS, "MOON_ME") == before);  // recomputed
 }

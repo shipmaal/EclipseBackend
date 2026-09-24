@@ -287,6 +287,11 @@ void kclear() {
     });
 }
 
+std::uint64_t kernel_generation() {
+    std::scoped_lock lock(spice_mutex());
+    return pool_generation();
+}
+
 int kernel_count(std::string_view kind) {
     const std::string k(kind);
     return spice_call([&] {

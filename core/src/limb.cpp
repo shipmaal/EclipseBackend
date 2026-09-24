@@ -24,6 +24,7 @@
 #endif
 
 #include "eclipse/constants.hpp"
+#include "eclipse/eop.hpp"
 #include "eclipse/ephem.hpp"
 
 namespace eclipse::limb {
@@ -257,9 +258,14 @@ double sphere_radius(double distance_km) {
     return R_REF_KM / std::sqrt(1.0 - (R_REF_KM / distance_km) * (R_REF_KM / distance_km));
 }
 
-std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins, double distance_km) {
+namespace {
+
+// ``silhouette`` on a given band (the caller's snapshot, so a profile and the
+// generation it is cached under come from the same band; item C4).
+std::vector<double> silhouette_on(const std::shared_ptr<const Band>& b,
+                                  const std::array<double, 9>& axes, int n_bins,
+                                  double distance_km) {
     if (n_bins < 1) throw std::invalid_argument("eclipse::limb::silhouette: n_bins < 1");
-    const auto b = band();
     const double cover = std::cos((b->band_deg - VISIBLE_DEG) * constants::DEG_TO_RAD);
     if (std::abs(axes[6]) < cover)
         throw std::invalid_argument(
@@ -399,6 +405,12 @@ std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins, do
     return rho;
 }
 
+}  // namespace
+
+std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins, double distance_km) {
+    return silhouette_on(band(), axes, n_bins, distance_km);
+}
+
 std::vector<double> delta_rho_at(std::span<const double> profile, std::span<const double> psi) {
     const auto n = static_cast<std::ptrdiff_t>(profile.size());
     if (n < 1) throw std::invalid_argument("eclipse::limb::delta_rho_at: empty profile");
@@ -423,7 +435,10 @@ std::vector<double> delta_rho_at(std::span<const double> profile, std::span<cons
 
 namespace {
 
-using NodeKey = std::tuple<std::int64_t, int, std::string, std::uint64_t>;
+// (node, frame, moon frame, band generation, kernel-pool generation, EOP
+// table generation): a profile depends on all of them (item C4).
+using NodeKey =
+    std::tuple<std::int64_t, int, std::string, std::uint64_t, std::uint64_t, std::uint64_t>;
 
 std::mutex& cache_mutex() {
     static std::mutex m;
@@ -439,21 +454,31 @@ constexpr std::size_t kMaxCachedNodes = 256;
 
 std::shared_ptr<const std::vector<double>> node_profile(std::int64_t node, Frame frame,
                                                        std::string_view moon_frame) {
+    // One snapshot of the band with its generation, and the kernel-pool / EOP
+    // generations, taken before the computation; the result is cached only if
+    // neither of those changed while it ran (a reload mid-computation could
+    // otherwise file a new-kernel profile under the old key, or the reverse).
+    std::shared_ptr<const Band> b;
     std::uint64_t generation;
     {
         std::scoped_lock lock(band_mutex());
+        b = band_slot();
         generation = band_generation();
     }
-    NodeKey key{node, static_cast<int>(frame), std::string(moon_frame), generation};
+    if (!b) throw std::logic_error("eclipse::limb: limb band not set (call set_band first)");
+    const std::uint64_t kernels = ephem::kernel_generation();
+    const std::uint64_t eops = eop::generation();
+    NodeKey key{node, static_cast<int>(frame), std::string(moon_frame), generation, kernels, eops};
     {
         std::scoped_lock lock(cache_mutex());
         if (auto it = cache().find(key); it != cache().end()) return it->second;
     }
-    // app.limb._node_profile: the silhouette along limb_axes(node * LATTICE_S).
+    // The silhouette along limb_axes(node * LATTICE_S).
     const double et[1] = {static_cast<double>(node) * LATTICE_S};
     const ephem::LimbAxes la = ephem::limb_axes(et, frame, moon_frame);
     auto prof = std::make_shared<const std::vector<double>>(
-        silhouette(la.axes[0], N_BINS, la.distance_km[0]));
+        silhouette_on(b, la.axes[0], N_BINS, la.distance_km[0]));
+    if (ephem::kernel_generation() != kernels || eop::generation() != eops) return prof;
     std::scoped_lock lock(cache_mutex());
     if (cache().size() >= kMaxCachedNodes) cache().clear();
     cache().emplace(key, prof);

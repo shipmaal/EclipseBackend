@@ -2,7 +2,7 @@
 ERFA IAU 2006/2000A ITRS frame (both high precision) to well below our
 accuracy ceiling.
 
-This turns the ``ephemeris.py`` docstring claim -- ITRF93 is "equivalent
+This turns the claim (``ephem.hpp``) -- ITRF93 is "equivalent
 accuracy to ITRS" -- into a CI-guarded invariant.  Measured agreement across
 the three reference eclipses (DE440s): x, y < 0.1 m; d, mu < 0.01 arcsec;
 greatest-eclipse ground point < 0.1 m (see docs; the tolerances below carry
@@ -15,10 +15,11 @@ GitHub-mirror kernel set ships no binary PCK, so ITRF93 is unavailable there).
 
 from __future__ import annotations
 
+import _eclipse as E
+import numpy as np
 import pytest
-import spiceypy
 
-from app.ephemeris import besselian_instant, default_metakernel, load_kernels
+from app.core import SpiceError, default_metakernel, load_kernels
 
 pytestmark = pytest.mark.skipif(
     not default_metakernel().exists(),
@@ -37,19 +38,24 @@ _XY_TOL_RE = 1.0e-7           # ~0.6 m on the ground
 _ANG_TOL_DEG = 0.05 / 3600.0  # 0.05 arcsec
 
 
+def besselian_instant(et: float, frame: str) -> dict[str, float]:
+    return {k: float(v[0]) for k, v in E.besselian_instants(np.array([et]), frame).items()}
+
+
 def _itrf93_available() -> bool:
     """True if the furnished kernels support the ITRF93 binary-PCK frame."""
+    if not default_metakernel().exists():
+        return False
     load_kernels()
     try:
         besselian_instant(0.0, "ITRF93")  # et = 0 -> J2000
         return True
-    except spiceypy.utils.exceptions.SpiceyError:
-        spiceypy.reset()
+    except SpiceError:
         return False
 
 
 requires_itrf93 = pytest.mark.skipif(
-    not (default_metakernel().exists() and _itrf93_available()),
+    not _itrf93_available(),
     reason="ITRF93 needs the high-precision binary Earth PCK (NAIF kernel set only)",
 )
 
@@ -63,15 +69,15 @@ def test_itrf93_matches_itrs(epoch):
     EOP, so they must be interchangeable for eclipse geometry.  Confirms the
     default ITRS frame loses no accuracy by not requiring a binary PCK.
     """
-    et = spiceypy.str2et(epoch)
+    et = E.str_to_et(epoch)
     itrs = besselian_instant(et, "ITRS")
     itrf = besselian_instant(et, "ITRF93")
 
-    assert itrf.x == pytest.approx(itrs.x, abs=_XY_TOL_RE), "x"
-    assert itrf.y == pytest.approx(itrs.y, abs=_XY_TOL_RE), "y"
-    assert itrf.d == pytest.approx(itrs.d, abs=_ANG_TOL_DEG), "d"
+    assert itrf["x"] == pytest.approx(itrs["x"], abs=_XY_TOL_RE), "x"
+    assert itrf["y"] == pytest.approx(itrs["y"], abs=_XY_TOL_RE), "y"
+    assert itrf["d"] == pytest.approx(itrs["d"], abs=_ANG_TOL_DEG), "d"
     # mu carries the Greenwich rotation; both frames share it, so it agrees too.
-    assert itrf.mu == pytest.approx(itrs.mu, abs=_ANG_TOL_DEG), "mu"
+    assert itrf["mu"] == pytest.approx(itrs["mu"], abs=_ANG_TOL_DEG), "mu"
     # Shadow-cone half-angles are frame-independent (depend only on distances).
-    assert itrf.tan_f1 == pytest.approx(itrs.tan_f1, rel=1e-9), "tan_f1"
-    assert itrf.tan_f2 == pytest.approx(itrs.tan_f2, rel=1e-9), "tan_f2"
+    assert itrf["tan_f1"] == pytest.approx(itrs["tan_f1"], rel=1e-9), "tan_f1"
+    assert itrf["tan_f2"] == pytest.approx(itrs["tan_f2"], rel=1e-9), "tan_f2"

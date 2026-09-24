@@ -1,12 +1,13 @@
 // nanobind module ``_eclipse`` — the Python face of libeclipse.
 //
-// Phase 1 (docs/CPP_ROADMAP.md §5): kernel management, time scales, EOP
-// injection, Besselian elements and sub-solar points, bound here. Arrays
+// Bound here: constants, kernel management, time scales, the EOP table,
+// Besselian elements and sub-solar points. Arrays
 // cross the boundary as NumPy float64 (spans in, fresh ndarrays out); the
 // SPICE-touching calls release the GIL and the C++ side holds its own lock.
-// Phase 2 and 3 units are bound one translation unit per core header
-// (bind_numerics / bind_ellipsoid / bind_geometry / bind_circumstances /
-// bind_catalog, see common.hpp) and assembled at the end of NB_MODULE.
+// The other units are bound one translation unit per core header
+// (bind_ellipsoid / bind_geometry / bind_circumstances / bind_catalog /
+// bind_limb / bind_besselian, see common.hpp) and assembled at the end of
+// NB_MODULE.
 #include <nanobind/stl/array.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
@@ -17,9 +18,11 @@
 #include <vector>
 
 #include "common.hpp"
+#include "eclipse/circumstances.hpp"
 #include "eclipse/deltat.hpp"
 #include "eclipse/eop.hpp"
 #include "eclipse/ephem.hpp"
+#include "eclipse/limb.hpp"
 
 using namespace nb::literals;
 
@@ -34,9 +37,8 @@ NB_MODULE(_eclipse, m) {
 
     // ``SpiceError`` derives from RuntimeError so ``except RuntimeError`` still
     // catches it; ``str(e)`` is the spiceypy-style multi-line report and the
-    // four CSPICE message fields are attributes, so app/native.py can rebuild
-    // the exact spiceypy exception class (e.g. SpiceFRAMEDATANOTFOUND) that the
-    // Python backend would have raised.
+    // four CSPICE message fields are attributes (short_message is e.g.
+    // "SPICE(SPKINSUFFDATA)"), which the API maps to HTTP errors.
     static PyObject* spice_error_type =
         nb::exception<eclipse::spice_error>(m, "SpiceError", PyExc_RuntimeError).inc_ref().ptr();
     nb::register_exception_translator([](const std::exception_ptr& p, void*) {
@@ -57,6 +59,22 @@ NB_MODULE(_eclipse, m) {
         .def_ro("km", &eclipse::ephem::Position::km)
         .def_ro("light_time_s", &eclipse::ephem::Position::light_time_s);
 
+    // ---- constants (read-only module attributes; the core is their one home)
+    {
+        namespace k = eclipse::constants;
+        m.attr("WGS84_A_KM") = k::WGS84_A_KM;
+        m.attr("WGS84_F") = k::WGS84_F;
+        m.attr("EARTH_MEAN_RADIUS_KM") = k::EARTH_MEAN_RADIUS_KM;
+        m.attr("K_PENUMBRA") = k::K_PENUMBRA;
+        m.attr("K_UMBRA") = k::K_UMBRA;
+        m.attr("SUN_RADIUS_KM") = k::SUN_RADIUS_KM;
+        m.attr("HORIZON_ALT_DEG") = eclipse::circumstances::HORIZON_ALT_DEG;
+        m.attr("LIMB_R_REF_KM") = eclipse::limb::R_REF_KM;
+        m.attr("LIMB_K_REF") = eclipse::limb::K_REF;
+        m.attr("LIMB_N_BINS") = eclipse::limb::N_BINS;
+        m.attr("LIMB_LATTICE_S") = eclipse::limb::LATTICE_S;
+    }
+
     // ---- toolkit / pool
     m.def("toolkit_version", &eclipse::ephem::toolkit_version,
           "tkvrsn_c('TOOLKIT') of the vendored CSPICE, e.g. 'CSPICE_N0067'.");
@@ -69,7 +87,7 @@ NB_MODULE(_eclipse, m) {
     m.def("kernel_count", &eclipse::ephem::kernel_count, "kind"_a = "ALL",
           nb::call_guard<nb::gil_scoped_release>(), "ktotal_c.");
     m.def("sun_radius_km", &eclipse::ephem::sun_radius_km,
-          nb::call_guard<nb::gil_scoped_release>(), "Solar radius [km]: the IAU 1976 constant 696000 (app.ephemeris.sun_radius_km).");
+          nb::call_guard<nb::gil_scoped_release>(), "Solar radius [km]: the IAU 1976 constant 696000, the radius [Espenak]'s k1 / k2 pair with.");
 
     // ---- raw SPICE
     m.def("str_to_et", &eclipse::ephem::str_to_et, "time_string"_a,
@@ -103,7 +121,12 @@ NB_MODULE(_eclipse, m) {
                                     as_span(dut1_s));
         },
         "mjd"_a, "xp_arcsec"_a, "yp_arcsec"_a, "dut1_s"_a,
-        "Install the IERS Bulletin A table (app.eop._table() columns).");
+        "Install an IERS Bulletin A table from arrays (MJD, xp, yp [arcsec], UT1-UTC [s]);\n"
+        "the API uses load_eop_file.");
+    m.def("load_eop_file", &eclipse::eop::load_file, "path"_a,
+          nb::call_guard<nb::gil_scoped_release>(),
+          "Parse an IERS finals2000A.all file and install its Bulletin A table; returns the rows.");
+    m.def("eop_source", &eclipse::eop::source, "The file load_eop_file read ('' for none).");
     m.def("has_eop_table", &eclipse::eop::has_table);
     m.def("eop_mjd_range", &eclipse::eop::mjd_range, "(first, last) MJD of the table.");
     m.def(
@@ -120,13 +143,15 @@ NB_MODULE(_eclipse, m) {
             return nb::make_tuple(to_numpy(std::move(xp)), to_numpy(std::move(yp)),
                                   to_numpy(std::move(dut1)));
         },
-        "mjd_utc"_a, "(xp_rad, yp_rad, dut1_s) interpolated like app.eop.eop.");
+        "mjd_utc"_a, "(xp_rad, yp_rad, dut1_s) at UTC MJDs: linear between the table rows, the end values\n"
+        "held outside it.");
 
     // ---- time scales (IERS-era rule)
     m.def("utc_to_et", &eclipse::ephem::utc_to_et, "utc"_a,
-          nb::call_guard<nb::gil_scoped_release>(), "app.ephemeris.utc_to_et.");
+          nb::call_guard<nb::gil_scoped_release>(), "Epoch string -> TDB seconds past J2000: UTC inside the IERS era (leap seconds), read as\n"
+          "UT1 + the [Espenak] delta-T model outside it.");
     m.def("et_to_utc", &eclipse::ephem::et_to_utc, "et"_a,
-          nb::call_guard<nb::gil_scoped_release>(), "app.ephemeris.et_to_utc.");
+          nb::call_guard<nb::gil_scoped_release>(), "Inverse of utc_to_et: ISO YYYY-MM-DDTHH:MM:SS (whole seconds; UT1 outside the IERS era).");
     m.def(
         "earth_rotation_times",
         [](In1D et) {
@@ -138,7 +163,8 @@ NB_MODULE(_eclipse, m) {
             return nb::make_tuple(to_numpy(std::move(r.tt2)), to_numpy(std::move(r.ut1)),
                                   to_numpy(std::move(r.xp)), to_numpy(std::move(r.yp)));
         },
-        "et"_a, "(tt2, ut1_frac, xp, yp) as app.ephemeris.earth_rotation_times.");
+        "et"_a, "(tt2, ut1_frac, xp, yp): TT and UT1 as days past J2000 and polar motion [rad] at et\n"
+        "(IERS EOP inside the era; the delta-T model and zero polar motion outside).");
     m.def(
         "tt_minus_ut1",
         [](In1D et) {
@@ -175,7 +201,8 @@ NB_MODULE(_eclipse, m) {
         },
         "et"_a, "earth_frame"_a = "ITRS", "k1"_a = eclipse::constants::K_PENUMBRA,
         "k2"_a = eclipse::constants::K_UMBRA,
-        "Besselian elements at each et: dict of arrays as app.ephemeris.besselian_instants\n"
+        "Besselian elements at each et [TDB s]: dict of arrays x, y, z, l1, l2 [Earth radii],\n"
+        "d, mu [deg; mu wrapped to (-180, 180]], tan_f1, tan_f2\n"
         "(k1 / k2: the penumbral / umbral cones' lunar radii [Earth radii]).");
     m.def(
         "axis_separation",
@@ -188,7 +215,7 @@ NB_MODULE(_eclipse, m) {
             return nb::make_tuple(to_numpy(std::move(s.rho)), to_numpy(std::move(s.z)));
         },
         "et"_a,
-        "(rho, z) at each et as app.ephemeris.axis_separation: the axis distance hypot(x, y)\n"
+        "(rho, z) at each et: the axis distance hypot(x, y)\n"
         "and the Moon's distance along the axis [Earth radii], frame-free (J2000 vectors).");
     m.def(
         "sub_solar_points",
@@ -203,11 +230,11 @@ NB_MODULE(_eclipse, m) {
         },
         "et"_a, "earth_frame"_a = "ITRS", "(lon_deg, lat_deg) of the sub-solar point at each et.");
 
-    // ---- phase 2 units (one binding TU per core header)
-    bind_numerics(m);
+    // ---- the other units (one binding TU per core header)
     bind_ellipsoid(m);
     bind_geometry(m);
     bind_circumstances(m);  // phase 3
     bind_catalog(m);        // phase 4
     bind_limb(m);           // lunar limb profile
+    bind_besselian(m);      // model: direct elements, fit, central line
 }

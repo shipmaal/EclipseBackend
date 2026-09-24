@@ -75,6 +75,13 @@ bool has_band();
 std::vector<double> silhouette(const std::array<double, 9>& axes, int n_bins = N_BINS,
                                double distance_km = INF_DISTANCE);
 
+/// Fill the empty (non-finite) bins of a profile in place by periodic linear
+/// interpolation between the nearest filled bins on either side,
+/// ``a + (b - a) * (m / L)`` for the m-th of the L steps from bin a to bin b
+/// (across the -pi/pi seam too). Throws ``std::invalid_argument`` when more than
+/// ``MAX_EMPTY_FRACTION`` of the bins are empty. (numerical)
+void fill_empty(std::vector<double>& rho);
+
 /// ``app.limb.sphere_radius``: ``R / sqrt(1 - (R / D)^2)``, the LOLA sphere's
 /// apparent radius in km at distance ``D`` (tangent cone).
 double sphere_radius(double distance_km);

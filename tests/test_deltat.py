@@ -1,11 +1,20 @@
-"""Pure-function tests for the delta-T polynomial model (no kernels needed)."""
+"""The core's delta-T polynomial model [Espenak] (``deltat.hpp``; no kernels needed)."""
 
 from __future__ import annotations
 
+import _eclipse as E
 import numpy as np
 import pytest
 
-from app.deltat import decimal_year_from_jd, delta_t_seconds
+
+def delta_t_seconds(year):
+    """Scalar or array years -> delta-T [s] (``_eclipse.delta_t_seconds``)."""
+    out = E.delta_t_seconds(np.atleast_1d(np.asarray(year, dtype=float)))
+    return out if np.ndim(year) else float(out[0])
+
+
+def decimal_year_from_jd(jd: float) -> float:
+    return float(E.decimal_year_from_jd(np.array([jd]))[0])
 
 # Observed delta-T [s] from [Meeus98] Table 10.A (rounded to 0.1 s there).
 _TABLE_10A = {1900: -2.8, 1920: 21.2, 1950: 29.1, 1960: 33.1, 1980: 50.5, 2000: 63.8}

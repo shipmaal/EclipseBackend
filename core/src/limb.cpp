@@ -67,8 +67,8 @@ std::shared_ptr<const Band> band() {
     return b;
 }
 
-// app.limb._fill_empty: periodic linear interpolation across empty bins,
-// ``a + (b - a) * (m / L)``; too many empty bins is an error.
+}  // namespace
+
 void fill_empty(std::vector<double>& rho) {
     const std::size_t n = rho.size();
     std::vector<std::size_t> filled;
@@ -91,7 +91,6 @@ void fill_empty(std::vector<double>& rho) {
     }
 }
 
-}  // namespace
 
 namespace {
 

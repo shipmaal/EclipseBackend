@@ -1,18 +1,20 @@
 """Independent 3D check of the limb-profile contacts (docs/LIMB_PROFILE.md sec. 5.2).
 
 The profile mode reduces everything to the fundamental plane: one perspective
-silhouette per instant (``app.limb.silhouette``), the Sun and Moon disks from
+silhouette per instant (the core's ``limb::silhouette``), the Sun and Moon disks from
 the cone radii L1'/L2', the observer's height folded into the fundamental
 plane (``geo_to_fund``), and the contact functions G_T / G_A.  This oracle
 shares none of that.  From the observer at its height above the ellipsoid
-(plain ECEF, ``geodesy_oracle.observer_ecef_km`` [WGS84]; ITRS via ERFA
-``c2t06a`` [SOFA]) it casts rays at points on the solar limb (the Sun a
-sphere of ``constants.SUN_RADIUS_KM``, apparent positions ``LT+S`` [SPICE]),
+(plain ECEF, ``geodesy_oracle.observer_ecef_km`` [WGS84]; ITRS via pyerfa
+``c2t06a`` [SOFA] with the core's TT / UT1 / polar motion) it casts rays at
+points on the solar limb (the Sun a sphere of 696 000 km, IAU 1976, apparent
+positions ``LT+S`` from spiceypy's own kernel pool [SPICE]),
 marches each ray past the Moon in ``MOON_ME`` and compares its distance from
 the Moon's centre with the DEM surface there (LOLA heights, bilinear between
-pixel centres [LOLA]).  ``H(t) = max over limb rays of min along the ray of
-(|p| - r_surface)``: totality <=> H < 0 (every limb ray blocked); annularity
-<=> ``-min over rays`` < 0 (none blocked).
+pixel centres [LOLA]; the band file read by ``kernels.limb_band``).
+``H(t) = max over limb rays of min along the ray of (|p| - r_surface)``:
+totality <=> H < 0 (every limb ray blocked); annularity <=> ``-min over
+rays`` < 0 (none blocked).
 
 The two methods interpolate the DEM differently (grid edges vs bilinear), so
 they differ by a few tens of metres of limb height.  A timing difference is
@@ -29,17 +31,18 @@ takes about a minute.  Needs the NAIF kernels and ``kernels.bootstrap --limb``.
 
 from __future__ import annotations
 
+import _eclipse as E
 import numpy as np
 import pytest
 from geodesy_oracle import observer_ecef_km
 
-from app import limb
-from app.ephemeris import default_metakernel
+from app.core import default_band_path, default_metakernel
+from kernels import limb_band
 
 GATE_KM = 0.075  # limb-height equivalent of a contact-time difference
 
 requires_limb = pytest.mark.skipif(
-    not (default_metakernel().exists() and limb.default_band_path().exists()),
+    not (default_metakernel().exists() and default_band_path().exists()),
     reason="limb band / lunar kernels not installed (python -m kernels.bootstrap --limb)",
 )
 
@@ -49,8 +52,10 @@ class Dem:
     the band; bilinear radius at any MOON_ME point (pixel centres per the PDS
     map projection of the LDEM label, :mod:`kernels.limb_band`)."""
 
-    def __init__(self, band: limb.LimbBand):
+    def __init__(self, band: limb_band.BandFile):
         h = band.header
+        offset_km = float(h["offset"]) / 1000.0
+        scale_km = float(h["scaling_factor"]) / 1000.0
         self.ppd = float(h["map_resolution"])
         self.loff = float(h["line_projection_offset"])
         self.soff = float(h["sample_projection_offset"])
@@ -59,7 +64,7 @@ class Dem:
         g = np.full((int(h["lines"]), self.samples), np.nan)
         pos = 0
         for line, j0, cnt in band.runs:
-            g[line, j0:j0 + cnt] = band.offset_km + band.dn[pos:pos + cnt] * band.scale_km
+            g[line, j0:j0 + cnt] = offset_km + band.dn[pos:pos + cnt] * scale_km
             pos += cnt
         self.g = g
 
@@ -91,20 +96,19 @@ def oracle_h(dem: Dem, et: float, lat_deg: float, lon_deg: float, annular: bool 
     ``step_km`` / ``n_rays`` are converged to < 0.07 s at a graze (docs 9.6).
     """
     import erfa
-    import spiceypy as spice
+    import spiceypy as spice  # furnished by the ``spice`` fixture (conftest.py)
 
-    from app import ephemeris as ep
-    from app.constants import SUN_RADIUS_KM
-
-    tt2, ut1, xp, yp = ep.earth_rotation_times(np.array([et]))
-    rc2t = erfa.c2t06a(ep._J2000_JD, tt2[0], ep._J2000_JD, ut1[0], xp[0], yp[0])
+    sun_radius_km = 696000.0  # IAU 1976, the radius [Espenak]'s k1 / k2 pair with
+    j2000_jd = 2451545.0
+    tt2, ut1, xp, yp = E.earth_rotation_times(np.array([et]))
+    rc2t = erfa.c2t06a(j2000_jd, tt2[0], j2000_jd, ut1[0], xp[0], yp[0])
     obs = rc2t.T @ observer_ecef_km(lat_deg, lon_deg, height_m)
     moon, lt = spice.spkpos("MOON", et, "J2000", "LT+S", "EARTH")
     sun, _ = spice.spkpos("SUN", et, "J2000", "LT+S", "EARTH")
     moon_t, sun_t = np.asarray(moon) - obs, np.asarray(sun) - obs
     to_me = spice.pxform("J2000", "MOON_ME", et - lt)
     u = sun_t / np.linalg.norm(sun_t)
-    a_s = np.arcsin(SUN_RADIUS_KM / np.linalg.norm(sun_t))
+    a_s = np.arcsin(sun_radius_km / np.linalg.norm(sun_t))
     e1 = np.cross(u, [0.0, 0.0, 1.0])
     e1 /= np.linalg.norm(e1)
     e2 = np.cross(u, e1)
@@ -151,8 +155,8 @@ _VALE_DEM_XFAIL = pytest.mark.xfail(strict=True, reason=(
 
 
 @pytest.fixture(scope="module")
-def dem():
-    return Dem(limb.load_band())
+def dem(spice):
+    return Dem(limb_band.read(default_band_path()))
 
 
 @requires_limb
@@ -164,18 +168,17 @@ def test_profile_contacts_match_the_3d_oracle(site, dem):
     """Each profile-mode contact is bracketed by the oracle within GATE_KM of
     limb height: at ``c -+ GATE_KM / |dG/dt|`` the oracle is outside / inside
     the central phase (C2) or inside / outside (C3)."""
-    from app import ephemeris as ep
     from app.besselian import BesselianModel
-    from app.circumstances import _profile_g, local_raw
+    from app.circumstances import local_raw
 
     label, t0, lat, lon, h = site
-    ep.load_kernels()
     model = BesselianModel(t0_utc=t0)
     raw = local_raw(model, lat, lon, "profile", h)
     assert raw.central, label
     annular = raw.L2_x > 0
     for c, entering in ((raw.c2, True), (raw.c3, False)):
-        g = _profile_g(model, lat, lon, np.array([c - 0.5 / 3600, c + 0.5 / 3600]), h)
+        g = E.profile_g(model.et0, model.earth_frame, model.half_window_hours, lat, lon,
+                        np.array([c - 0.5 / 3600, c + 0.5 / 3600]), h)
         rate = abs(g[1] - g[0]) * 6378.137  # km/s
         dt = GATE_KM / rate
         before = oracle_h(dem, model.et0 + c * 3600 - dt, lat, lon, annular, height_m=h)

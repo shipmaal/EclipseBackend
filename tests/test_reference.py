@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.reference import central_line
+from reference import central_line
 
 
 def test_central_line_shape_and_bounds():

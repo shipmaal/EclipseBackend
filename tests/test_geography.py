@@ -1,16 +1,33 @@
-"""Pure-function tests for the fundamental-plane -> geographic reduction.
+"""The core's fundamental-plane <-> geographic reduction (``ellipsoid.hpp``)
+and the API's time formatting.
 
 These run without SPICE kernels. The reduction is validated against known
 Besselian polynomials for the 2024-04-08 total solar eclipse and the published
-central line in ``app/data.txt``.
+central line in ``tests/data/data.txt``, and the observer height against two
+independent forms (3D vectors; NASA's local-circumstances calculator).
 """
 
 from __future__ import annotations
 
+import _eclipse as E
+import numpy as np
 import pytest
+from reference import central_line
 
-from app.geography import dec_to_hms, format_clock, format_offset, fund_to_geo, geo_to_fund
-from app.reference import central_line
+from app.formatting import dec_to_hms, format_clock, format_offset
+
+
+def fund_to_geo(x, y, d, mu) -> tuple[float, float]:
+    """(lon, lat) [deg] for one fundamental-plane point (``_eclipse.fund_to_geo``)."""
+    lon, lat = E.fund_to_geo(*(np.array([float(v)]) for v in (x, y, d, mu)))
+    return float(lon[0]), float(lat[0])
+
+
+def geo_to_fund(lat, lon, d, mu, h=None) -> tuple[float, float, float]:
+    """(xi, eta, zeta) [Earth radii] for one observer (``_eclipse.geo_to_fund``)."""
+    args = [np.array([float(v)]) for v in (lat, lon, d, mu)]
+    out = E.geo_to_fund(*args) if h is None else E.geo_to_fund(*args, np.array([float(h)]))
+    return tuple(float(v[0]) for v in out)
 
 # Besselian polynomials for the 2024-04-08 eclipse (coeffs in powers of
 # t = hours from 18:00 UT). Third-party approximation used only as a check.
@@ -55,9 +72,9 @@ def test_fund_to_geo_matches_reference_central_line():
         assert lon == pytest.approx(ref.lon[i], abs=0.7), f"lon at t={t}"
 
 
-def test_fund_to_geo_raises_when_axis_misses_earth():
-    with pytest.raises(ValueError):
-        fund_to_geo(2.0, 0.0, 7.5, 90.0)  # |x| > 1: shadow off the Earth
+def test_fund_to_geo_is_nan_when_axis_misses_earth():
+    lon, lat = fund_to_geo(2.0, 0.0, 7.5, 90.0)  # |x| > 1: shadow off the Earth
+    assert np.isnan(lon) and np.isnan(lat)
 
 
 def test_longitude_wrapped():
@@ -93,8 +110,7 @@ def test_geo_to_fund_with_height_is_the_direct_3d_geometry():
     outside any observer, to show the term is exact rather than first order).
     Achieved 1.1e-15 Earth radii (7 nm); gate 1e-14.  At H = 0 the same holds
     and the result is bit-identical to the default argument."""
-    import numpy as np
-    from geodesy_oracle import direct_fundamental  # tests/ (not importable from tools/)
+    from geodesy_oracle import direct_fundamental
 
     rng = np.random.default_rng(20260923)
     worst = 0.0
@@ -118,9 +134,7 @@ def test_geo_to_fund_with_height_is_nasas_local_circumstances_form():
     of Meeus's IAU 1976 a and f.  Ours splits the same vector into the
     ellipsoid point and the height normal; the two agree to 4.4e-16 (gate
     1e-14) over 5000 random observers, axes and heights."""
-    import numpy as np
-
-    from app.constants import WGS84_A_KM, WGS84_F
+    from geodesy_oracle import WGS84_A_KM, WGS84_F
 
     rng = np.random.default_rng(7)
     worst = 0.0
@@ -140,22 +154,15 @@ def test_geo_to_fund_with_height_is_nasas_local_circumstances_form():
     assert worst <= 1e-14, worst
 
 
-def test_geo_to_fund_height_broadcasts():
-    """``height_m`` broadcasts like the other arguments: observers (P, 1) with
-    their heights (P, 1) against instants (N,)."""
-    import numpy as np
-
-    lat = np.array([[39.12], [43.95]])
-    lon = np.array([[-88.55], [-117.22]])
-    h = np.array([[149.4], [693.8]])
+def test_geo_to_fund_arrays_are_elementwise():
+    """The array form is the one-observer form elementwise, heights included."""
+    lat = np.array([39.12, 43.95, -20.0])
+    lon = np.array([-88.55, -117.22, 30.0])
+    h = np.array([149.4, 693.8, 0.0])
     d, mu = np.array([7.5, 7.6, 11.9]), np.array([80.0, 90.0, 100.0])
-    xi, eta, zeta = geo_to_fund(lat, lon, d, mu, h)
-    assert xi.shape == eta.shape == zeta.shape == (2, 3)
-    for i in range(2):
-        for j in range(3):
-            one = geo_to_fund(float(lat[i, 0]), float(lon[i, 0]), float(d[j]), float(mu[j]),
-                              float(h[i, 0]))
-            assert (xi[i, j], eta[i, j], zeta[i, j]) == pytest.approx(one, abs=1e-15)
+    xi, eta, zeta = E.geo_to_fund(lat, lon, d, mu, h)
+    for i in range(3):
+        assert (xi[i], eta[i], zeta[i]) == geo_to_fund(lat[i], lon[i], d[i], mu[i], h[i])
 
 
 def test_format_offset_signed():

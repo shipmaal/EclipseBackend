@@ -43,7 +43,7 @@ void bind_limb(nb::module_& m) {
         },
         "line"_a, "first"_a, "count"_a, "dn"_a, "cos_lat"_a, "sin_lat"_a, "cos_lon"_a, "sin_lon"_a,
         "offset_km"_a, "scale_km"_a, "band_deg"_a,
-        "Install a limb band given as arrays (synthetic bands; app.limb.install_native).");
+        "Install a limb band given as arrays (synthetic bands; the API uses load_limb_band).");
     m.def(
         "load_limb_band",
         [](const std::string& path) {
@@ -71,10 +71,10 @@ void bind_limb(nb::module_& m) {
         },
         "axes"_a, "n_bins"_a = eclipse::limb::N_BINS,
         "distance_km"_a = eclipse::limb::INF_DISTANCE,
-        "app.limb.silhouette: delta_rho [km] per bin for view axes (rows x^, y^, z^),\n"
+        "The installed band's silhouette: delta_rho [km] per bin for view axes (rows x^, y^, z^),\n"
         "in perspective from distance_km (inf: orthographic).");
     m.def("limb_sphere_radius", &eclipse::limb::sphere_radius, "distance_km"_a,
-          "app.limb.sphere_radius: the LOLA sphere's apparent radius [km at distance_km].");
+          "The LOLA sphere's apparent radius [km at distance_km].");
     m.def(
         "limb_profiles_at",
         [](In1D et, std::string_view earth_frame, std::string_view moon_frame) {
@@ -91,7 +91,7 @@ void bind_limb(nb::module_& m) {
             return Out2D(heap->data(), {n, static_cast<std::size_t>(eclipse::limb::N_BINS)}, owner);
         },
         "et"_a, "earth_frame"_a = "ITRS", "moon_frame"_a = "MOON_ME",
-        "app.limb.profiles_at: (n, N_BINS) profiles, linear between the cached nodes.");
+        "(n, N_BINS) profiles at et, linear in time between the cached 5-min lattice nodes.");
     for (const char* name : {"limb_g_total", "limb_g_annular"}) {
         const bool total = std::string_view(name) == "limb_g_total";
         m.def(
@@ -105,15 +105,15 @@ void bind_limb(nb::module_& m) {
                                                                  as_span(r_s), as_span(r_m), p, nb_));
             },
             "px"_a, "py"_a, "r_s"_a, "r_m"_a, "profiles"_a,
-            total ? "app.limb.g_total (totality <=> negative)."
-                  : "app.limb.g_annular (annularity <=> negative).");
+            total ? "The totality contact function G_T (totality <=> negative)."
+                  : "The annularity contact function G_A (annularity <=> negative).");
     }
     m.def(
         "limb_delta_rho_at",
         [](In1D profile, In1D psi) {
             return to_numpy(eclipse::limb::delta_rho_at(as_span(profile), as_span(psi)));
         },
-        "profile"_a, "psi"_a, "app.limb.delta_rho_at: periodic linear interpolation.");
+        "profile"_a, "psi"_a, "delta_rho of a profile at angles psi [rad]: periodic linear interpolation.");
     m.def(
         "limb_axes",
         [](In1D et, std::string_view earth_frame, std::string_view moon_frame) {
@@ -134,5 +134,5 @@ void bind_limb(nb::module_& m) {
                                   to_numpy(std::move(la.distance_km)));
         },
         "et"_a, "earth_frame"_a, "moon_frame"_a,
-        "app.ephemeris.limb_axes: ((n, 3, 3) rows x^, y^, z^ in moon_frame, (n,) distance_km).");
+        "Fundamental-plane axes in moon_frame: ((n, 3, 3) rows x^, y^, z^, (n,) distance_km).");
 }

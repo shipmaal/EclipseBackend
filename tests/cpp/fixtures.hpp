@@ -1,4 +1,12 @@
-// Reader for the plain-text oracle fixtures written by tools/dump_oracle.py.
+// Reader for the plain-text golden fixtures in tests/cpp/fixtures/.
+//
+// They were written by the retired Python oracle (tools/dump_oracle.py over the
+// pure-Python app/ math, last present at commit fe1a64a) and are now FROZEN
+// regression goldens: they pin today's results at the tolerances each test
+// states. An intentional change of the arithmetic may move a value; the PR that
+// does so re-baselines the affected records (from the core) and shows the
+// reference-eclipse tests still hold -- a tolerance is never widened to hide a
+// change nobody explained (CLAUDE.md, "Validation").
 #pragma once
 
 #include <array>

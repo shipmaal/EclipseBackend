@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -15,6 +17,7 @@ namespace {
 
 struct Table {
     std::vector<double> mjd, xp, yp, dut1;
+    std::string source;
 };
 
 std::mutex& table_mutex() {
@@ -55,7 +58,57 @@ double interp(double x, const std::vector<double>& xp, const std::vector<double>
     return r;
 }
 
+// ``line[a:b].strip()`` (Python slice semantics: clipped to the line).
+std::string field(const std::string& line, std::size_t a, std::size_t b) {
+    if (a >= line.size()) return {};
+    std::string f = line.substr(a, std::min(b, line.size()) - a);
+    const auto first = f.find_first_not_of(" \t\r");
+    if (first == std::string::npos) return {};
+    const auto last = f.find_last_not_of(" \t\r");
+    return f.substr(first, last - first + 1);
+}
+
+double number(const std::string& f, const std::string& path) {
+    char* end = nullptr;
+    const double v = std::strtod(f.c_str(), &end);  // correctly rounded, as Python float()
+    if (f.empty() || end != f.c_str() + f.size())
+        throw std::runtime_error("eclipse::eop::load_file: bad number '" + f + "' in " + path);
+    return v;
+}
+
+void install(std::shared_ptr<Table> t) {
+    std::scoped_lock lock(table_mutex());
+    table_slot() = std::move(t);
+}
+
 }  // namespace
+
+std::size_t load_file(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) throw std::runtime_error("eclipse::eop::load_file: cannot read " + path);
+    auto t = std::make_shared<Table>();
+    std::string line;
+    while (std::getline(in, line)) {
+        const std::string pm_x = field(line, 18, 27);
+        if (pm_x.empty()) break;  // no Bulletin A polar motion beyond this row
+        t->mjd.push_back(number(field(line, 7, 15), path));
+        t->xp.push_back(number(pm_x, path));
+        t->yp.push_back(number(field(line, 37, 46), path));
+        t->dut1.push_back(number(field(line, 58, 68), path));
+    }
+    if (t->mjd.empty()) throw std::runtime_error("eclipse::eop::load_file: no rows in " + path);
+    if (!std::is_sorted(t->mjd.begin(), t->mjd.end()))
+        throw std::runtime_error("eclipse::eop::load_file: MJD not ascending in " + path);
+    t->source = path;
+    const std::size_t n = t->mjd.size();
+    install(std::move(t));
+    return n;
+}
+
+std::string source() {
+    std::scoped_lock lock(table_mutex());
+    return table_slot() ? table_slot()->source : std::string();
+}
 
 void set_table(std::span<const double> mjd, std::span<const double> xp_arcsec,
                std::span<const double> yp_arcsec, std::span<const double> dut1_s) {
@@ -69,8 +122,7 @@ void set_table(std::span<const double> mjd, std::span<const double> xp_arcsec,
     t->xp.assign(xp_arcsec.begin(), xp_arcsec.end());
     t->yp.assign(yp_arcsec.begin(), yp_arcsec.end());
     t->dut1.assign(dut1_s.begin(), dut1_s.end());
-    std::scoped_lock lock(table_mutex());
-    table_slot() = std::move(t);
+    install(std::move(t));
 }
 
 bool has_table() {
@@ -90,7 +142,7 @@ bool in_iers_era(double mjd) {
 
 Eop interpolate(double mjd_utc) {
     const auto t = table();
-    // app/eop.py: ``np.interp(...) * _ARCSEC_TO_RAD`` — interpolate, then scale.
+    // Interpolate in arcseconds, then scale to radians.
     return {interp(mjd_utc, t->mjd, t->xp) * constants::ARCSEC_TO_RAD,
             interp(mjd_utc, t->mjd, t->yp) * constants::ARCSEC_TO_RAD,
             interp(mjd_utc, t->mjd, t->dut1)};

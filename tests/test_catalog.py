@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import _eclipse as E
+import numpy as np
 import pytest
 
-from app.ephemeris import default_metakernel
+from app.core import default_metakernel
 
 pytestmark = pytest.mark.skipif(
     not default_metakernel().exists(),
@@ -73,11 +75,12 @@ def test_global_contacts_p1_p4(day):
     """P1/P4 from the auxiliary-circle approximation [ES92] sec. 8.34: within
     ~10 s of the bulletin values (measured 1-5 s)."""
     from app.besselian import BesselianModel
-    from app.geography import format_clock, global_contacts
+    from app.formatting import format_clock
 
     t0 = f"{day}T{_GREATEST[day]['utc']}"
     model = BesselianModel(t0_utc=t0, half_window_hours=2.5)
-    c = {k: format_clock(model.t0_utc, v) for k, v in global_contacts(model).items()}
+    c = {k: format_clock(model.t0_utc, v)
+         for k, v in E.global_contacts(model.et0, model.earth_frame, 5.0)}
     p1, p4 = _P1_P4[day]
     assert abs(_secs(c["P1"]) - _secs(p1)) <= 15
     assert abs(_secs(c["P4"]) - _secs(p4)) <= 15
@@ -89,20 +92,15 @@ def test_global_contacts_p1_p4(day):
 def test_penumbral_limits_bound_the_partial_region():
     """Penumbral limits from the same bisection with l1/tan_f1, clipped to the
     terminator: they exist, straddle the central line, and lie ~3000+ km out."""
-    import numpy as np
-
     from app.besselian import BesselianModel
-    from app.geography import _haversine_km, central_track, shadow_edge_limits_v
 
     model = BesselianModel(t0_utc="2024-04-08T18:17:15")
     dt = 0.02
-    elems, track = central_track(model, np.array([-dt, 0.0, dt]))  # 3 points -> a real bearing
-    tp = next(p for p in track if abs(p.t_hours) < 1e-9)
-    i = tp.i
-    n_lat, n_lon, s_lat, s_lon, _w = shadow_edge_limits_v(
-        elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i],
-        elems["l1"][i], elems["tan_f1"][i], tp.bearing, max_km=10_000.0,
-    )
-    assert not np.isnan(n_lat[0]) and n_lat[0] > tp.lat > s_lat[0]
-    assert 2500 < _haversine_km(tp.lat, tp.lon, n_lat[0], n_lon[0]) < 5000
-    assert 2500 < _haversine_km(tp.lat, tp.lon, s_lat[0], s_lon[0]) < 5000
+    c = E.central_line(model.et0, model.earth_frame, np.array([-dt, 0.0, dt]))  # a real bearing
+    k = int(np.flatnonzero(np.abs(c["t_hours"]) < 1e-9)[0])
+    lat, lon = c["lat"][k], c["lon"][k]
+    n_lat, n_lon, s_lat, s_lon = (c[f"pen_{key}"][k] for key in
+                                  ("north_lat", "north_lon", "south_lat", "south_lon"))
+    assert not np.isnan(n_lat) and n_lat > lat > s_lat
+    assert 2500 < E.haversine_km(lat, lon, n_lat, n_lon) < 5000
+    assert 2500 < E.haversine_km(lat, lon, s_lat, s_lon) < 5000

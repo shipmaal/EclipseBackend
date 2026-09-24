@@ -1,9 +1,8 @@
-// Bindings for eclipse/ellipsoid.hpp (app.geography reduction: _reduction_aux,
-// fund_to_geo_v, geo_to_fund).
+// Bindings for eclipse/ellipsoid.hpp (the WGS-84 reduction: reduction_aux,
+// fund_to_geo, geo_to_fund).
 //
-// Arrays cross as equal-length 1-D float64 (spans in, fresh ndarrays out);
-// NumPy broadcasting of the Python signatures is the glue's job on the Python
-// side, not the core's. The array forms release the GIL around the compute.
+// Arrays cross as equal-length 1-D float64 (spans in, fresh ndarrays out); the
+// core does not broadcast. The array forms release the GIL around the compute.
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -25,7 +24,7 @@ void bind_ellipsoid(nb::module_& m) {
             return nb::make_tuple(a.rho1, a.rho2, a.sin_d1, a.cos_d1, a.sin_d1_d2, a.cos_d1_d2);
         },
         "d_rad"_a,
-        "app.geography._reduction_aux at axis declination d_rad [radians]:\n"
+        "The ellipsoid-reduction auxiliaries [ES92] eq. 8.331 at axis declination d_rad [radians]:\n"
         "(rho1, rho2, sin_d1, cos_d1, sin_d1_d2, cos_d1_d2) [ES92] eq. 8.331.");
     m.def(
         "fund_to_geo",
@@ -38,7 +37,7 @@ void bind_ellipsoid(nb::module_& m) {
             return nb::make_tuple(to_numpy(std::move(g.lon_deg)), to_numpy(std::move(g.lat_deg)));
         },
         "x"_a, "y"_a, "d_deg"_a, "mu_deg"_a,
-        "app.geography.fund_to_geo_v on equal-length 1-D arrays: (lon_deg, lat_deg),\n"
+        "Fundamental plane -> geographic on equal-length 1-D arrays: (lon_deg, lat_deg),\n"
         "NaN where the axis misses the Earth. x, y in Earth equatorial radii; d, mu in degrees.");
     m.def(
         "geo_to_fund",
@@ -54,7 +53,7 @@ void bind_ellipsoid(nb::module_& m) {
                                   to_numpy(std::move(f.zeta)));
         },
         "lat_deg"_a, "lon_deg"_a, "d_deg"_a, "mu_deg"_a, "height_m"_a = nb::none(),
-        "app.geography.geo_to_fund on equal-length 1-D arrays: (xi, eta, zeta) in Earth\n"
+        "Geographic -> fundamental plane on equal-length 1-D arrays: (xi, eta, zeta) in Earth\n"
         "equatorial radii. lat, lon, d, mu in degrees; height_m [m] above the WGS-84\n"
         "ellipsoid (None = sea level).");
 }

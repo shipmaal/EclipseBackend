@@ -1,5 +1,11 @@
 # Code review follow-ups
 
+> **Status (2026-09-24):** historical. The phases below are done, and the
+> Python oracle they relied on was retired after commit `fe1a64a`: the C++
+> core is now the implementation (`docs/CPP_NATIVE.md`, the current plan and
+> roadmap). References to `app/*.py` modules and parity gates describe that
+> period.
+
 Scientific code review of the eclipse backend, tracked for follow-up work. Goals:
 **scientific accuracy** and a **modern scientific codebase** — every non-trivial
 equation cited (see `CLAUDE.md` References + conventions) and shared math factored

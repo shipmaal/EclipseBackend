@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numbers>
 #include <stdexcept>
 #include <string>
@@ -183,4 +184,22 @@ TEST_CASE("load_band_file rejects missing and malformed files") {
                     std::runtime_error);
     CHECK_THROWS_AS(limb::load_band_file((fixtures::kDir / "limb_cases.txt").string()),
                     std::runtime_error);  // not ECLLIMB1
+}
+
+TEST_CASE("fill_empty: periodic linear interpolation across empty bins") {
+    const double inf = std::numeric_limits<double>::infinity();
+    std::vector<double> rho = {1.0, -inf, -inf, 4.0, 5.0, -inf};
+    for (int k = 7; k < 40; ++k) rho.push_back(k);
+    rho.push_back(-inf);
+    std::vector<double> out = rho;
+    limb::fill_empty(out);
+    CHECK_THAT(out[1], Catch::Matchers::WithinAbs(2.0, 1e-15));
+    CHECK_THAT(out[2], Catch::Matchers::WithinAbs(3.0, 1e-15));
+    CHECK_THAT(out[5], Catch::Matchers::WithinAbs(6.0, 1e-15));
+    CHECK_THAT(out.back(), Catch::Matchers::WithinAbs(20.0, 1e-15));  // seam: halfway 39 -> 1
+    for (std::size_t k = 0; k < rho.size(); ++k)
+        if (std::isfinite(rho[k])) CHECK(out[k] == rho[k]);
+    std::vector<double> sparse = rho;
+    for (int k = 0; k < 3; ++k) sparse.push_back(-inf);  // 7 of 43 empty: > 10 %
+    CHECK_THROWS_AS(limb::fill_empty(sparse), std::invalid_argument);
 }

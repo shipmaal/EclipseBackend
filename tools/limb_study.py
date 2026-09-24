@@ -3,7 +3,7 @@ LDEM_64 / bin-size measurements from repository data.
 
 Two subcommands, both on the band in ``--band`` (a file cut by
 ``kernels/limb_band.py``, e.g. ``kernels/lola_ldem64_limb14.bin``; see the
-docs for how to cut it from PDS ``LDEM_64``) and the native backend::
+docs for how to cut it from PDS ``LDEM_64``) and the native core::
 
     uv run python tools/limb_study.py profiles --band A.bin --band B.bin
         # profiles at 2017 / 2024 greatest eclipse: |delta_rho_B - delta_rho_A|
@@ -32,16 +32,15 @@ import sys
 import time
 from pathlib import Path
 
+import _eclipse as E
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from app import ephemeris as ep  # noqa: E402
-from app import limb, native  # noqa: E402
+from app import core  # noqa: E402
 from app.besselian import BesselianModel  # noqa: E402
-from app.geography import geo_to_fund  # noqa: E402
 
 EARTH_KM = 6378.137  # fundamental-plane unit [WGS84] a; G * EARTH_KM ~ limb km (R_m ~ k)
 SAMPLE_S = 0.1       # root search: sampling step [s] ...
@@ -54,10 +53,10 @@ def _rss_gb() -> float:
 
 
 def _native_profile(et: float, n_bins: int, frame: str = "ITRS") -> np.ndarray:
-    axes, dist = ep.limb_axes(np.array([et]), frame)
+    axes, dist = E.limb_axes(np.array([et]), frame, "MOON_ME")
     ax = np.ascontiguousarray(np.asarray(axes).reshape(3, 3))
-    with native.PARALLEL_LOCK:
-        return native.module().limb_silhouette(ax, int(n_bins), float(np.atleast_1d(dist)[0]))
+    with core.PARALLEL_LOCK:
+        return E.limb_silhouette(ax, int(n_bins), float(np.atleast_1d(dist)[0]))
 
 
 def cmd_profiles(args) -> None:
@@ -66,10 +65,10 @@ def cmd_profiles(args) -> None:
         profs = []
         for band in args.band:
             t = time.time()
-            limb.ensure_native_band(band)
+            core.ensure_limb_band(band)
             t_load = time.time() - t
             t = time.time()
-            p = _native_profile(et, limb.N_BINS)
+            p = _native_profile(et, E.LIMB_N_BINS)
             profs.append(p)
             print(f"{t0} {Path(band).name}: load {t_load:.1f} s, silhouette "
                   f"{time.time() - t:.2f} s, mean delta_rho {p.mean():.3f} km, "
@@ -82,16 +81,17 @@ def cmd_profiles(args) -> None:
 
 def _g(model, lat, lon, h, t_s, n_bins) -> float:
     """The profile contact function [km of limb] at t_s [s from T0], with the
-    exact profile of that instant (app.circumstances._profile_g without the
+    exact profile of that instant (the core's ``profile_g`` without the
     lattice)."""
-    k = limb.K_REF
+    k = E.LIMB_K_REF
     e = model.evaluate_direct(np.array([t_s / 3600.0]), k, k)
-    xi, eta, zeta = geo_to_fund(lat, lon, e["d"], e["mu"], h)
-    px, py = np.atleast_1d(xi - e["x"]), np.atleast_1d(eta - e["y"])
+    xi, eta, zeta = E.geo_to_fund(np.array([lat]), np.array([lon]), e["d"], e["mu"],
+                                  np.array([h]))
+    px, py = xi - e["x"], eta - e["y"]
     L1 = e["l1"] - zeta * e["tan_f1"]
     L2 = e["l2"] - zeta * e["tan_f2"]
     prof = _native_profile(model.et0 + t_s, n_bins, model.earth_frame)[None, :]
-    f = limb.g_total if L2[0] < 0 else limb.g_annular
+    f = E.limb_g_total if L2[0] < 0 else E.limb_g_annular
     return float(f(px, py, (L1 + L2) / 2.0, (L1 - L2) / 2.0, prof)[0]) * EARTH_KM
 
 
@@ -119,12 +119,15 @@ def _roots(f, centre: float) -> list[tuple[float, bool]]:
 
 
 def cmd_oracle(args) -> None:
+    import spiceypy
     from test_limb_oracle import SITES, Dem, oracle_h
 
     from app.circumstances import local_raw
+    from kernels import limb_band
 
-    band_path = limb.ensure_native_band(args.band)
-    dem = Dem(limb.load_band(band_path))
+    spiceypy.furnsh(str(core.metakernel()))  # the oracle's own SPICE pool
+    band_path = core.ensure_limb_band(args.band)
+    dem = Dem(limb_band.read(band_path))
     bins = [int(b) for b in args.bins.split(",")]
     print(f"band {Path(band_path).name}, dem ready, peak RSS {_rss_gb():.1f} GB")
     for label, t0, lat, lon, h in SITES:
@@ -156,9 +159,7 @@ def main() -> None:
     o.add_argument("--band", required=True)
     o.add_argument("--bins", default="7200,28800")
     args = ap.parse_args()
-    if not native.is_native():
-        sys.exit("needs the native backend (ECLIPSE_BACKEND=native or auto with _eclipse built)")
-    ep.load_kernels()
+    core.load_kernels()
     {"profiles": cmd_profiles, "oracle": cmd_oracle}[args.cmd](args)
 
 

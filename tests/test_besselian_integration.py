@@ -12,11 +12,14 @@ still runs in CI without network access.
 
 from __future__ import annotations
 
+from datetime import datetime
+
+import _eclipse as E
 import numpy as np
 import pytest
+from reference import central_line
 
-from app.ephemeris import default_metakernel
-from app.reference import central_line
+from app.core import SpiceError, default_band_path, default_metakernel, load_kernels
 
 pytestmark = pytest.mark.skipif(
     not default_metakernel().exists(),
@@ -24,6 +27,26 @@ pytestmark = pytest.mark.skipif(
 )
 
 T0 = "2024-04-08T18:00:00"
+
+_NO_COVERAGE = ("ephemeris does not cover this epoch (mirror DE432s spans 1949-2050; "
+                "use NAIF DE440s, 1849-2150)")
+
+
+def _instant(et: float, frame: str) -> dict[str, float]:
+    """The elements at one TDB instant (``_eclipse.besselian_instants``)."""
+    return {k: float(v[0]) for k, v in E.besselian_instants(np.array([et]), frame).items()}
+
+
+def _fund_to_geo(x, y, d, mu) -> tuple[float, float]:
+    """(lon, lat) [deg] where the shadow axis meets the ellipsoid (the core's reduction)."""
+    lon, lat = E.fund_to_geo(*(np.array([float(v)]) for v in (x, y, d, mu)))
+    return float(lon[0]), float(lat[0])
+
+
+def _tdt(s: str) -> float:
+    """TDB seconds past J2000 of a TDT epoch string (published elements' time scale)."""
+    load_kernels()
+    return E.str_to_et(s + " TDT")
 
 
 def _build_model(t0):
@@ -35,8 +58,6 @@ def _build_model(t0):
 
 
 def test_central_line_matches_published_track():
-    from app.geography import fund_to_geo
-
     ref = central_line()
     model, _frame = _build_model(T0)
 
@@ -46,7 +67,7 @@ def test_central_line_matches_published_track():
 
     dlat, dlon = [], []
     for i in range(len(ref)):
-        lon, lat = fund_to_geo(elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i])
+        lon, lat = _fund_to_geo(elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i])
         dlat.append(abs(lat - ref.lat[i]))
         dlon.append(abs(lon - ref.lon[i]))
 
@@ -83,15 +104,9 @@ def test_2017_elements_match_published():
     (mu is compared separately in ``test_2024_mu_matches_published_with_delta_t``:
     the published value is the ephemeris hour angle, ours the true one.)
     """
-    import spiceypy
-
-    from app.ephemeris import besselian_instant
-
-    frame = _usable_frame()
-    et = spiceypy.str2et("2017-08-21 18:00:00 TDT")  # elements are tabulated vs TDT
-    bi = besselian_instant(et, frame)
+    bi = _instant(_tdt("2017-08-21 18:00:00"), _usable_frame())  # tabulated vs TDT
     for key, pub in _2017_PUBLISHED.items():
-        assert getattr(bi, key) == pytest.approx(pub, abs=1e-3), key
+        assert bi[key] == pytest.approx(pub, abs=1e-3), key
 
 
 # 2024-04-08, independent Espenak elements + greatest-eclipse circumstances.
@@ -107,56 +122,40 @@ def _t0_utc(g):
     shadow by several km."""
     if "utc" in g:
         return g["utc"]
-    import spiceypy
-
-    from app.ephemeris import et_to_utc, load_kernels
-
-    load_kernels()
-    return et_to_utc(spiceypy.str2et(g["td"] + " TDT"))
+    return E.et_to_utc(_tdt(g["td"]))
 
 
 def _greatest_model(g):
-    import spiceypy
-
     try:
         return _build_model(_t0_utc(g))
-    except spiceypy.utils.exceptions.SpiceSPKINSUFFDATA:
-        pytest.skip("ephemeris does not cover this epoch (mirror DE432s spans 1949-2050; "
-                    "use NAIF DE440s, 1849-2150)")
+    except SpiceError as exc:
+        if "SPKINSUFFDATA" not in exc.short_message:
+            raise
+        pytest.skip(_NO_COVERAGE)
 
 
 def _greatest_edges(g):
-    """(track point at greatest eclipse, north, south, width_km, is_total)."""
-    from app.geography import central_track, element_rates, shadow_edge_limits, shadow_radii
+    """The ``central_line`` point at greatest eclipse (t = 0), as a dict of floats.
 
-    model, _frame = _greatest_model(g)
+    ``_eclipse.central_line`` over [-dt, 0, +dt] -- the same path /central-line
+    uses (item R3): the along-track bearing from the neighbours, the umbral
+    limits as the time envelope (element rates) and the width between them.
+    """
+    model, frame = _greatest_model(g)
     dt = 0.02
-    # central_track reduces each instant to (lat, lon) with the along-track
-    # bearing from its neighbours -- the same path /central-line uses (item R3).
-    elems, track = central_track(model, np.array([-dt, 0.0, dt]))
-    tp = next(p for p in track if abs(p.t_hours) < 1e-9)  # central instant t=0
-    i = tp.i
-    r = element_rates(model, np.array([0.0]))
-    north, south, width = shadow_edge_limits(
-        elems["x"][i], elems["y"][i], elems["d"][i], elems["mu"][i],
-        elems["l2"][i], elems["tan_f2"][i], tp.bearing,
-        rates=(r["x"], r["y"], r["d"], r["mu"], r["l2"]),
-    )
-    _pen, _umb, is_total = shadow_radii(
-        elems["x"][i], elems["y"][i], elems["d"][i],
-        elems["l1"][i], elems["l2"][i], elems["tan_f1"][i], elems["tan_f2"][i],
-    )
-    return tp, north, south, width, is_total
+    c = E.central_line(model.et0, frame, np.array([-dt, 0.0, dt]))
+    k = int(np.flatnonzero(np.abs(c["t_hours"]) < 1e-9)[0])  # central instant t=0
+    return {key: v[k].item() for key, v in c.items()}
 
 
 def _check_greatest(g):
-    tp, north, south, _width, is_total = _greatest_edges(g)
+    p = _greatest_edges(g)
     # Published lat/lon are rounded to 0.1 deg (measured |dlat|, |dlon| <= 0.05
     # deg over all seven cases); the width is test_path_width_at_greatest_eclipse.
-    assert tp.lat == pytest.approx(g["lat"], abs=0.12)
-    assert tp.lon == pytest.approx(g["lon"], abs=0.12)
-    assert north is not None and north[0] > south[0]
-    assert is_total is g["is_total"]
+    assert p["lat"] == pytest.approx(g["lat"], abs=0.12)
+    assert p["lon"] == pytest.approx(g["lon"], abs=0.12)
+    assert not np.isnan(p["north_lat"]) and p["north_lat"] > p["south_lat"]
+    assert p["is_total"] is g["is_total"]
 
 
 def test_2017_greatest_eclipse_point():
@@ -164,15 +163,9 @@ def test_2017_greatest_eclipse_point():
 
 
 def test_2024_elements_match_published():
-    import spiceypy
-
-    from app.ephemeris import besselian_instant
-
-    frame = _usable_frame()
-    et = spiceypy.str2et("2024-04-08 18:00:00 TDT")
-    bi = besselian_instant(et, frame)
+    bi = _instant(_tdt("2024-04-08 18:00:00"), _usable_frame())  # tabulated vs TDT
     for key, pub in _2024_PUBLISHED.items():
-        assert getattr(bi, key) == pytest.approx(pub, abs=1e-3), key
+        assert bi[key] == pytest.approx(pub, abs=1e-3), key
 
 
 def test_2024_greatest_eclipse_point():
@@ -188,15 +181,11 @@ def test_2024_mu_matches_published_with_delta_t():
     kernel + IERS UT1-UTC), so mu_pub = mu_ours + delta-T * 1.002738 * 15"/s
     [ES92] sec. 8.36.  Measured agreement after the correction: 7e-6 deg (this
     test previously skipped mu, mistaking the convention for an error)."""
-    import spiceypy
-
-    from app.ephemeris import besselian_instant, tt_minus_ut1
-
-    et = spiceypy.str2et("2024-04-08 18:00:00 TDT")
-    bi = besselian_instant(et, _usable_frame())
-    delta_t = float(tt_minus_ut1(et)[0])
+    et = _tdt("2024-04-08 18:00:00")
+    bi = _instant(et, _usable_frame())
+    delta_t = float(E.tt_minus_ut1(np.array([et]))[0])
     assert delta_t == pytest.approx(69.2, abs=0.2)  # measured (LSK + IERS) delta-T
-    mu_eph = bi.mu % 360.0 + delta_t * 1.002738 * 15.0 / 3600.0
+    mu_eph = bi["mu"] % 360.0 + delta_t * 1.002738 * 15.0 / 3600.0
     assert mu_eph == pytest.approx(_2024_PUBLISHED_MU, abs=1e-4)
 
 
@@ -207,15 +196,9 @@ _2023_GREATEST = {"utc": "2023-10-14T17:59:27", "lat": 11.4, "lon": -83.1, "widt
 
 
 def test_2023_annular_elements_match_published():
-    import spiceypy
-
-    from app.ephemeris import besselian_instant
-
-    frame = _usable_frame()
-    et = spiceypy.str2et("2023-10-14 18:00:00 TDT")
-    bi = besselian_instant(et, frame)
+    bi = _instant(_tdt("2023-10-14 18:00:00"), _usable_frame())
     for key, pub in _2023_PUBLISHED.items():
-        assert getattr(bi, key) == pytest.approx(pub, abs=1e-3), key
+        assert bi[key] == pytest.approx(pub, abs=1e-3), key
 
 
 def test_2023_annular_greatest_eclipse_point():
@@ -225,11 +208,10 @@ def test_2023_annular_greatest_eclipse_point():
 # --- Local circumstances at the greatest-eclipse point ----------------------
 def _check_circumstances(g):
     from app.circumstances import local_circumstances
-    from app.geography import fund_to_geo
 
     model, _frame = _greatest_model(g)
     e = model.evaluate(np.array([0.0]))  # central point at maximum
-    lon, lat = fund_to_geo(e["x"][0], e["y"][0], e["d"][0], e["mu"][0])
+    lon, lat = _fund_to_geo(e["x"][0], e["y"][0], e["d"][0], e["mu"][0])
     c = local_circumstances(model, lat, lon)
 
     assert c["eclipse"] is True
@@ -357,17 +339,13 @@ _REF_ECLIPSES = {
 
 
 def _elements_at_t0(g):
-    import spiceypy
-
-    from app.ephemeris import besselian_instant, load_kernels
-
-    load_kernels()
-    et = spiceypy.str2et(g["t0"] + " TDT")  # published elements are tabulated vs TDT
+    et = _tdt(g["t0"])  # published elements are tabulated vs TDT
     try:
-        return et, besselian_instant(et, _usable_frame())
-    except spiceypy.utils.exceptions.SpiceSPKINSUFFDATA:
-        pytest.skip("ephemeris does not cover this epoch (mirror DE432s spans 1949-2050; "
-                    "use NAIF DE440s, 1849-2150)")
+        return et, _instant(et, _usable_frame())
+    except SpiceError as exc:
+        if "SPKINSUFFDATA" not in exc.short_message:
+            raise
+        pytest.skip(_NO_COVERAGE)
 
 
 @pytest.mark.parametrize("name", sorted(_REF_ECLIPSES))
@@ -376,7 +354,7 @@ def test_reference_elements_match_published(name):
     g = _REF_ECLIPSES[name]
     _et, bi = _elements_at_t0(g)
     for key in ("x", "y", "d"):
-        assert getattr(bi, key) == pytest.approx(g[key], abs=1e-3), key
+        assert bi[key] == pytest.approx(g[key], abs=1e-3), key
 
 
 @pytest.mark.parametrize("name", sorted(_REF_ECLIPSES))
@@ -384,12 +362,10 @@ def test_reference_mu_matches_published_with_delta_t(name):
     """mu_published = mu_ours + delta-T * 1.002738 * 15"/s [ES92] sec. 8.36 (see
     test_2024_mu_matches_published_with_delta_t), here with delta-T measured
     (2021, 2023) or from the model (1868, 1919).  Measured: <= 1.9e-5 deg."""
-    from app.ephemeris import tt_minus_ut1
-
     g = _REF_ECLIPSES[name]
     et, bi = _elements_at_t0(g)
-    delta_t = float(tt_minus_ut1(et)[0])
-    mu_eph = (bi.mu % 360.0 + delta_t * 1.002738 * 15.0 / 3600.0) % 360.0
+    delta_t = float(E.tt_minus_ut1(np.array([et]))[0])
+    mu_eph = (bi["mu"] % 360.0 + delta_t * 1.002738 * 15.0 / 3600.0) % 360.0
     assert mu_eph == pytest.approx(g["mu"], abs=1e-4)
 
 
@@ -423,7 +399,7 @@ _WIDTH_CASES = {
 @pytest.mark.parametrize("name", sorted(_WIDTH_CASES))
 def test_path_width_at_greatest_eclipse(name):
     g = _WIDTH_CASES[name]
-    _tp, _north, _south, width, _is_total = _greatest_edges(g)
+    width = _greatest_edges(g)["width_km"]
     assert width == pytest.approx(g["width_km"], abs=1.0)
 
 
@@ -433,42 +409,36 @@ def test_delta_t_model_agrees_with_measured_inside_era():
     + IERS UT1-UTC, at epochs where both exist.  (After ~2005 the polynomial is
     known to over-predict -- 73.9 vs 69.2 s in 2024 -- which is exactly why the
     measured value is used inside the era.)"""
-    from app.deltat import delta_t_seconds
-    from app.ephemeris import load_kernels, tt_minus_ut1, utc_to_et
-
     load_kernels()
     for year in (1975, 1990, 2000):
-        et = utc_to_et(f"{year}-07-01T00:00:00")
-        measured = float(tt_minus_ut1(et)[0])
-        assert delta_t_seconds(year + 0.5) == pytest.approx(measured, abs=1.0), year
+        et = E.utc_to_et(f"{year}-07-01T00:00:00")
+        measured = float(E.tt_minus_ut1(np.array([et]))[0])
+        model = float(E.delta_t_seconds(np.array([year + 0.5]))[0])
+        assert model == pytest.approx(measured, abs=1.0), year
 
 
 def test_delta_t_used_outside_era_is_the_model_not_the_frozen_leap_count():
     """1919: SPICE's leap-second table would give ET-UTC = 41.2 s; the true
     delta-T is ~21 s [Meeus98] Table 10.A.  Both utc_to_et and the Earth-rotation
     angle must use the model there."""
-    import spiceypy
-
-    from app.ephemeris import load_kernels, tt_minus_ut1, utc_to_et
-
     load_kernels()
-    et = utc_to_et("1919-05-29T13:08:00")
-    assert float(tt_minus_ut1(et)[0]) == pytest.approx(21.0, abs=0.5)
-    # The string was read as UT1: TT = UT1 + delta-T.
-    assert et - spiceypy.tparse("1919-05-29T13:08:00")[0] == pytest.approx(21.0, abs=0.5)
+    et = E.utc_to_et("1919-05-29T13:08:00")
+    assert float(E.tt_minus_ut1(np.array([et]))[0]) == pytest.approx(21.0, abs=0.5)
+    # The string was read as UT1: TT = UT1 + delta-T, with the epoch's seconds
+    # past J2000 on the leap-second-free calendar.
+    formal = (datetime(1919, 5, 29, 13, 8) - datetime(2000, 1, 1, 12)).total_seconds()
+    assert et - formal == pytest.approx(21.0, abs=0.5)
 
 
 @pytest.mark.skipif(not default_metakernel().exists(), reason="SPICE kernels not downloaded")
 def test_best_frame_reraises_ephemeris_coverage_gaps():
     """An epoch outside the loaded SPK is a coverage error, not "no usable
-    frame": it must reach the caller as SpiceSPKINSUFFDATA so the pre-IERS
+    frame": it must reach the caller as SPICE(SPKINSUFFDATA) so the pre-IERS
     reference tests skip on the mirror's DE432s (1949-2050) instead of failing
     (CI full-validation, 1868/1919 cases)."""
-    import spiceypy
-
     from app.besselian import build_model_best_frame
 
-    with pytest.raises(spiceypy.utils.exceptions.SpiceSPKINSUFFDATA):
+    with pytest.raises(SpiceError, match="SPKINSUFFDATA"):
         build_model_best_frame("1700-06-01T12:00:00", half_window_hours=2.0)
 
 
@@ -512,17 +482,12 @@ _EB2024_NEAR = [
 
 
 def _limb_ready() -> bool:
-    import spiceypy
-
-    from app import limb
-    from app.ephemeris import load_kernels
-
-    if not limb.default_band_path().exists():
+    if not default_band_path().exists():
         return False
     load_kernels()
     try:
-        spiceypy.pxform("J2000", "MOON_ME", 0.0)
-    except spiceypy.utils.exceptions.SpiceyError:
+        E.limb_axes(np.array([0.0]), "ITRS", "MOON_ME")  # needs the lunar kernels
+    except SpiceError:
         return False
     return True
 
@@ -630,7 +595,6 @@ def test_mean_limb_contacts_at_height_match_the_direct_3d_geometry():
 
     from app.besselian import BesselianModel
     from app.circumstances import local_raw
-    from app.geography import _destination
 
     lat, lon, h = _VALE
     model = BesselianModel(t0_utc="2017-08-21T17:25:50")
@@ -651,7 +615,7 @@ def test_mean_limb_contacts_at_height_match_the_direct_3d_geometry():
         assert abs(cone_residual(getattr(sea, name), central, h)) > 1e-7, name
 
     alt, az = raw.alt_deg[1], raw.az_deg[1]
-    la2, lo2 = _destination(lat, lon, az + 180.0, h / 1000.0 / np.tan(np.radians(alt)))
+    la2, lo2 = E.destination(lat, lon, az + 180.0, h / 1000.0 / np.tan(np.radians(alt)))
     foot = local_raw(model, float(la2), float(lo2), "mean")
     assert abs(raw.c2 - foot.c2) * 3600.0 <= 0.1
     assert abs(raw.c3 - foot.c3) * 3600.0 <= 0.1

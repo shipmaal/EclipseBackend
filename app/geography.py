@@ -182,7 +182,8 @@ def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float,
     sin lon, (b/a) sin beta)`` into the fundamental-plane axes.
 
     A point at height ``H`` [m] above the ellipsoid (along the geodetic normal)
-    has the geocentric coordinates [Meeus98] ch. 11, eq. 11.2-11.3
+    has the geocentric coordinates of [Meeus98] ch. 11 ("Geocentric rectangular
+    coordinates of an observer"; Meeus writes H / 6378140 m, here H / a WGS-84)
 
         rho sin phi' = (b/a) sin beta + (H/a) sin phi
         rho cos phi' =       cos beta + (H/a) cos phi,
@@ -190,7 +191,7 @@ def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float,
     i.e. the ellipsoid point plus ``H/a`` times the unit normal
     ``(cos phi cos lon, cos phi sin lon, sin phi)``.  The rotation into the
     fundamental plane is linear, so the height adds the rotated normal, with
-    the standard spherical form of [ES92] sec. 8.35 / [MeeusSE]
+    the standard spherical form of [MeeusSE], [NASA-LC]
     (``xi = rho cos phi' sin theta``, ``eta = rho sin phi' cos d - rho cos phi'
     cos theta sin d``, ``zeta = rho sin phi' sin d + rho cos phi' cos theta
     cos d``) applied to the normal alone:
@@ -199,8 +200,12 @@ def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float,
         eta  += (H/a) (sin phi cos d - cos phi cos theta sin d)
         zeta += (H/a) (sin phi sin d + cos phi cos theta cos d).
 
-    Exact, not a first-order term (``tests/test_geography.py`` checks it
-    against geodetic -> ECEF -> rotated axes).  When every height is zero the
+    This is the same projection NASA's local-circumstances calculator applies
+    to the whole ``rho sin phi'``, ``rho cos phi'`` [NASA-LC] (``readdata`` /
+    ``timelocdependent``); split into the ellipsoid and height parts here so
+    the sea-level part stays the [ES92] 8.331 reduction.  Exact, not a
+    first-order term (``tests/test_geography.py`` checks it against geodetic
+    -> ECEF -> rotated axes; the two forms agree to 4e-16).  When every height is zero the
     term is skipped, so the sea-level result is bit-identical to the reduction
     alone.
 
@@ -232,8 +237,8 @@ def geo_to_fund(lat_deg: float, lon_deg: float, d_deg: float, mu_deg: float,
     eta = eta1 * aux.rho1
     zeta = aux.rho2 * (zeta1 * aux.cos_d1_d2 - eta1 * aux.sin_d1_d2)
     if np.any(height_m != 0.0):
-        # Height along the geodetic normal [Meeus98] eq. 11.2-11.3, rotated
-        # into the fundamental plane [ES92] sec. 8.35 / [MeeusSE] (docstring).
+        # Height along the geodetic normal [Meeus98] ch. 11, rotated
+        # into the fundamental plane [MeeusSE], [NASA-LC] (docstring).
         h = height_m / (_A_KM * 1000.0)  # H/a
         phi = np.radians(lat_deg)
         cp, sp = np.cos(phi), np.sin(phi)

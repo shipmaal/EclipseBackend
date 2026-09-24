@@ -335,7 +335,7 @@ Settled:
 
 Open:
 0. **Observer elevation — done** (§9.10). `geo_to_fund` takes the observer's
-   height above the WGS-84 ellipsoid, exactly ([Meeus98] eq. 11.2–11.3, the
+   height above the WGS-84 ellipsoid, exactly ([Meeus98] ch. 11, the
    geodetic normal rotated into the fundamental plane), in both languages;
    `/circumstances?elev=`. It explains Vale ([Irwin21]) but not Effingham
    ([EB2024], whose coordinates are too coarse there), and moves the
@@ -544,11 +544,11 @@ model cannot.
 
 **Formula.** A point at height H above the ellipsoid, along the geodetic
 normal, has ρ sin φ′ = (b/a) sin u + (H/a) sin φ and ρ cos φ′ = cos u +
-(H/a) cos φ ([Meeus98] eq. 11.2–11.3). So it is the ellipsoid point plus
+(H/a) cos φ ([Meeus98] ch. 11). So it is the ellipsoid point plus
 H/a times the unit normal. The existing reduction ([ES92] eq. 8.331) is an
 exact rotation of the ellipsoid point into the fundamental-plane axes. The
 rotation is linear, so the height adds the rotated normal, in the spherical
-form of [ES92] §8.35 / [MeeusSE]:
+form of [MeeusSE], as NASA's local-circumstances calculator does [NASA-LC]:
 
     ξ += (H/a) cos φ sin θ
     η += (H/a) (sin φ cos d − cos φ cos θ sin d)
@@ -560,6 +560,23 @@ This is exact, not a first-order term:
 - The term is skipped at H = 0, so every sea-level result, fixture and
   reference test is bit-identical. The regenerated fixtures only *add*
   records.
+
+**Grounding in the literature** (checked 2026-09-24):
+
+| part of the approach | source | what it says |
+| --- | --- | --- |
+| ρ sin φ′, ρ cos φ′ with H | [Meeus98] ch. 11 ("Geocentric rectangular coordinates of an observer"; ch. 10, p. 78 in the 1991 1st ed., where the formulas are unnumbered) | `ρ sin φ′ = (b/a) sin u + (H/6378140) sin φ`, `ρ cos φ′ = cos u + (H/6378140) cos φ`, "needed in the calculation of diurnal parallaxes, eclipses and occultations" |
+| the same, in production eclipse code | [NASA-LC] `SEcirc.js`, `readdata` (lines 399–401) | Meeus's formulas verbatim with the observer's altitude |
+| ξ, η, ζ from ρ sin φ′, ρ cos φ′ | [NASA-LC] `timelocdependent` (lines 183–187); [MeeusSE] | ξ = ρcosφ′ sin h, η = ρsinφ′ cos d − ρcosφ′ cos h sin d, ζ = ρsinφ′ sin d + ρcosφ′ cos h cos d. Ours equals this to 4e-16 (WGS-84 constants), split so that H = 0 stays the [ES92] 8.331 reduction |
+| elevation belongs in local circumstances | NASA/TP-1999-209484 (2001 bulletin), "Local Circumstances Tables" | sites are computed at their elevation "if known. Otherwise … for sea-level"; it matters "near the umbral path limits" |
+| height = a ground shift of H cot(alt) | [NASA-limb] graze page ("Elev Fact"); IOTA's graze manual (x = sin D · tan z · h) | the sea-level limit moves perpendicular to itself by h · tan(90° − A) · sin D; our test checks the same equivalence in time (0.03 s at Vale) |
+| h = H + N | NOAA NGS (Technical Notes on Geoid Undulations; NOS NGS 59); [EGM96] | ellipsoidal height = orthometric height + geoid undulation |
+
+Meeus and NASA put the height "above sea level" directly into an ellipsoid
+formula, which treats the geoid as the ellipsoid (−30 to −35 m of error
+here). We add N [EGM96]. On the 14 test sites that changes the Bulletin
+statistics by < 0.02 s (median 0.39 s either way; max 1.08 s with H alone,
+1.10 s with H + N), so it is rigour, not a visible correction.
 
 **What it is.** A raised observer sees what a sea-level one sees at the foot
 of its line of sight to the Sun, H cot(alt) away from the Sun's azimuth.

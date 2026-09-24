@@ -136,7 +136,7 @@ TEST_CASE("geo_to_fund parity: geo_to_fund [ES92] 8.331, [Meeus98] 11.1", "[pari
     CHECK_THROWS_AS(ell::geo_to_fund(lat, one, d, mu), std::invalid_argument);
 }
 
-TEST_CASE("geo_to_fund at height parity: g2fh records [Meeus98] 11.2-11.3", "[parity]") {
+TEST_CASE("geo_to_fund at height parity: g2fh records [Meeus98] ch. 11", "[parity]") {
     // The observer-height term (ellipsoid.hpp geo_to_fund_one) at -400, 149.4,
     // 693.8 and 8848 m against the Python oracle, one-point, span and hoisted
     // (Site) forms; the span form is bit-identical to the one-point one.

@@ -43,7 +43,7 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
 | `ephemeris.py` | SPICE apparent Sun/Moon positions; `besselian_instant()` builds the 8 elements at one instant; the four Earth-orientation frames (`ITRS`/`TOD`/`ITRF93`/`IAU_EARTH`); `sub_solar_point()`; `limb_axes()` (fundamental-plane axes in `MOON_ME`). Owns the lunar-radius constants `K_PENUMBRA`/`K_UMBRA`. |
 | `eop.py` | IERS polar motion + UT1−UTC, interpolated from the `astropy-iers-data` bundle. |
 | `besselian.py` | Samples the elements around T0 and polynomial-fits them (`BesselianModel`). |
-| `geography.py` | The ellipsoid geometry: `fund_to_geo` (fundamental→geographic), `geo_to_fund` (its exact inverse; `height_m` adds the observer's height above the ellipsoid, exactly, [Meeus98] eq. 11.2–11.3), `shadow_edge_limits` (N/S limits + true width, umbral or penumbral), `global_contacts` (P1–U4), `shadow_radii`, great-circle helpers. |
+| `geography.py` | The ellipsoid geometry: `fund_to_geo` (fundamental→geographic), `geo_to_fund` (its exact inverse; `height_m` adds the observer's height above the ellipsoid, exactly, [Meeus98] ch. 11), `shadow_edge_limits` (N/S limits + true width, umbral or penumbral), `global_contacts` (P1–U4), `shadow_radii`, great-circle helpers. |
 | `deltat.py` | ΔT = TT − UT1 polynomial model [Espenak] for epochs outside the IERS era. |
 | `circumstances.py` | Per-observer local circumstances from a `BesselianModel` (`limb="mean"` k2, or `"profile"`: C2/C3 from the LOLA limb profile; `height_m` above the WGS-84 ellipsoid); `circumstances_grid` for maps (sea level). |
 | `catalog.py` | `find_eclipses`: scan a date range, refine greatest eclipse, classify P/A/T/H, Canon-style rows. |
@@ -267,6 +267,11 @@ Cite these by key in code.
   (map / SRTM) height H.
 - **[SRTM]** T. G. Farr et al. (2007), *Rev. Geophys.* 45, RG2004 — Shuttle
   Radar Topography Mission heights (orthometric, EGM96).
+- **[NASA-LC]** F. Espenak, NASA "Solar Eclipse Local Circumstances"
+  calculator, eclipse.gsfc.nasa.gov/SEgoogle/SEcirc.js (`readdata`: Meeus's
+  ρ sin φ′ / ρ cos φ′ with the observer's height; `timelocdependent`: ξ, η, ζ).
+  Also the Eclipse Bulletins' local-circumstance tables use the site's
+  elevation "if known. Otherwise … sea-level" (NASA/TP-1999-209484).
 - **[NASA-limb]** F. Espenak, "The Lunar Limb Profile and Eclipse Predictions",
   eclipse.gsfc.nasa.gov/SEhelp/limb.html; "Limb Corrections to the Path Limits:
   Graze Zones", eclipse.gsfc.nasa.gov/SEmono/reference/graze.html.

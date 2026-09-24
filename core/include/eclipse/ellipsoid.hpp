@@ -158,10 +158,13 @@ struct Site {
 /// (``eta = eta1 rho1``, ``zeta = rho2 (zeta1 cos(d1 - d2) - eta1 sin(d1 - d2))``).
 ///
 /// Height: the point is the ellipsoid point plus ``H/a`` times the geodetic
-/// unit normal ([Meeus98] ch. 11, eq. 11.2-11.3: ``rho sin phi' = (b/a) sin
-/// beta + (H/a) sin phi``, ``rho cos phi' = cos beta + (H/a) cos phi``), and the
-/// rotation into the fundamental plane is linear, so the normal is rotated
-/// with the spherical form of [ES92] sec. 8.35 / [MeeusSE] and added:
+/// unit normal ([Meeus98] ch. 11, "Geocentric rectangular coordinates of an
+/// observer": ``rho sin phi' = (b/a) sin beta + (H/a) sin phi``,
+/// ``rho cos phi' = cos beta + (H/a) cos phi``), and the rotation into the
+/// fundamental plane is linear, so the normal is rotated with the spherical
+/// form of [MeeusSE] -- the projection NASA's local-circumstances calculator
+/// applies to the whole ``rho sin phi'``, ``rho cos phi'`` [NASA-LC] -- and
+/// added:
 ///   xi   += h cos phi sin theta
 ///   eta  += h (sin phi cos d - cos phi cos theta sin d)
 ///   zeta += h (sin phi sin d + cos phi cos theta cos d).
@@ -186,8 +189,8 @@ inline Fund geo_to_fund_one(const Site& o, double lon_deg, const ReductionAux& a
     double eta = eta1 * aux.rho1;
     double zeta = aux.rho2 * (zeta1 * aux.cos_d1_d2 - eta1 * aux.sin_d1_d2);
     if (o.h != 0.0) {
-        // Height along the geodetic normal [Meeus98] eq. 11.2-11.3, rotated
-        // into the fundamental plane [ES92] sec. 8.35 / [MeeusSE].
+        // Height along the geodetic normal [Meeus98] ch. 11, rotated
+        // into the fundamental plane [MeeusSE], [NASA-LC].
         const double cp = o.cos_phi, sp = o.sin_phi;
         xi = xi + o.h * (cp * std::sin(theta));
         eta = eta + o.h * (sp * aux.cos_d - cp * std::cos(theta) * aux.sin_d);

@@ -256,8 +256,7 @@ double refine_maximum(std::span<const double> t, std::span<const double> mag, st
 /// not), ``magnitude`` is the diameter ratio ``(L1' - L2') / (L1' + L2')``
 /// when central and ``(L1' - m) / (L1' + L2')`` otherwise [Espenak],
 /// ``obscuration`` is ``obscuration(L1', L2', m)`` at the refined maximum
-/// (in profile mode see ``local_circumstances``: both follow the profile's
-/// verdict, so a partial's magnitude is < 1 and a total's obscuration 1),
+/// (both mean-limb quantities in either mode: see ``local_circumstances``),
 /// ``L2_x`` is ``L2'`` there (its sign gives total / annular), ``below[k]`` is
 /// ``alt_deg[k] <= HORIZON_ALT_DEG`` over the present events, and ``eclipse``
 /// is false when every present event is below the horizon.
@@ -304,13 +303,12 @@ ProfileContacts profile_contacts(const Model& model, double lat_deg, double lon_
 /// C2 / C3 are bracketed by the maximum and its neighbouring samples; then
 /// ``refine_contacts`` of all brackets together and ``sun_altaz`` at every
 /// event.
-/// ``profile`` (``limb="profile"``) takes the central phase from
-/// ``profile_contacts``. Where it reverses the mean limb on the umbral side,
-/// a profile totality has obscuration 1, and a profile partial has magnitude
-/// ``1 - G_T / (2 R_s)`` at maximum (the covered fraction of the Sun's
-/// diameter where most of it shows; [Espenak]'s partial magnitude for a
-/// smooth limb) and the mean limb's obscuration (a bead is ~1e-6 of the
-/// disk). ``height_m`` is the observer's
+/// ``profile`` (``limb="profile"``) takes the central phase (``central``,
+/// C2, C3) from ``profile_contacts``. The magnitude and obscuration stay the
+/// mean limb's, as published definitions have it [Espenak] (no published
+/// definition exists for a real limb; [EB2024] corrects contact times only),
+/// so in the graze zone a profile partial can carry a magnitude > 1 and a
+/// profile total an obscuration < 1. ``height_m`` is the observer's
 /// height above the WGS-84 ellipsoid [m]: it enters every series (the
 /// observer's fundamental-plane position); the horizon test is unchanged.
 LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg,

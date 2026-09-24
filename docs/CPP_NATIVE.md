@@ -113,15 +113,19 @@ Each fix gets a test that fails before it.
 **Status: C1–C7 done** (one commit each, 2026-09-24). No golden moved. NAIF:
 131 passed, 2 skipped, 2 xfailed. Mirror: 118 passed, 15 skipped, 2 xfailed.
 `ctest` 88/88. Where the fixes differ from the plan below:
-- **C2**: the offset from the model tapers linearly to zero at 2050, the end
-  of [Espenak]'s 2005–2050 segment. This is a project rule, recorded in
-  `deltat.hpp`.
+- **C2**: first done with a taper of our own, then reverted (CLAUDE.md
+  convention 7). Replaced by the published USNO ΔT predictions past the IERS
+  table (see the C2 entry below).
 - **C3**: the mean limb had the same fault as the profile. A central phase
   shorter than the 30-s grid step came back "partial" with magnitude > 1;
-  it is now bracketed from the refined maximum.
-  - A profile partial's magnitude is 1 − G_T/(2 R_s) at maximum, which is
-    [Espenak]'s partial magnitude for a smooth limb.
-  - Its obscuration stays the mean limb's: a bead is ~1e-6 of the disk.
+  it is now bracketed from the refined maximum (a search bug, fixed).
+  - The profile half was first done with a magnitude of our own
+    (1 − G_T/(2 R_s)), then reverted. The 3D oracle confirms the profile's
+    verdicts at the 2024 test sites (within 35 m of limb height), so only
+    the reporting was at issue.
+  - Magnitude and obscuration are now mean-limb quantities in both modes,
+    the published definitions [Espenak]. In the graze zone a profile
+    partial can carry a magnitude > 1; this is documented.
 - **C5**: the API bounds were kept. A fit window under 1.5 h is sampled at
   2 hw / 3 instead.
 - **C6**: the nested-region guards now use `omp_get_level() == 0`.

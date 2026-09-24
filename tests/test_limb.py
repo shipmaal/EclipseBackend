@@ -307,18 +307,21 @@ def test_profile_search_window_widens_until_its_ends_are_outside():
     ("lat", "mean_type", "profile_type"),
     [
         # Just inside the mean northern limit near Indianapolis: a limb valley
-        # keeps a bead of the Sun in view, so the profile has no totality.
+        # keeps a bead of the Sun in view, so the profile has no totality (the
+        # 3D oracle agrees: its H stays >= +331 m, the profile's G >= +296 m).
         (40.464, "total", "partial"),
         # Just outside the mean southern limit: limb peaks cover the Sun's
-        # last sliver, so the profile has a brief totality.
+        # last sliver, so the profile has a brief totality (oracle -264 m,
+        # profile -281 m at the deepest).
         (38.448, "partial", "total"),
     ],
 )
-def test_profile_type_and_magnitude_agree(lat, mean_type, profile_type):
+def test_profile_sets_the_type_magnitude_stays_mean_limb(lat, mean_type, profile_type):
     """Where the limb profile reverses the mean limb's verdict at a 2024 limit
-    site, the magnitude and obscuration follow the reported type (item C3).
-    Before, the profile's partial reported the mean limb's partial formula
-    inside the mean umbra: magnitude 1.00007 (> 1) and obscuration 1."""
+    site, the type follows the profile but the magnitude and obscuration are
+    the mean limb's, the published definitions [Espenak] (none exists for a
+    real limb; [EB2024] corrects contact times only). So in the graze zone a
+    profile partial can report a magnitude > 1."""
     from app.besselian import BesselianModel
     from app.circumstances import local_circumstances
 
@@ -328,12 +331,6 @@ def test_profile_type_and_magnitude_agree(lat, mean_type, profile_type):
     mean = local_circumstances(model, lat, -86.15, "mean")
     prof = local_circumstances(model, lat, -86.15, "profile")
     assert (mean["type"], prof["type"]) == (mean_type, profile_type)
-    for r in (mean, prof):
-        if r["type"] == "partial":
-            assert r["magnitude"] < 1.0 and "C2" not in r
-        else:
-            assert r["magnitude"] > 1.0 and r["obscuration"] == 1.0 and "C2" in r
-    # A partial through the profile is covered to within a limb valley's depth
-    # (~1 km of the Sun's ~3 500 km diameter in the fundamental plane).
-    if prof["type"] == "partial":
-        assert prof["magnitude"] > 0.999
+    assert prof["magnitude"] == mean["magnitude"]
+    assert prof["obscuration"] == mean["obscuration"]
+    assert ("C2" in prof) == (profile_type == "total")

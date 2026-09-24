@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
-#include <optional>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -347,39 +346,6 @@ Position body_position(std::string_view target, double et, std::string_view fram
 
 // ------------------------------------------------------------- time scales
 
-namespace {
-
-// The end of the measured Delta-T record: the Bulletin A table's last row,
-// as a decimal year and TT - UT1 there [s] = (ET - UTC) - (UT1 - UTC), with
-// ET for TT exactly as ``earth_rotation_times`` uses it inside the era.
-struct RecordEnd {
-    double year;
-    double dt_s;
-};
-
-RecordEnd record_end() {
-    const double mjd_end = eop::mjd_range().second;
-    const double jd_end = mjd_end + MJD_OFFSET;
-    const double utc_end = (jd_end - J2000_JD) * SECONDS_PER_DAY;
-    const double et_minus_utc = spice_call([&] {
-        SpiceDouble d = 0.0;
-        deltet_c(utc_end, "UTC", &d);
-        return static_cast<double>(d);
-    });
-    return {deltat::decimal_year_from_jd(jd_end), et_minus_utc - eop::interpolate(mjd_end).dut1_s};
-}
-
-// Delta-T [s] outside the IERS era at decimal ``year``: the [Espenak] model
-// before the table; after it the model joined continuously to the measured
-// value at the table's end (``deltat::delta_t_after_record``, item C2).
-double model_delta_t(double year, const RecordEnd& end) {
-    return deltat::delta_t_after_record(year, end.year, end.dt_s);
-}
-
-double model_delta_t(double year) { return model_delta_t(year, record_end()); }
-
-}  // namespace
-
 double utc_to_et(std::string_view utc) {
     const std::string s(utc);
     // tparse_c: seconds past J2000 on the leap-second-free calendar. A parse
@@ -399,12 +365,12 @@ double utc_to_et(std::string_view utc) {
     });
     const double mjd = J2000_JD - MJD_OFFSET + formal / SECONDS_PER_DAY;
     if (errmsg[0] != '\0' || eop::in_iers_era(mjd)) return str_to_et(s);
-    return formal + model_delta_t(deltat::decimal_year_from_jd(formal / SECONDS_PER_DAY + J2000_JD));
+    return formal + deltat::delta_t_seconds(deltat::decimal_year_from_jd(formal / SECONDS_PER_DAY + J2000_JD));
 }
 
 std::string et_to_utc(double et) {
     if (eop::in_iers_era(J2000_JD - MJD_OFFSET + et / SECONDS_PER_DAY)) return et_to_utc_iso(et, 0);
-    const double ut1 = et - model_delta_t(deltat::decimal_year_from_jd(J2000_JD + et / SECONDS_PER_DAY));
+    const double ut1 = et - deltat::delta_t_seconds(deltat::decimal_year_from_jd(J2000_JD + et / SECONDS_PER_DAY));
     return spice_call([&] {
         SpiceChar buf[64];
         timout_c(ut1, "YYYY-MM-DDTHR:MN:SC ::TDB ::RND", sizeof buf, buf);
@@ -426,7 +392,6 @@ EarthRotation earth_rotation_times(std::span<const double> et) {
         for (size_t i = 0; i < n; ++i) deltet_c(et[i], "ET", &delta_et[i]);
     });
 
-    std::optional<RecordEnd> end;  // computed once, only if an instant needs it
     for (size_t i = 0; i < n; ++i) {
         const double tt2 = et[i] / SECONDS_PER_DAY;
         const double utc2 = (et[i] - delta_et[i]) / SECONDS_PER_DAY;
@@ -439,11 +404,9 @@ EarthRotation earth_rotation_times(std::span<const double> et) {
             r.xp[i] = e.xp_rad;
             r.yp[i] = e.yp_rad;
         } else {
-            // UT1 = TT - delta-T (the [Espenak] polynomial, carried on from
-            // the measured value after the table's end), no polar motion.
-            if (!end) end = record_end();
+            // UT1 = TT - delta-T([Espenak] polynomial), no polar motion.
             const double dt_model =
-                model_delta_t(deltat::decimal_year_from_jd(J2000_JD + tt2), *end);
+                deltat::delta_t_seconds(deltat::decimal_year_from_jd(J2000_JD + tt2));
             r.ut1[i] = tt2 - dt_model / SECONDS_PER_DAY;
             r.xp[i] = 0.0;
             r.yp[i] = 0.0;

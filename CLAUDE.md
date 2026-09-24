@@ -127,10 +127,7 @@ the published `/besselian` polynomials, as a reader of the table would).
    1973 – ~1 yr ahead**; outside it the epoch is read as UT1 and ΔT comes from
    the Espenak & Meeus polynomial model in `deltat` [Espenak] — never rely on
    SPICE's leap-second table there (it silently holds the first/last count).
-   After the table's end the model is joined continuously to the last measured
-   ΔT, the offset tapering to zero at 2050 (`deltat::delta_t_after_record`, a
-   project rule). Inside the era, UT1−UTC is interpolated as UT1−TAI across a
-   leap second.
+   Inside the era, UT1−UTC is interpolated as UT1−TAI across a leap second.
    Published Besselian elements are tabulated in **TDT/TT** (use
    `_eclipse.str_to_et(".. TDT")` to compare). Published `mu` is the
    *ephemeris hour angle* (Earth rotation evaluated as if TT were UT); ours is
@@ -141,6 +138,21 @@ the published `/besselian` polynomials, as a reader of the table would).
    the night side; every local circumstance must be checked against the Sun's
    altitude (`circumstances::HORIZON_ALT_DEG`, [Meeus98] ch. 15) before being
    reported.
+
+7. **No unsourced scientific rules.** Every model choice that changes a
+   reported number (a formula, a definition, a data source, a blend or
+   extrapolation, a physical constant) must come from a published source,
+   cited by key. A result that looks wrong is presumed to be a bug in our
+   code until an independent check (a published value, the test oracles)
+   says otherwise; do not paper over it with a rule of our own. Where the
+   published sources disagree or run out (e.g. ΔT past the last published
+   prediction), keep the published behaviour and record the gap as a known
+   open discrepancy (a strict xfail and a note), rather than inventing a
+   join. A new rule of our own is a research result: it needs a validation
+   of its own (e.g. a hindcast against measurements and the published
+   alternatives) before it goes in, and is labelled `[project rule]` at its
+   definition. Purely numerical choices (step sizes, tolerances, bracket
+   widths) are exempt, but must be shown not to move a validated result.
 
 ## The core (C++)
 

@@ -107,12 +107,14 @@ Data flows one direction: **ephemeris → besselian → geography/circumstances 
    observers × instants) rather than looping; the scalar functions are thin
    wrappers over the array ones.
 
-## Native core (`libeclipse`, phases 0–4 done)
+## Native core (`libeclipse`, phases 0–4 done; now C++-first)
 
-`docs/CPP_ROADMAP.md` is the plan for the C++20 `libeclipse` core: the Python
-`app/` stays the API *and the oracle*; every C++ unit is parity-tested
-against it at the tolerances listed there before a reference-eclipse test is
-routed through it. Layout: `core/include/eclipse/*.hpp` + `core/src/*.cpp`
+`docs/CPP_ROADMAP.md` built the C++20 `libeclipse` core as a port of `app/`;
+`docs/CPP_NATIVE.md` is the current plan: **C++ is the primary
+implementation, designed as C++**, and the Python `app/` stays the API *and
+the bit-level oracle*. Every C++ unit is parity-tested against it at the
+tolerances listed in the roadmap before a reference-eclipse test is routed
+through it. Layout: `core/include/eclipse/*.hpp` + `core/src/*.cpp`
 (library), `bindings/_eclipse.cpp` (nanobind), `tests/cpp/` (Catch2),
 `cmake/` (build of the vendored libs), `third_party/{cspice,erfa}` (vendored,
 **unmodified** — never edit; see `THIRD_PARTY_NOTICES.md`). Rules that are
@@ -121,18 +123,23 @@ structural, not stylistic:
 - Only `core/src/ephem.cpp` includes `SpiceUsr.h`/`erfa.h`; every CSPICE call
   goes through its `spice_call` (global mutex + RETURN mode + `failed_c()` →
   `eclipse::spice_error`). Everything else is pure math and lock-free.
-- **Port, don't improve.** C++ bodies keep the Python's operation order
-  (left-to-right as NumPy evaluates; `np.polyval` = Horner; `np.interp`
-  semantics in `eop.cpp`; `np.remainder` in `wrap_180`). A change to a
-  formula goes into both languages in the same PR, then
-  `uv run python tools/dump_oracle.py` regenerates `tests/cpp/fixtures/`.
+- **Same arithmetic, native structure** (`docs/CPP_NATIVE.md`). Layout,
+  ownership, allocation, API shape, caching and parallelism are C++'s to
+  design (workspaces over per-call vectors, concrete types over
+  `std::function`, owned data over data injected from Python). The per-value
+  arithmetic keeps the Python's operation order (left-to-right as NumPy
+  evaluates; `np.polyval` = Horner; `np.interp` semantics in `eop.cpp`;
+  `np.remainder` in `wrap_180`), and so do batch boundaries where they are
+  arithmetic (the `mu` unwrap in `elements_at`). A change to a formula goes
+  into both languages in the same PR, then `uv run python tools/dump_oracle.py`
+  regenerates `tests/cpp/fixtures/`.
 - Parity is checked live in `tests/test_native.py` (Python vs native over
   dense windows; `tests/test_backend_switch.py` covers the backend resolution
   in subprocesses) and offline in `tests/cpp/test_*.cpp` (fixtures).
   Residuals are documented there; do not widen a tolerance to make a test
   pass. `tools/dump_oracle.py` pins `ECLIPSE_BACKEND=python` itself.
-- The EOP table is injected from `app.eop` (`set_eop_table`); the C++ never
-  parses `finals2000A.all`.
+- The EOP table is injected from `app.eop` (`set_eop_table`); the C++ does
+  not parse `finals2000A.all` yet (`docs/CPP_NATIVE.md` item 8).
 - Dispatch under the native backend (`native.is_native()`, read at call
   time): the five `app/ephemeris.py` functions plus `axis_separation` (phases
   1 / 4) and, in `app/geography.py` (phase 2), `fund_to_geo_v`,
@@ -176,11 +183,13 @@ structural, not stylistic:
   with `limb::K_REF` for both cones, and `profiles_at`); `besselian_instants`
   takes the cones' `k1`/`k2`. Profiles and contact functions are
   bit-identical to `app.ephemeris.limb_axes` / `app.limb`; profile-mode
-  local circumstances are gated like the mean-limb ones (1e-9 h). The band is
-  injected from Python like the EOP table (`app.limb.install_native` ->
-  `set_limb_band`: runs, DN, neighbour indices, pixel-centre trig tables),
-  so the C++ never parses the band file. The Python side calls libm's
-  `atan2` (`app.limb._atan2`), not `np.arctan2` (SIMD, 1 ulp off), to keep
+  local circumstances are gated like the mean-limb ones (1e-9 h). The core
+  **owns the band**: it reads the band file itself (`limb::load_band_file`
+  via `app.limb.ensure_native_band`, 2 bytes a point, no neighbour indices,
+  no NumPy copy; `LDEM_64` 14° in 0.44 GB) and builds the pixel-centre trig
+  tables with libm; `set_limb_band` remains for in-memory (synthetic) bands.
+  The Python oracle uses libm for those tables (`app.limb._libm`) and for
+  `atan2` (`app.limb._atan2`), not NumPy's SIMD kernels (1 ulp off), to keep
   the parity exact; the native silhouette holds `native.PARALLEL_LOCK`.
 - Observer height (`docs/LIMB_PROFILE.md` §9.10): `ellipsoid::geo_to_fund_one`
   takes a per-observer `ellipsoid::Site` (parametric-latitude factors, `h = H/a`,

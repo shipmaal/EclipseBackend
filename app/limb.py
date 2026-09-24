@@ -91,6 +91,7 @@ class LimbBand(NamedTuple):
     offset_km: float
     scale_km: float
     band_deg: float
+    source: str = ""  # the band file (resolved path); "" for an in-memory band
 
 
 def default_band_path() -> Path:
@@ -100,12 +101,14 @@ def default_band_path() -> Path:
     return Path(__file__).resolve().parent.parent / "kernels" / DEFAULT_BAND_FILE
 
 
-def band_from_file(bf) -> LimbBand:
+def band_from_file(bf, source: str = "") -> LimbBand:
     """Build a :class:`LimbBand` from a :class:`kernels.limb_band.BandFile`.
 
     Pixel centres follow the PDS map projection of the LDEM label (see
     :mod:`kernels.limb_band`): latitude ``(LINE_PROJECTION_OFFSET - i) / ppd``,
     east longitude ``(j - SAMPLE_PROJECTION_OFFSET) / ppd + CENTER_LONGITUDE``.
+    Their cos/sin go through libm (:func:`_libm`), as the native core computes
+    them when it reads the band file itself (``limb::load_band_file``).
     """
     h = bf.header
     ppd = float(h["map_resolution"])
@@ -124,13 +127,21 @@ def band_from_file(bf) -> LimbBand:
         dn=np.ascontiguousarray(bf.dn, dtype=np.int16),
         line_idx=line_idx.astype(np.int32),
         col_idx=col_idx.astype(np.int32),
-        cos_lat=np.cos(lat), sin_lat=np.sin(lat), cos_lon=np.cos(lon), sin_lon=np.sin(lon),
+        cos_lat=_libm(math.cos, lat), sin_lat=_libm(math.sin, lat),
+        cos_lon=_libm(math.cos, lon), sin_lon=_libm(math.sin, lon),
     )
     for a in arrays.values():
         a.setflags(write=False)
     return LimbBand(header=h, offset_km=float(h["offset"]) / 1000.0,
                     scale_km=float(h["scaling_factor"]) / 1000.0,
-                    band_deg=float(h["band_deg"]), **arrays)
+                    band_deg=float(h["band_deg"]), source=source, **arrays)
+
+
+def _libm(fn, x: np.ndarray) -> np.ndarray:
+    """``fn`` (``math.cos`` / ``math.sin``) elementwise through the C library:
+    NumPy's SIMD cos/sin can differ from libm by 1 ulp, and the native core
+    builds the same tables with libm (see :func:`_atan2`)."""
+    return np.fromiter(map(fn, x.tolist()), dtype=float, count=len(x))
 
 
 def _neighbours(runs: np.ndarray, samples: int, n_points: int):
@@ -151,44 +162,70 @@ def _neighbours(runs: np.ndarray, samples: int, n_points: int):
     return right, down
 
 
-@lru_cache(maxsize=4)
-def load_band(path: str | None = None) -> LimbBand:
-    """The limb band at ``path`` (default :func:`default_band_path`), cached.
-
-    Raises ``FileNotFoundError`` when absent (``kernels.bootstrap --limb``).
-    :func:`silhouette` installs it into the native core on first use.
-    """
-    from kernels import limb_band
-
+def _resolve(path: str | Path | None) -> Path:
+    """The band file for ``path`` (default :func:`default_band_path`), resolved;
+    ``FileNotFoundError`` when absent (``kernels.bootstrap --limb``)."""
     p = Path(path) if path else default_band_path()
     if not p.exists():
         raise FileNotFoundError(
             f"lunar limb band not found at {p}. Run `python -m kernels.bootstrap --limb`.")
-    return band_from_file(limb_band.read(p))
+    return p.resolve()
 
 
-# The band the native core holds (it keeps one); :func:`silhouette` installs
-# the band it is given when it is not this one.
+@lru_cache(maxsize=4)
+def load_band(path: str | None = None) -> LimbBand:
+    """The limb band at ``path`` (default :func:`default_band_path`) as NumPy
+    arrays, cached -- the Python oracle's copy.  The native core reads the file
+    itself (:func:`ensure_native_band`), so under the native backend nothing
+    needs to call this.  Raises ``FileNotFoundError`` when absent.
+    """
+    from kernels import limb_band
+
+    p = _resolve(path)
+    return band_from_file(limb_band.read(p), source=str(p))
+
+
+# The in-memory (``set_limb_band``) band the native core holds, if any; a band
+# loaded from a file is identified by the core's ``limb_band_source()``.
 _native_band: LimbBand | None = None
 
 
 def install_native(band: LimbBand) -> None:
-    """Copy ``band`` into the native core (``_eclipse.set_limb_band``)."""
+    """Make the native core hold ``band``: by path when it came from a file
+    (``_eclipse.load_limb_band``: the core reads the file and owns the data),
+    else by copying its arrays (``_eclipse.set_limb_band``, synthetic bands)."""
     global _native_band
-    native.module().set_limb_band(
-        band.runs[:, 0].copy(), band.runs[:, 1].copy(), band.runs[:, 2].copy(), band.dn,
-        band.right, band.down, band.cos_lat, band.sin_lat, band.cos_lon, band.sin_lon,
-        band.offset_km, band.scale_km, band.band_deg)
-    _native_band = band
+    mod = native.module()
+    if band.source:
+        mod.load_limb_band(band.source)
+        _native_band = None
+    else:
+        mod.set_limb_band(
+            band.runs[:, 0].copy(), band.runs[:, 1].copy(), band.runs[:, 2].copy(), band.dn,
+            band.cos_lat, band.sin_lat, band.cos_lon, band.sin_lon,
+            band.offset_km, band.scale_km, band.band_deg)
+        _native_band = band
 
 
-def ensure_native_band(path: str | None = None) -> LimbBand:
-    """Load the default (or ``path``) band and make sure the native core holds it."""
-    band = load_band(path)
+def _native_holds(band: LimbBand) -> bool:
+    if band.source:
+        return native.module().limb_band_source() == band.source
+    return _native_band is band
+
+
+def ensure_native_band(path: str | None = None) -> str:
+    """Make sure the native core holds the band file at ``path`` (default
+    :func:`default_band_path`), loading it there if not; returns the resolved
+    path.  No NumPy copy of the band is built (for ``LDEM_64`` that is ~2 GB
+    of Python arrays saved; docs/LIMB_PROFILE.md sec. 9.11)."""
+    global _native_band
+    p = str(_resolve(path))
     with native.PARALLEL_LOCK:
-        if _native_band is not band:
-            install_native(band)
-    return band
+        mod = native.module()
+        if mod.limb_band_source() != p:
+            mod.load_limb_band(p)
+            _native_band = None
+    return p
 
 
 def silhouette(band: LimbBand, axes, n_bins: int = N_BINS,
@@ -224,7 +261,7 @@ def silhouette(band: LimbBand, axes, n_bins: int = N_BINS,
             f"limb band's centre; the band covers {band.band_deg - VISIBLE_DEG:g} deg")
     if native.is_native():
         with native.PARALLEL_LOCK:  # one OpenMP team per process (review item C9)
-            if _native_band is not band:
+            if not _native_holds(band):
                 install_native(band)
             return native.module().limb_silhouette(np.ascontiguousarray(axes), int(n_bins),
                                                    float(distance_km))
@@ -338,9 +375,17 @@ def delta_rho_at(profile, psi) -> np.ndarray:
 def limb_profiles(et, earth_frame: str = DEFAULT_EARTH_FRAME, moon_frame: str = "MOON_ME",
                   n_bins: int = N_BINS, band: LimbBand | None = None) -> np.ndarray:
     """``(n, n_bins)`` limb profiles [km] at each TDB ``et`` (see :func:`silhouette`),
-    in perspective from the Moon's distance to the fundamental plane."""
-    band = band if band is not None else load_band()
+    in perspective from the Moon's distance to the fundamental plane.  With no
+    ``band`` under the native backend, the core's own copy of the default band
+    file is used (:func:`ensure_native_band`)."""
     axes, dist = limb_axes(et, earth_frame, moon_frame)
+    if band is None and native.is_native():
+        ensure_native_band()
+        with native.PARALLEL_LOCK:
+            return np.stack([native.module().limb_silhouette(np.ascontiguousarray(a), int(n_bins),
+                                                             float(d))
+                             for a, d in zip(axes, dist, strict=True)])
+    band = band if band is not None else load_band()
     return np.stack([silhouette(band, a, n_bins, float(d)) for a, d in zip(axes, dist,
                                                                            strict=True)])
 

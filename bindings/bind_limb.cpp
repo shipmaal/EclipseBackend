@@ -1,9 +1,11 @@
 // Bindings for eclipse/limb.hpp (app/limb.py) and ephem::limb_axes.
+#include <nanobind/stl/string.h>
 #include <nanobind/stl/string_view.h>
 
 #include <array>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -32,17 +34,26 @@ std::span<const T> span_of(const A& a) {
 void bind_limb(nb::module_& m) {
     m.def(
         "set_limb_band",
-        [](InI32 line, InI32 first, InI32 count, InI16 dn, InI32 right, InI32 down, In1D cos_lat, In1D sin_lat,
-           In1D cos_lon, In1D sin_lon, double offset_km, double scale_km, double band_deg) {
+        [](InI32 line, InI32 first, InI32 count, InI16 dn, In1D cos_lat, In1D sin_lat, In1D cos_lon,
+           In1D sin_lon, double offset_km, double scale_km, double band_deg) {
             eclipse::limb::set_band(span_of<std::int32_t>(line), span_of<std::int32_t>(first),
                                     span_of<std::int32_t>(count), span_of<std::int16_t>(dn),
-                                    span_of<std::int32_t>(right), span_of<std::int32_t>(down),
                                     as_span(cos_lat), as_span(sin_lat), as_span(cos_lon),
                                     as_span(sin_lon), offset_km, scale_km, band_deg);
         },
-        "line"_a, "first"_a, "count"_a, "dn"_a, "right"_a, "down"_a, "cos_lat"_a, "sin_lat"_a, "cos_lon"_a,
-        "sin_lon"_a, "offset_km"_a, "scale_km"_a, "band_deg"_a,
-        "Install the LOLA limb band (app.limb.install_native).");
+        "line"_a, "first"_a, "count"_a, "dn"_a, "cos_lat"_a, "sin_lat"_a, "cos_lon"_a, "sin_lon"_a,
+        "offset_km"_a, "scale_km"_a, "band_deg"_a,
+        "Install a limb band given as arrays (synthetic bands; app.limb.install_native).");
+    m.def(
+        "load_limb_band",
+        [](const std::string& path) {
+            nb::gil_scoped_release nogil;
+            eclipse::limb::load_band_file(path);
+        },
+        "path"_a,
+        "Load the LOLA limb band from its file (kernels/limb_band.py format) into the core.");
+    m.def("limb_band_source", &eclipse::limb::band_source,
+          "The file the installed limb band came from ('' for none or set_limb_band).");
     m.def("has_limb_band", &eclipse::limb::has_band);
     m.def(
         "limb_silhouette",

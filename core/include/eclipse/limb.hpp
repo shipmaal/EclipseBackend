@@ -1,7 +1,8 @@
-// limb — the lunar limb profile from the LRO LOLA DEM (port of app/limb.py;
-// docs/LIMB_PROFILE.md). Pure math: the DEM limb band is injected once by
-// Python (``set_band``, the same pattern as the EOP table) and is read-only
-// afterwards, so every function here is lock-free and thread-safe.
+// limb — the lunar limb profile from the LRO LOLA DEM (docs/LIMB_PROFILE.md;
+// app/limb.py is the oracle, bit-identical). The core owns the DEM limb band:
+// it reads the band file itself (``load_band_file``, 2 bytes a point; no
+// per-point neighbour indices) and keeps it read-only, so every function here
+// is lock-free and thread-safe.
 //
 // ``psi`` is the angle in the fundamental plane from x^ (east) toward y^
 // (north) [rad]; a profile is ``n_bins`` values of delta_rho [km] (silhouette
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -37,19 +39,28 @@ inline constexpr double K_REF = R_REF_KM / 6378.137;
 inline constexpr double LATTICE_S = 300.0;
 inline constexpr double INF_DISTANCE = std::numeric_limits<double>::infinity();
 
-/// Install the limb band (``app.limb.install_native``): per run ``line``,
-/// ``first`` sample and ``count``; DN per point in run order; each point's
-/// east (``j + 1`` mod samples) and southern (``i + 1``) neighbour index or
-/// -1 (``app.limb._neighbours``); per-line
+/// Load the limb band from a file written by ``kernels/limb_band.py`` (format
+/// ``ECLLIMB1``: header JSON, row runs, int16 DN), computing the pixel-centre
+/// trig tables with libm in ``app.limb.band_from_file``'s order. This is how
+/// the band normally reaches the core (``app.limb.ensure_native_band``): the
+/// core owns it, 2 bytes a point plus the runs and tables. Replaces any
+/// previous band; throws ``std::runtime_error`` for a missing or malformed file.
+void load_band_file(const std::string& path);
+
+/// The path the installed band was loaded from (empty: none, or ``set_band``).
+std::string band_source();
+
+/// Install a band given as arrays (synthetic bands in tests,
+/// ``app.limb.install_native``): per run ``line``, ``first`` sample and
+/// ``count`` (runs in grid order), DN per point in run order, per-line
 /// cos/sin latitude and per-sample cos/sin longitude of pixel centres;
-/// radius = offset_km + DN * scale_km. Replaces any previous band.
+/// radius = offset_km + DN * scale_km. Grid neighbours are implied by the
+/// runs. Replaces any previous band.
 void set_band(std::span<const std::int32_t> line, std::span<const std::int32_t> first,
               std::span<const std::int32_t> count, std::span<const std::int16_t> dn,
-              std::span<const std::int32_t> right, std::span<const std::int32_t> down,
               std::span<const double> cos_lat, std::span<const double> sin_lat,
               std::span<const double> cos_lon, std::span<const double> sin_lon,
               double offset_km, double scale_km, double band_deg);
-
 bool has_band();
 
 /// ``app.limb.silhouette``: delta_rho per bin for the view ``axes`` (row-major

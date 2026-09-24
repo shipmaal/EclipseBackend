@@ -8,7 +8,6 @@ central line in ``app/data.txt``.
 from __future__ import annotations
 
 import pytest
-from geodesy_oracle import direct_fundamental
 
 from app.geography import dec_to_hms, format_clock, format_offset, fund_to_geo, geo_to_fund
 from app.reference import central_line
@@ -95,6 +94,7 @@ def test_geo_to_fund_with_height_is_the_direct_3d_geometry():
     Achieved 1.1e-15 Earth radii (7 nm); gate 1e-14.  At H = 0 the same holds
     and the result is bit-identical to the default argument."""
     import numpy as np
+    from geodesy_oracle import direct_fundamental  # tests/ (not importable from tools/)
 
     rng = np.random.default_rng(20260923)
     worst = 0.0

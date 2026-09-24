@@ -713,9 +713,10 @@ def write_geometry_cases(path: Path) -> int:
 
 def write_limb_cases(path: Path) -> int:
     """limb_cases.txt: app.ephemeris.limb_axes / app.limb oracle (docs/LIMB_PROFILE.md
-    PR 1). A 1-ppd random synthetic limb band (runs, DN, neighbours, trig tables)
-    with its silhouettes along tilted axes, delta_rho_at cases, and -- when the
-    lunar kernels are loaded -- the axes at the reference instants."""
+    PR 1). A 1-ppd random synthetic limb band, written as ``limb_band_syn.bin``
+    next to it (the C++ reads the file itself), with its silhouettes along
+    tilted axes, delta_rho_at cases, and -- when the lunar kernels are loaded --
+    the axes at the reference instants."""
     import tempfile
 
     import spiceypy
@@ -735,22 +736,14 @@ def write_limb_cases(path: Path) -> int:
             "OFFSET = 1737400.\nMAP_RESOLUTION = 1\nLINE_PROJECTION_OFFSET = 89.5\n"
             "SAMPLE_PROJECTION_OFFSET = 179.5\nCENTER_LONGITUDE = 180\n"
             'COORDINATE_SYSTEM_NAME = "SYN"\n')
-        limb_band.cut(tmp / "s.img", tmp / "s.lbl", tmp / "s.bin")
-        band = limb.band_from_file(limb_band.read(tmp / "s.bin"))
+        band_file = path.parent / "limb_band_syn.bin"
+        limb_band.cut(tmp / "s.img", tmp / "s.lbl", band_file)
+        band = limb.band_from_file(limb_band.read(band_file))
 
     with open(path, "w") as fh:
         header(fh, "app.limb / app.ephemeris.limb_axes oracle (lunar limb profile, PRs 1-2)")
-        fh.write(f"lband {row(band.offset_km, band.scale_km, band.band_deg)}\n")
-        fh.write("lcoslat " + row(*band.cos_lat) + "\n")
-        fh.write("lsinlat " + row(*band.sin_lat) + "\n")
-        fh.write("lcoslon " + row(*band.cos_lon) + "\n")
-        fh.write("lsinlon " + row(*band.sin_lon) + "\n")
-        for line, first, count in band.runs:
-            fh.write(f"lrun {line} {first} {count}\n")
-        fh.write("ldn " + " ".join(str(int(v)) for v in band.dn) + "\n")
-        fh.write("lright " + " ".join(str(int(v)) for v in band.right) + "\n")
-        fh.write("ldown " + " ".join(str(int(v)) for v in band.down) + "\n")
-        n_rec += 9 + len(band.runs)
+        fh.write("# the synthetic band is limb_band_syn.bin (kernels/limb_band.py format);\n"
+                 "# the C++ loads it with limb::load_band_file\n")
 
         fh.write("# lsil <n_bins> <distance_km> <9 axes> <n_bins delta_rho>\n")
         rng = np.random.default_rng(5)

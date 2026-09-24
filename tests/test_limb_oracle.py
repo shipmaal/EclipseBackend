@@ -20,7 +20,8 @@ therefore judged as a limb height, ``|dt| x |dG/dt|`` (the rate at which the
 limbs close, km/s): at a grazing contact the limbs close ~10x slower than
 mid-path, and the same height difference is ~10x more seconds.  Measured
 (this module's sites at their heights, docs sec. 9.10): <= 57 m; gate 75 m,
-except Vale's C2 at its height, 94 m, a strict xfail (see ``SITES``).
+except Vale's C2 at its height, a strict xfail: a bead the bracket check
+cannot see past (see ``_VALE_DEM_XFAIL``, docs sec. 9.11).
 
 Slow (each H evaluation marches ~3600 rays x ~2200 steps); the whole module
 takes about a minute.  Needs the NAIF kernels and ``kernels.bootstrap --limb``.
@@ -137,17 +138,16 @@ SITES = [
     ("2023 annular, greatest eclipse (open sea)", "2023-10-14T17:59:27", 11.4, -83.1, 5.4),
     ("2017 Vale OR at sea level", "2017-08-21T17:25:50", 43.953028, -117.219389, 0.0),
 ]
-# At Vale's height the observer is 0.69 km deeper in the path and C2 grazes a
-# different stretch of limb, where the two DEM interpolations (grid edges +
-# perspective binning vs bilinear) differ by more than the gate: profile -
-# oracle = -1.85 s at dG/dt = 0.051 km/s, 94 m (C3: +0.05 s, 7 m).  Not the
-# height handling: at the sea-level point on the same line of sight (0.69 km
-# from the site, away from the Sun) the two differ by -1.88 s, 85 m, with no
-# height code involved; the oracle is converged there (4x rays: 0 ms; 0.1 km
-# steps: 6 ms).  docs/LIMB_PROFILE.md sec. 9.10.
+# At Vale's height the oracle has a 0.13 s bead at C2: it enters at -15.374 s,
+# leaves at -15.249 s and enters for good at -13.675 s, while the profile
+# enters once at -15.522 s. At the profile's C2 + 75 m / |dG/dt| (1.5 s) the
+# oracle is inside its post-bead gap, so this bracket check fails although
+# the bead-agnostic mismatch (each method at the other's roots) is <= 73 m.
+# Near a limit contact *times* are bead-sensitive; docs/LIMB_PROFILE.md
+# sec. 9.11 proposes gating that mismatch instead (tools/limb_study.py oracle).
 _VALE_DEM_XFAIL = pytest.mark.xfail(strict=True, reason=(
-    "Vale C2 at 694 m: profile and oracle DEM interpolations differ by 94 m of "
-    "limb height (85 m at the equivalent sea-level point), above the 75 m gate"))
+    "Vale C2 at 694 m: the oracle's 0.13 s bead and 1.6 s gap put the bracket "
+    "check inside the gap (bead-agnostic mismatch <= 73 m; docs sec. 9.11)"))
 
 
 @pytest.fixture(scope="module")

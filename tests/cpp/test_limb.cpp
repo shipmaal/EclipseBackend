@@ -37,36 +37,21 @@ std::vector<T> ints(const fixtures::Record& r) {
     return v;
 }
 
-// Install the fixture's synthetic 1-ppd band into the core.
-void install_fixture_band(const std::vector<fixtures::Record>& recs) {
-    std::vector<std::int32_t> line, first, count, right, down;
-    std::vector<std::int16_t> dn;
-    std::vector<double> cos_lat, sin_lat, cos_lon, sin_lon, meta;
-    for (const auto& r : recs) {
-        if (r.kind == "lband") meta = nums(r);
-        else if (r.kind == "lcoslat") cos_lat = nums(r);
-        else if (r.kind == "lsinlat") sin_lat = nums(r);
-        else if (r.kind == "lcoslon") cos_lon = nums(r);
-        else if (r.kind == "lsinlon") sin_lon = nums(r);
-        else if (r.kind == "ldn") dn = ints<std::int16_t>(r);
-        else if (r.kind == "lright") right = ints<std::int32_t>(r);
-        else if (r.kind == "ldown") down = ints<std::int32_t>(r);
-        else if (r.kind == "lrun") {
-            line.push_back(static_cast<std::int32_t>(std::stol(r.tokens.at(0))));
-            first.push_back(static_cast<std::int32_t>(std::stol(r.tokens.at(1))));
-            count.push_back(static_cast<std::int32_t>(std::stol(r.tokens.at(2))));
-        }
-    }
-    REQUIRE(meta.size() == 3);
-    limb::set_band(line, first, count, dn, right, down, cos_lat, sin_lat, cos_lon, sin_lon,
-                   meta[0], meta[1], meta[2]);
+// Load the fixture's synthetic 1-ppd band file (written by
+// tools/dump_oracle.py with kernels/limb_band.cut) into the core: the C++
+// reads the file, builds its own trig tables and neighbour structure, and its
+// silhouettes must equal the Python oracle's bit for bit (``lsil``).
+void install_fixture_band() {
+    const auto path = (fixtures::kDir / "limb_band_syn.bin").string();
+    limb::load_band_file(path);
+    REQUIRE(limb::band_source() == path);
 }
 
 }  // namespace
 
 TEST_CASE("limb silhouette, delta_rho_at and contact-function parity (synthetic band)") {
     const auto recs = fixtures::read("limb_cases.txt");
-    install_fixture_band(recs);
+    install_fixture_band();
     REQUIRE(limb::has_band());
     int n_sil = 0, n_dra = 0, n_g = 0;
     for (const auto& r : recs) {
@@ -127,9 +112,8 @@ TEST_CASE("limb silhouette of a sphere is flat (closed form)") {
         cos_lon[j] = std::cos(lon);
         sin_lon[j] = std::sin(lon);
     }
-    // Band rows and neighbours built the way app.limb._neighbours does.
+    // Band rows built the way kernels/limb_band.cut does (neighbours are implied).
     std::vector<std::int32_t> line, first, count;
-    std::vector<std::vector<std::int64_t>> idx(lines, std::vector<std::int64_t>(samples, -1));
     std::int64_t n = 0;
     const double limit = std::sin(20.0 * d2r);
     for (size_t i = 0; i < lines; ++i) {
@@ -137,23 +121,16 @@ TEST_CASE("limb silhouette of a sphere is flat (closed form)") {
         while (j < samples) {
             if (std::abs(cos_lat[i] * cos_lon[j]) > limit) { ++j; continue; }
             const size_t j0 = j;
-            while (j < samples && std::abs(cos_lat[i] * cos_lon[j]) <= limit) idx[i][j++] = n++;
+            while (j < samples && std::abs(cos_lat[i] * cos_lon[j]) <= limit) ++j, ++n;
             line.push_back(static_cast<std::int32_t>(i));
             first.push_back(static_cast<std::int32_t>(j0));
             count.push_back(static_cast<std::int32_t>(j - j0));
         }
     }
-    std::vector<std::int32_t> right(static_cast<size_t>(n), -1), down(static_cast<size_t>(n), -1);
-    for (size_t i = 0; i < lines; ++i)
-        for (size_t j = 0; j < samples; ++j) {
-            const auto p = idx[i][j];
-            if (p < 0) continue;
-            right[static_cast<size_t>(p)] = static_cast<std::int32_t>(idx[i][(j + 1) % samples]);
-            if (i + 1 < lines) down[static_cast<size_t>(p)] = static_cast<std::int32_t>(idx[i + 1][j]);
-        }
     const std::vector<std::int16_t> dn(static_cast<size_t>(n), 0);
-    limb::set_band(line, first, count, dn, right, down, cos_lat, sin_lat, cos_lon, sin_lon,
-                   1737.4, 0.0005, 20.0);
+    limb::set_band(line, first, count, dn, cos_lat, sin_lat, cos_lon, sin_lon, 1737.4, 0.0005,
+                   20.0);
+    CHECK(limb::band_source().empty());
     const std::array<double, 9> axes{0, -1, 0, 0, 0, 1, -1, 0, 0};  // z^ = -x (Earth-facing)
     const double sag = 1737.4 * (1.0 - std::cos(0.5 / ppd * d2r));
     // Orthographic, then in perspective from 384 400 km (the sphere's own
@@ -199,4 +176,11 @@ TEST_CASE("limb_axes parity", "[kernels]") {
         CHECK(la.distance_km[0] == r.num(12));
     }
     CHECK(n_lax == 54);
+}
+
+TEST_CASE("load_band_file rejects missing and malformed files") {
+    CHECK_THROWS_AS(limb::load_band_file((fixtures::kDir / "no_such_band.bin").string()),
+                    std::runtime_error);
+    CHECK_THROWS_AS(limb::load_band_file((fixtures::kDir / "limb_cases.txt").string()),
+                    std::runtime_error);  // not ECLLIMB1
 }

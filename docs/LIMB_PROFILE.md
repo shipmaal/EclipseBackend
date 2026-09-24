@@ -226,12 +226,18 @@ covers the projection, binning, edge crossings, interpolation and, in PR 2,
 G_T / G_A. `ephem::limb_axes` adds `pxform_c` to the CSPICE surface in
 `ephem.cpp`, through `spice_call`.
 
-The band follows the EOP table's pattern:
-- Python parses the file (`kernels/limb_band.py`) and builds the pixel-centre
-  trig tables and neighbour indices.
-- It injects them once with `_eclipse.set_limb_band`, so the two languages
-  project identical inputs.
-- The C++ copy is read-only after that and lock-free, and the silhouette is
+The core owns the band (§9.11):
+- It reads the band file itself (`limb::load_band_file`, via
+  `app.limb.ensure_native_band`) and builds the pixel-centre trig tables with
+  libm. The Python oracle builds the same tables with libm
+  (`app.limb._libm`), so the two languages project identical inputs.
+- It stores 2 bytes a point: runs, DN and the tables, with no per-point
+  neighbour indices. Two points are grid neighbours when both are in the band,
+  which the silhouette's row buffers already know. `LDEM_64` (14°): 0.44 GB
+  peak and 1 s to load, against 5.4 GB and 8–22 s when Python injected arrays.
+- Under the native backend no NumPy copy of the band is built.
+  `_eclipse.set_limb_band` remains for in-memory (synthetic) bands.
+- The copy is read-only after loading and lock-free, and the silhouette is
   OpenMP-parallel (per-thread maxima merged).
 
 Operation order is mirrored: max-binning is order-independent, and the
@@ -341,17 +347,23 @@ Open:
    ([EB2024], whose coordinates are too coarse there), and moves the
    mid-path median from 0.35 s to 0.30 s. `/map`, the limits and the catalog
    stay sea-level.
-1. **`LDEM_64`?** PR 1's study (§9.1) crossed the 0.1 s threshold: C2/C3
-   move 0.1–0.2 s typically and up to 0.5 s near the edge. The cost:
-   - a ~200 MB band (16° cut), which has to be split across files for GitHub
-     (100 MB per file);
-   - ~12× the points per profile (~0.8 s native);
-   - ~1.5 GB of neighbour indices in the current in-memory layout, so they
-     would have to be computed on the fly.
+1. **`LDEM_64`? Studied (§9.11).** It is the best of the six terrain × bin
+   combinations against the published contacts. Against [EB2024] (36
+   mid-path sites) median / p90 / max go 0.30 / 0.61 / 1.10 s → 0.28 / 0.59 /
+   0.98 s, the systematic bias halves, and Vale's C2 lands inside [Irwin21]'s
+   range. The gain is below the site-to-site scatter (±0.5 s), so it doesn't
+   reach the 0.3 s p90 goal by itself.
+   - **Memory is solved:** the native band (§3.4) brings a 14° cut to
+     0.44 GB peak.
+   - **What remains to switch:**
+     - a ~200 MB band, split across files on `limb-data` (GitHub's 100 MB
+       per-file limit), or cut locally from PDS `ldem_64.img` (530 MB);
+     - 1.1–1.5 s per profile (16× `LDEM_16`), which the per-node cache
+       amortises;
+     - the band width (14° covers libration ≤ 6°; 20° is ~280 MB).
 
-   **Deferred to after PR 2** (agreed). Its 3D oracle validates the contact
-   function these numbers come from, and the external gate (§5.4) is
-   0.3 s, so we'll know then whether 0.1–0.5 s matters against the sources.
+   Recommendation: switch in the PR that carries the native-core profile
+   work (`docs/CPP_NATIVE.md`), keeping 0.05° bins.
 2. **External values (§5.4):** being found by web research (Claude). The
    sources and extracted values will be recorded, with provenance, before
    PR 4.
@@ -642,22 +654,24 @@ places the observer by plain ECEF with H):
 | 2024 Effingham, 149 m | −0.092 / +0.283 s | 8 / 39 m |
 | 2023 annular (open sea), 5 m | +0.035 / −0.017 s | 19 / 9 m |
 | 2017 Vale, 0 m | −1.114 / +0.372 s | 45 / 52 m |
-| 2017 Vale, 694 m | **−1.846** / +0.050 s | **94** / 7 m |
+| 2017 Vale, 694 m | **−1.846** / +0.050 s | **94** / 7 m (a root mismatch; see below) |
 
-Vale's C2 at its height exceeds the 75 m gate. It is **not** the height
-handling:
-- At the sea-level point on the same line of sight (0.69 km away), with no
-  height code in either method, the difference is −1.88 s, 85 m.
-- The oracle is converged there (4× rays: 0 ms; 0.1 km steps: 6 ms).
-- With the observer 0.69 km deeper in the path, C2 grazes a different stretch
-  of limb. There the two DEM interpolations (grid edges with perspective
-  binning, §9.2, vs the oracle's bilinear surface) differ by more than
-  anywhere measured before.
+Vale's C2 at its height fails the test's check, a strict xfail with the gate
+not widened. **Correction (§9.11): the 94 m was a root mismatch, not a
+terrain-interpolation difference.**
+- At 694 m the oracle has a 0.13 s bead at C2: it enters at −15.374 s,
+  leaves at −15.249 s, and enters for good at −13.675 s. The profile enters
+  once, at −15.522 s.
+- The single-bracket bisection above found the oracle's *last* entry and
+  compared it with the profile's *first*.
+- Evaluated at each other's roots, the two differ by ≤ 73 m at Vale-at-height
+  and ≤ 82 m at worst over all ten oracle contacts on `LDEM_16`.
+- The test's bracket check fails for the same reason: at the profile's C2
+  + 1.5 s the oracle is inside its post-bead gap.
 
-It is a strict xfail; the gate is not widened. For context, the profile's
-C2 (34.5) is closer to the four published predictions than the oracle's
-would be (≈ 36.3). An `LDEM_64` band (§8, item 1) is the natural next test
-of which interpolation is right.
+The observations before this correction still hold: no height code is
+involved (the equivalent sea-level point behaves the same), and the oracle is
+converged (4× rays: 0 ms; 0.1 km steps: 6 ms).
 
 **Parity.** Python and native agree at the sea-level gates:
 - contacts bit-identical at 693.8 m, 3 km and −400 m;
@@ -674,3 +688,97 @@ C++ fixtures: `g2fh` (geometry) and `localh` (local circumstances) records.
 - Heights in `/map`, `/central-line` limits and the catalog: published
   limits are sea-level lines by convention.
 - A height input in the frontend.
+
+### 9.11 `LDEM_64` and bin size
+
+`LDEM_64` (PDS `ldem_64.img`, 530 MB, SHA-256 `1c4958…cdbd6`) cut to a 14°
+band (`kernels.limb_band.cut(..., band_deg=14.0)`: 199 MB, 99.3 M points). 14°
+covers a view axis ≤ 6° off +x̂: 5.2° at Vale's contacts, ≤ 2.6° for the 2024
+sites. An `LDEM_16` band cut at 14° gives profiles bit-identical to the 20°
+band's. Reproduce with `tools/limb_study.py` (`profiles`, `oracle`). The
+[EB2024] statistics use the Bulletin's 36 mid-path sites, which are not
+committed.
+
+**Profiles** (native, greatest eclipse, perspective silhouette):
+
+| | p50 | p90 | p99 | max | mean δρ, 16 → 64 |
+| --- | --- | --- | --- | --- | --- |
+| 2017, \|δρ₆₄ − δρ₁₆\| (km) | 0.071 | 0.153 | 0.261 | 0.470 | 0.689 → 0.769 |
+| 2024, \|δρ₆₄ − δρ₁₆\| (km) | 0.071 | 0.157 | 0.270 | 0.464 | 0.609 → 0.690 |
+
+This reproduces §9.1: the finer DEM resolves higher peaks, 0.08 km on
+average.
+
+**Cost** (4 threads):
+
+| | before (Python injects arrays) | after (core reads the file, §3.4) |
+| --- | --- | --- |
+| peak memory | 5.4 GB | 0.44 GB |
+| load | 8–22 s | 1.0 s |
+| one silhouette | 1.1 s | 1.1–1.5 s |
+
+**Against published contacts** (profile mode, heights h = H + N as in §9.10).
+The lattice runs at the bin count shown, with production's sampling and root
+rules:
+
+| [EB2024], 36 mid-path sites | 7200 bins (0.05°) | 14400 | 28800 |
+| --- | --- | --- | --- |
+| `LDEM_16`: median / p90 / max | 0.30 / 0.61 / 1.10 s | 0.30 / 0.68 / 1.11 s | 0.32 / 0.73 / 1.13 s |
+| `LDEM_64`: median / p90 / max | **0.28 / 0.59 / 0.98 s** | 0.28 / 0.66 / 1.05 s | 0.29 / 0.70 / 1.06 s |
+| `LDEM_64`: mean C2 / C3 | +0.07 / −0.08 s | +0.14 / −0.13 s | +0.17 / −0.15 s |
+
+| Vale C2 / C3 at 694 m ([Irwin21]: 31.6–34.3 / 06.9–07.7) | 7200 | 28800 |
+| --- | --- | --- |
+| `LDEM_16` | 34.5 / 07.0 | 36.1 / 06.6 |
+| `LDEM_64` | **33.5 / 07.1** | 35.1 / 06.7 |
+
+- `LDEM_64` at 0.05° is the best combination.
+  - It moves 50 of 72 contacts closer.
+  - It halves the systematic bias (`LDEM_16`: +0.14 / −0.15 s).
+  - It puts Vale inside the four predictions.
+- The site-to-site scatter (SD 0.33 / 0.41 s) is unchanged, so it is neither
+  terrain resolution nor elevation (§9.10).
+- Near the limit: Effingham +5.4 / −3.5 s (still limited by the Bulletin's
+  coordinate rounding, §9.10); Crawfordsville −0.80 / +0.05 s.
+- Finer bins move the *published* comparison the wrong way on both grids.
+  - A 0.05° bin keeps the highest point in 1.5 km of limb. That max-filter
+    approximates sub-pixel peaks the DEM does not resolve, which is what the
+    published predictors' limb data show.
+  - Finer bins follow the DEM's own piecewise-linear surface more faithfully,
+    and with it that surface's missing peaks.
+
+**Against the 3D oracle.** Near a limit the limbs close at 0.03–0.1 km/s, and
+sub-second **beads** open and close. One method can show a 0.1–0.4 s dip into
+totality that the other doesn't; §9.10's Vale-at-height case was one. So the
+comparison is bead-agnostic:
+- find every root of each method within ±2.5 s of each contact (0.1 s
+  sampling, bisected);
+- evaluate each method at the other's roots, in metres of limb height.
+
+Worst mismatch over the ten oracle contacts (5 sites × C2/C3), with the median
+in brackets:
+
+| | 7200 bins | 28800 bins |
+| --- | --- | --- |
+| `LDEM_16` | 82 m (≈14 m) | 65 m (≈15 m) |
+| `LDEM_64` | 93 m (≈36 m) | **57 m (≈9 m)** |
+
+- With both a finer DEM *and* finer bins, the two independent methods
+  converge. On `LDEM_64` at 0.05° the bins are the limit.
+- The annular point stays at 22 / 34 m at every setting. That is a small
+  systematic of `G_A` against the oracle, not resolution; open.
+
+**Findings for the code:**
+1. **Beads vs production sampling.** Production samples G every 0.5 s
+   (`_PROFILE_STEP_H`). A bead shorter than that can be caught or missed
+   depending on where the samples fall; Vale at sea level, `LDEM_16`, has a
+   0.38 s bead that decides C2 by 0.9 s. "First entry / last exit" near a
+   limit should either sample finer or report beads explicitly.
+2. **The oracle test** (`tests/test_limb_oracle.py`) checks the oracle's sign
+   at c ± 75 m / |dG/dt|, which is bead-sensitive both ways (Vale-at-height
+   fails, Vale-at-sea passes although its bead-agnostic mismatch is 82 m).
+   It should gate the bead-agnostic mismatch instead: 75 m holds on
+   `LDEM_64` at 28800 bins, not at 7200.
+3. **Switch to `LDEM_64` at 0.05°** (§8, item 1), with the native band.
+   Revisit the bin size only if the oracle, rather than the published
+   values, becomes the reference.

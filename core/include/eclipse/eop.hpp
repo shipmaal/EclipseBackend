@@ -4,6 +4,7 @@
 // API passes the copy bundled by the ``astropy-iers-data`` package) and
 // interpolates the Bulletin A values linearly between the daily rows,
 // holding the end values outside the table (``np.interp`` semantics).
+// UT1-UTC is interpolated as UT1-TAI across a leap second (``interpolate``).
 #pragma once
 
 #include <span>
@@ -35,11 +36,16 @@ bool has_table();
 /// First and last MJD of the table. Throws ``std::logic_error`` if unset.
 std::pair<double, double> mjd_range();
 
-/// True where ``mjd`` (any scale; the boundary tolerance is a day) has EOP.
+/// True where ``mjd`` lies inside the table's [first, last] MJD, inclusive.
+/// The scale is the caller's (the table is UTC; a TT MJD differs by about a
+/// minute, far below the daily row spacing).
 bool in_iers_era(double mjd);
 
 /// Interpolated EOP at a UTC MJD: polar motion in **radians**, UT1-UTC in
 /// **seconds**; outside the table the endpoint values are held (np.interp).
+/// Between two rows that straddle a leap second (a UT1-UTC change of more
+/// than 0.5 s), UT1-UTC is interpolated as UT1-TAI, so it is continuous up
+/// to the step at the row after the leap second [IERS2010] ch. 5.
 struct Eop {
     double xp_rad;
     double yp_rad;

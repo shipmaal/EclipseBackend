@@ -148,7 +148,8 @@ TEST_CASE("utc_to_et / et_to_utc follow the IERS-era rule", "[kernels][parity]")
 
 TEST_CASE("EOP interpolation reproduces np.interp semantics") {
     const double mjd[] = {100.0, 101.0, 103.0};
-    const double xp[] = {0.1, 0.3, 0.7}, yp[] = {1.0, 1.0, 1.0}, dut1[] = {-0.5, 0.5, 0.5};
+    const double xp[] = {0.1, 0.3, 0.7}, yp[] = {1.0, 1.0, 1.0}, dut1[] = {-0.2, 0.2, 0.2};
+    // (a UT1-UTC change under 0.5 s: no leap second, plain np.interp)
     eclipse::eop::set_table(mjd, xp, yp, dut1);
     using eclipse::constants::ARCSEC_TO_RAD;
     CHECK(eclipse::eop::interpolate(99.0).xp_rad == 0.1 * ARCSEC_TO_RAD);     // held left

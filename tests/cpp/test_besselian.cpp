@@ -77,3 +77,26 @@ TEST_CASE("eop::load_file reads the Bulletin A columns of finals2000A.all") {
     std::filesystem::remove(path);
     CHECK_THROWS_AS(eclipse::eop::load_file(path.string()), std::runtime_error);
 }
+
+TEST_CASE("eop::interpolate carries UT1-UTC across a leap second as UT1-TAI") {
+    // The 1992-06-30 leap second (IERS Bulletin C 3): finals2000A.all rows
+    // for MJD 48803 (1992-06-30) and 48804 (1992-07-01), the second after
+    // the inserted second. UT1-UTC steps by +1 s between them; UT1-TAI is
+    // smooth, so the value at noon on the leap day is the midpoint of
+    // -0.5557222 and 0.4430372 - 1.
+    const std::vector<double> mjd = {48802.0, 48803.0, 48804.0, 48805.0};
+    const std::vector<double> xp = {0.0, 0.0, 0.0, 0.0}, yp = xp;
+    const std::vector<double> dut1 = {-0.5541, -0.5557222, 0.4430372, 0.4414};
+    eclipse::eop::set_table(mjd, xp, yp, dut1);
+    const double noon = eclipse::eop::interpolate(48803.5).dut1_s;
+    CHECK_THAT(noon, WithinAbs(0.5 * (-0.5557222 + (0.4430372 - 1.0)), 1e-12));
+    // Rows are exact; just before the leap row the value is the pre-leap
+    // extrapolation (UT1-UTC ~ -0.557), and at the row it is post-leap.
+    CHECK(eclipse::eop::interpolate(48804.0).dut1_s == 0.4430372);
+    CHECK(eclipse::eop::interpolate(48803.999).dut1_s < -0.556);
+    // Days without a leap second are the plain linear interpolation.
+    CHECK_THAT(eclipse::eop::interpolate(48804.5).dut1_s,
+               WithinAbs(0.5 * (0.4430372 + 0.4414), 1e-15));
+    CHECK_THAT(eclipse::eop::interpolate(48802.5).dut1_s,
+               WithinAbs(0.5 * (-0.5541 + -0.5557222), 1e-15));
+}

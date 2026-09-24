@@ -100,6 +100,27 @@ def test_eop_table_is_the_iers_file():
         assert xp[k] == r[1] * arcsec and yp[k] == r[2] * arcsec and dut1[k] == r[3]
 
 
+def test_eop_ut1_is_continuous_across_leap_seconds():
+    """UT1-UTC steps by 1 s at each leap second; interpolated as UT1-TAI it is
+    continuous up to the step (item C1, [IERS2010] ch. 5). The table holds the
+    25 leap seconds from 1973-07-01 to 2017-01-01 (IERS Bulletin C: 27 since
+    1972, two of them before the table's first row, 1973-01-02). At noon on
+    each leap day the value stays within 5 ms of the day's own row (UT1-UTC
+    moves by < 3 ms a day); a straight line across the step was off by 0.5 s,
+    e.g. on 1992-06-30, the day of a total solar eclipse."""
+    load_kernels()
+    lo, hi = E.eop_mjd_range()
+    days = np.arange(lo, hi + 1.0)
+    dut1 = E.eop(days)[2]
+    leaps = np.flatnonzero(np.abs(np.diff(dut1)) > 0.5)
+    assert len(leaps) == 25
+    assert np.all(np.round(np.diff(dut1)[leaps]) == 1.0)
+    noon = E.eop(days[leaps] + 0.5)[2]
+    assert np.max(np.abs(noon - dut1[leaps])) < 5e-3
+    assert 48803.0 in days[leaps]  # 1992-06-30
+    assert E.eop(np.array([48803.5]))[2][0] == pytest.approx(-0.5563, abs=5e-4)
+
+
 @requires_kernels
 def test_time_and_position_agree_with_spiceypy(pool, spice):
     """The core's CSPICE and spiceypy's (a separate build of the same N0067

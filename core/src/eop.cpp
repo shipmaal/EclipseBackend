@@ -58,6 +58,30 @@ double interp(double x, const std::vector<double>& xp, const std::vector<double>
     return r;
 }
 
+// UT1-UTC at a UTC MJD. UT1-UTC steps by an integer second at each leap
+// second, and a straight line across the step is wrong by up to half a
+// second on the day before it. UT1-TAI has no step, so interpolate that
+// instead, as the IERS practice is [IERS2010] ch. 5 (the daily Bulletin A
+// values are tabulated at 0h UTC; a leap second is inserted at the end of
+// the day before the row that carries the step). The step is recognised in
+// the table itself: UT1-UTC changes by a few milliseconds a day, so any
+// change between rows larger than half a second is a leap second, of the
+// integer size s = round(delta). On [mjd_k, mjd_k+1) the value is
+//   dut1_k + w (dut1_k+1 - s - dut1_k),
+// i.e. UT1-TAI interpolated plus the TAI-UTC that holds on day k. Exact
+// hits and the ends behave as ``interp``.
+double interp_dut1(double x, const std::vector<double>& mjd, const std::vector<double>& dut1) {
+    const auto n = static_cast<std::ptrdiff_t>(mjd.size());
+    const auto it = std::upper_bound(mjd.begin(), mjd.end(), x);
+    const std::ptrdiff_t j = (it - mjd.begin()) - 1;
+    if (j < 0 || j == n - 1) return interp(x, mjd, dut1);
+    const auto k = static_cast<size_t>(j);
+    const double step = std::round(dut1[k + 1] - dut1[k]);
+    if (step == 0.0 || mjd[k] == x) return interp(x, mjd, dut1);
+    const double w = (x - mjd[k]) / (mjd[k + 1] - mjd[k]);
+    return dut1[k] + w * (dut1[k + 1] - step - dut1[k]);
+}
+
 // ``line[a:b].strip()`` (Python slice semantics: clipped to the line).
 std::string field(const std::string& line, std::size_t a, std::size_t b) {
     if (a >= line.size()) return {};
@@ -145,7 +169,7 @@ Eop interpolate(double mjd_utc) {
     // Interpolate in arcseconds, then scale to radians.
     return {interp(mjd_utc, t->mjd, t->xp) * constants::ARCSEC_TO_RAD,
             interp(mjd_utc, t->mjd, t->yp) * constants::ARCSEC_TO_RAD,
-            interp(mjd_utc, t->mjd, t->dut1)};
+            interp_dut1(mjd_utc, t->mjd, t->dut1)};
 }
 
 }  // namespace eclipse::eop

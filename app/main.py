@@ -93,15 +93,19 @@ def _build_model(epoch: str, window_hours: float, frame: str) -> BesselianModel:
     if frame not in EARTH_FRAMES:
         raise HTTPException(status_code=400, detail=f"frame must be one of {EARTH_FRAMES}")
     try:
+        t0_utc = normalize_utc(epoch)
+    except ValueError as exc:
+        # Not an ISO-8601 epoch (the single accepted format). Only the parsing
+        # maps to "invalid epoch": a ValueError from the core below is a bug and
+        # surfaces as a 500 (item C5), as in /eclipses.
+        raise HTTPException(status_code=400, detail=f"invalid epoch: {exc}") from exc
+    try:
         return BesselianModel(
-            t0_utc=epoch, earth_frame=frame, half_window_hours=window_hours
+            t0_utc=t0_utc, earth_frame=frame, half_window_hours=window_hours
         )
     except FileNotFoundError as exc:
         # Kernels not downloaded yet.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        # normalize_utc: not an ISO-8601 epoch (the single accepted format).
-        raise HTTPException(status_code=400, detail=f"invalid epoch: {exc}") from exc
     except SpiceError as exc:
         # Missing body / kernel coverage (SPICE); narrowed from a blanket
         # `except Exception` so genuine bugs surface (M2).

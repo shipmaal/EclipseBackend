@@ -70,7 +70,9 @@ class BesselianModel:
     the IERS era, UT1 + the [Espenak] delta-T model outside it).
     ``half_window_hours`` / ``step_hours`` set the polynomial fit's sampling
     (``_eclipse.fit_polynomials``) and the initial search window of the local
-    circumstances.
+    circumstances. The fitted cubic needs at least 4 samples, so a window
+    shorter than 1.5 steps is sampled at ``2 * half_window_hours / 3`` instead
+    (4 samples; ``step_hours`` holds the step used, item C5).
     """
 
     t0_utc: str
@@ -84,6 +86,7 @@ class BesselianModel:
         self.t0_utc = normalize_utc(self.t0_utc)
         load_kernels()
         self.et0 = _eclipse.utc_to_et(self.t0_utc)
+        self.step_hours = min(float(self.step_hours), 2.0 * float(self.half_window_hours) / 3.0)
         p = _eclipse.fit_polynomials(self.et0, self.earth_frame, float(self.half_window_hours),
                                      float(self.step_hours))
         self.polynomials = BesselianPolynomials(t0_utc=self.t0_utc, **p)

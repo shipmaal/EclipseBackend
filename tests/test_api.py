@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from app.core import default_metakernel
@@ -180,3 +182,36 @@ def test_circumstances_elev_parameter(client):
     assert up["central_duration_s"] == pytest.approx(36.6, abs=0.1)
     for bad in (-501.0, 9001.0):
         assert client.get("/circumstances", params={**params, "elev": bad}).status_code == 422
+
+
+@pytest.mark.parametrize("window_hours", [0.5, 1.0, 1.25])
+def test_short_fit_windows_are_valid(client, window_hours):
+    """Every window the API accepts can be fitted (item C5): below 1.5 h the
+    sampling step shrinks to 2 hw / 3 (4 samples for the cubic). Before, these
+    were 400 "invalid epoch: ... fewer than 4 samples"."""
+    r = client.get("/besselian", params={"epoch": "2024-04-08T18:17:20",
+                                         "window_hours": window_hours})
+    assert r.status_code == 200, r.text
+    x = r.json()["polynomials"]["x"]
+    assert len(x) == 4 and all(math.isfinite(v) for v in x)
+    r = client.get("/circumstances", params={"epoch": "2024-04-08T18:17:20", "lat": 32.0,
+                                             "lon": -104.0, "window_hours": 1.0})
+    assert r.status_code == 200, r.text
+
+
+def test_model_value_error_is_a_500_not_invalid_epoch(monkeypatch):
+    """Only epoch parsing is "invalid epoch" (item C5): a ValueError from the
+    model's computation is a bug and surfaces as a 500."""
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    def broken(*args, **kwargs):
+        raise ValueError("besselian::fit_polynomials: fewer than 4 samples in the window")
+
+    monkeypatch.setattr(main, "BesselianModel", broken)
+    c = TestClient(main.app, raise_server_exceptions=False)
+    r = c.get("/besselian", params={"epoch": "2024-04-08T18:17:20"})
+    assert r.status_code == 500
+    r = c.get("/besselian", params={"epoch": "2024 APR 08"})
+    assert r.status_code == 400 and "invalid epoch" in r.json()["detail"]

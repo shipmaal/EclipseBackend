@@ -379,3 +379,12 @@ TEST_CASE("unwrap_mu_deg parity: the unw records of circumstances_cases.txt, bit
     }
     CHECK(checked >= 4);
 }
+
+TEST_CASE("arange rejects zero / non-finite steps and huge lengths (C7)") {
+    using eclipse::numerics::arange;
+    const double inf = std::numeric_limits<double>::infinity();
+    CHECK_THROWS_AS(arange(0.0, 1.0, 0.0), std::invalid_argument);     // len = inf
+    CHECK_THROWS_AS(arange(0.0, inf, 1.0), std::invalid_argument);
+    CHECK_THROWS_AS(arange(0.0, 1.0, 1e-12), std::invalid_argument);   // 1e12 samples
+    CHECK(arange(1.0, 0.0, 1.0).empty());
+}

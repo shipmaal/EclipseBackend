@@ -147,6 +147,8 @@ def central_line(
     """Geographic track of the shadow axis (central line) over a time range."""
     if end_hours <= start_hours:
         raise HTTPException(status_code=400, detail="end_hours must exceed start_hours")
+    if not math.isfinite(step_minutes):
+        raise HTTPException(status_code=400, detail="step_minutes must be finite")
     n_points = _arange_len(start_hours, end_hours + 1e-9, step_minutes / 60.0)
     if n_points > MAX_TRACK_POINTS:
         raise HTTPException(

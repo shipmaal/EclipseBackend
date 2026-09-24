@@ -242,3 +242,10 @@ def test_openmp_entry_points_hold_the_parallel_lock(client, monkeypatch):
     r = client.get("/central-line", params={"epoch": "2024-04-08T18:17:20"})
     assert r.status_code == 200, r.text
     assert held == [True, True]
+
+
+def test_central_line_infinite_step_is_a_400(client):
+    """step_minutes=inf passed the gt=0 check and returned an empty track (C7)."""
+    r = client.get("/central-line", params={"epoch": "2024-04-08T18:00:00",
+                                            "step_minutes": "inf"})
+    assert r.status_code == 400

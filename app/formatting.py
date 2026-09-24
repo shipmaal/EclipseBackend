@@ -29,11 +29,11 @@ def format_offset(t_hours: float) -> str:
 
 
 def format_clock(t0_utc: str, t_hours: float) -> str:
-    """Absolute UTC wall-clock ``HH:MM:SS`` at ``t_hours`` from ISO ``t0_utc`` (item R4).
+    """Absolute UTC wall-clock ``HH:MM:SS`` at ``t_hours`` from ISO ``t0_utc`` (item R4),
+    rounded to the nearest second (``strftime`` alone truncates: -0.5 s on
+    average, item C7).
 
     ``datetime`` handles date rollover across midnight.
     """
-    return (
-        datetime.fromisoformat(t0_utc).replace(tzinfo=timezone.utc)
-        + timedelta(hours=t_hours)
-    ).strftime("%H:%M:%S")
+    t = datetime.fromisoformat(t0_utc).replace(tzinfo=timezone.utc) + timedelta(hours=t_hours)
+    return (t + timedelta(microseconds=500_000)).replace(microsecond=0).strftime("%H:%M:%S")

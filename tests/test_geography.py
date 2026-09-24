@@ -186,3 +186,11 @@ def test_normalize_utc():
     assert normalize_utc("2024-04-08T18:17:15.5") == "2024-04-08T18:17:15.500"
     with pytest.raises(ValueError):
         normalize_utc("2024 APR 08 18:17:15")  # SPICE-only format, rejected up front
+
+
+def test_format_clock_rounds_to_the_nearest_second():
+    """Contact clocks round (item C7); strftime alone truncated 12:00:00.7 to
+    12:00:00, half a second early on average."""
+    assert format_clock("2024-04-08T12:00:00", 0.7 / 3600) == "12:00:01"
+    assert format_clock("2024-04-08T12:00:00", 0.4 / 3600) == "12:00:00"
+    assert format_clock("2024-04-08T23:59:59", 0.6 / 3600) == "00:00:00"

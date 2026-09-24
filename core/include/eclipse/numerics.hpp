@@ -60,16 +60,24 @@ inline double np_clip(double v, double lo, double hi) {
     return std::min(std::max(v, lo), hi);
 }
 
+/// The longest ``arange`` [samples] (800 MB of doubles).
+inline constexpr double ARANGE_MAX = 1e8;
+
 /// ``np.arange(start, stop, step)`` for float64 — NumPy's exact fill rule
 /// (``PyArray_ArangeObj`` + ``DOUBLE_fill``): ``n = ceil((stop - start) / step)``,
 /// ``t[0] = start``, ``t[1] = start + step``, and for ``i >= 2``
 /// ``t[i] = start + i * delta`` with ``delta = (start + step) - start`` — NOT
 /// ``start + i * step``, which differs in the last bit (for
 /// ``arange(-5, 5 + 1e-9, 1/60)`` delta is 0.016666666666666607). (numerical)
+/// Throws ``std::invalid_argument`` for a NaN or infinite length (a zero or
+/// non-finite step, non-finite ends) or one over ``ARANGE_MAX`` (item C7:
+/// the cast of such a length to ``size_t`` was undefined behaviour).
 inline std::vector<double> arange(double start, double stop, double step) {
     const double len = std::ceil((stop - start) / step);
     if (std::isnan(len)) throw std::invalid_argument("arange: NaN length");
     if (!(len > 0.0)) return {};
+    if (!(len <= ARANGE_MAX))
+        throw std::invalid_argument("arange: length is infinite or exceeds ARANGE_MAX");
     const auto n = static_cast<std::size_t>(len);
     std::vector<double> t(n);
     t[0] = start;

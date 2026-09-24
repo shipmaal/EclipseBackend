@@ -86,17 +86,27 @@ constexpr SpiceInt kTraceLen = 1841;
 // an exception — the C++ form of spiceypy's ``@spice_error_check``. ``f`` may
 // make several CSPICE calls; in RETURN mode the first failure short-circuits
 // the rest, so one check at the end is exact.
+// If ``f`` throws a C++ exception after a CSPICE call failed, the toolkit's
+// error state is reset before it propagates, so the next caller never sees a
+// stale failure (item C7).
 template <class F>
 auto spice_call(F&& f) {
     std::scoped_lock lock(spice_mutex());
     ensure_return_mode();
-    if constexpr (std::is_void_v<decltype(f())>) {
-        f();
-        if (failed_c()) throw_spice_error();
-    } else {
-        auto result = f();
-        if (failed_c()) throw_spice_error();
-        return result;
+    try {
+        if constexpr (std::is_void_v<decltype(f())>) {
+            f();
+            if (failed_c()) throw_spice_error();
+        } else {
+            auto result = f();
+            if (failed_c()) throw_spice_error();
+            return result;
+        }
+    } catch (const spice_error&) {
+        throw;  // throw_spice_error has already reset
+    } catch (...) {
+        if (failed_c()) reset_c();
+        throw;
     }
 }
 

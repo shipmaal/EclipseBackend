@@ -328,8 +328,13 @@ double refine_maximum(std::span<const double> t, std::span<const double> mag, st
 
 // -------------------------------------------------------- local circumstances
 
-std::vector<double> profile_g(const Model& model, double lat_deg, double lon_deg,
-                              std::span<const double> t_hours, double height_m) {
+namespace {
+
+// ``profile_g`` and, when ``r_s_out`` is given, the reference cone's solar
+// radius (L1' + L2') / 2 [Earth radii] at each instant.
+std::vector<double> profile_g_impl(const Model& model, double lat_deg, double lon_deg,
+                                   std::span<const double> t_hours, double height_m,
+                                   std::vector<double>* r_s_out) {
     if (!model.elements_ref_at || !model.profiles_at)
         throw std::invalid_argument("profile_g: the model has no limb-profile hooks");
     const std::size_t n = t_hours.size();
@@ -343,6 +348,7 @@ std::vector<double> profile_g(const Model& model, double lat_deg, double lon_deg
     // Per instant: the Python's masked g_total / g_annular calls, one at a time
     // (each instant is independent, so the grouping does not change a bit).
     std::vector<double> out(n);
+    if (r_s_out != nullptr) r_s_out->assign(n, 0.0);
     for (std::size_t i = 0; i < n; ++i) {
         const ellipsoid::Fund f = ellipsoid::geo_to_fund_one(o, lon_deg, aux[i], e.mu[i]);
         const double px = f.xi - e.x[i];
@@ -351,12 +357,20 @@ std::vector<double> profile_g(const Model& model, double lat_deg, double lon_deg
         const double L2p = e.l2[i] - f.zeta * e.tan_f2[i];
         const double r_s[1] = {(L1p + L2p) / 2.0};
         const double r_m[1] = {(L1p - L2p) / 2.0};
+        if (r_s_out != nullptr) (*r_s_out)[i] = r_s[0];
         const double pxs[1] = {px}, pys[1] = {py};
         const std::span<const double> p(prof.data() + i * nb, nb);
         out[i] = L2p < 0.0 ? limb::g_total(pxs, pys, r_s, r_m, p)[0]
                            : limb::g_annular(pxs, pys, r_s, r_m, p)[0];
     }
     return out;
+}
+
+}  // namespace
+
+std::vector<double> profile_g(const Model& model, double lat_deg, double lon_deg,
+                              std::span<const double> t_hours, double height_m) {
+    return profile_g_impl(model, lat_deg, lon_deg, t_hours, height_m, nullptr);
 }
 
 ProfileContacts profile_contacts(const Model& model, double lat_deg, double lon_deg, double t_lo,
@@ -439,14 +453,46 @@ LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg,
             central_phase = false;
         }
     }
+    const double tmax = refine_maximum(t, s.mag, imax);
+    // Quantities at the refined maximum: a fresh 1-instant series.
+    const double t1[1] = {tmax};
+    const Series sx = model_series(model, lat_deg, lon_deg, height_m, t1, "local_circumstances");
+    const double m_x = sx.m[0], L1_x = sx.L1p[0], L2_x = sx.L2p[0];
+    // A central phase shorter than the grid step can fall between samples:
+    // no sample is inside the umbra / antumbra, but the refined maximum is
+    // (item C3; within a few hundred metres of a limit). Its contacts are then
+    // bracketed by the maximum and the samples on either side of it, which
+    // are outside (m - |L2'| > 0), so the reported type and magnitude agree.
+    if (!central_phase && m_x < std::abs(L2_x)) {
+        std::size_t ia = 0, ib = n - 1;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (t[i] < tmax) ia = i;
+            if (t[i] > tmax) {
+                ib = i;
+                break;
+            }
+        }
+        const bool out_a = s.m[ia] - std::abs(s.L2p[ia]) > 0.0 && t[ia] < tmax;
+        const bool out_b = s.m[ib] - std::abs(s.L2p[ib]) > 0.0 && t[ib] > tmax;
+        if (out_a && out_b) {
+            t_lo.push_back(t[ia]);
+            t_hi.push_back(tmax);
+            is_central.push_back(1);
+            t_lo.push_back(tmax);
+            t_hi.push_back(t[ib]);
+            is_central.push_back(1);
+            central_phase = true;
+        }
+    }
     const std::vector<double> times =
         refine_contacts(model, lat_deg, lon_deg, t_lo, t_hi, is_central, height_m);
     const double c1 = times[0], c4 = times[1];
-    const double tmax = refine_maximum(t, s.mag, imax);
     const double nan = std::numeric_limits<double>::quiet_NaN();
     double c2 = central_phase ? times[2] : nan;
     double c3 = central_phase ? times[3] : nan;
 
+    const bool mean_central = central_phase;
+    bool searched = false;
     if (profile) {
         bool search;
         double lo, hi;
@@ -468,16 +514,39 @@ LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg,
         } else {
             central_phase = false;
         }
+        searched = search;
     }
 
-    // Quantities at the refined maximum: a fresh 1-instant series.
-    const double t1[1] = {tmax};
-    const Series sx = model_series(model, lat_deg, lon_deg, height_m, t1, "local_circumstances");
-    const double m_x = sx.m[0], L1_x = sx.L1p[0], L2_x = sx.L2p[0];
     // Eclipse magnitude [Espenak]: the Moon/Sun apparent diameter ratio when
     // central, the covered fraction of the Sun's diameter when partial.
-    const double magnitude =
+    double magnitude =
         central_phase ? (L1_x - L2_x) / (L1_x + L2_x) : (L1_x - m_x) / (L1_x + L2_x);
+    double obscur = obscuration(L1_x, L2_x, m_x);
+    if (profile) {
+        // Keep magnitude and obscuration consistent with the profile's verdict
+        // (item C3). The type is total on the umbral side (L2' < 0).
+        if (central_phase && !mean_central && L2_x < 0.0) {
+            // Totality through the profile where the mean limb has none: the
+            // whole Sun is covered.
+            obscur = 1.0;
+        } else if (!central_phase && searched && L2_x < 0.0) {
+            // Partial through the profile on the umbral side: the covered
+            // fraction of the Sun's diameter along the direction where the most
+            // of it shows, 1 - G_T / (2 R_s) with G_T the profile contact
+            // function at maximum (docs/LIMB_PROFILE.md sec. 3.3). For a smooth
+            // limb G_T = m + R_s - r_M, and this is [Espenak]'s partial
+            // magnitude (L1' - m) / (L1' + L2') (in the profile's reference
+            // cone); inside the mean umbra it stays below 1, where the
+            // mean-limb formula gave > 1. (G_T < 0 at maximum
+            // with no central phase found is clamped to 1: the 0.5-s search
+            // missed a bead, roadmap item A1.) The obscuration stays the mean
+            // limb's: a bead's area is ~1e-6 of the disk, below the 1e-4 the
+            // API reports.
+            std::vector<double> r_s;
+            const double g = profile_g_impl(model, lat_deg, lon_deg, t1, height_m, &r_s)[0];
+            magnitude = 1.0 - std::max(g, 0.0) / (2.0 * r_s[0]);
+        }
+    }
 
     // Events C1, max, C4 (+ C2, C3): one sub-solar evaluation for all of them.
     const std::size_t n_events = central_phase ? 5 : 3;
@@ -509,7 +578,7 @@ LocalRaw local_circumstances(const Model& model, double lat_deg, double lon_deg,
     }
     r.t_max = tmax;
     r.magnitude = magnitude;
-    r.obscuration = obscuration(L1_x, L2_x, m_x);
+    r.obscuration = obscur;
     r.L2_x = L2_x;
     // The cone geometry continues through the Earth; a night-side observer is
     // "inside" it but sees nothing.

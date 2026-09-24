@@ -113,6 +113,7 @@ struct MaxAbs {
 // ("day", altitude +90) or its antipode ("night", -90).
 struct Synthetic {
     double l1 = 0.55, l2 = -0.012, tan_f = 0.0046, y = 0.0;
+    double t_off = 0.0;  // hours: the closest approach's offset from t = 0
     double ss_lon = 0.0, ss_lat = 0.0;
     mutable int element_calls = 0, sub_solar_calls = 0;
     mutable std::vector<std::size_t> element_sizes;
@@ -125,7 +126,7 @@ struct Synthetic {
             eclipse::Elements e;
             e.reserve(t.size());
             for (const double ti : t) {
-                e.x.push_back(std::sin(15.0 * ti * DEG_TO_RAD) + 0.5 * ti);
+                e.x.push_back(std::sin(15.0 * ti * DEG_TO_RAD) + 0.5 * (ti - t_off));
                 e.y.push_back(y);
                 e.z.push_back(0.0);
                 e.d.push_back(0.0);
@@ -351,14 +352,36 @@ TEST_CASE("local_circumstances on the synthetic crossing: total, day side") {
         CHECK(r.alt_deg[k] == 90.0);
         CHECK_FALSE(r.below[k]);
     }
-    // Call counts: 1 grid (no widening) + 1 f(t_lo) + 30 bisection midpoints
-    // + 1 at t_max; sub-solar once (the five event times in one call).
+    // Call counts: 1 grid (no widening) + 1 at t_max (before the contacts, which
+    // may need it to bracket a central phase between samples) + 1 f(t_lo) + 30
+    // bisection midpoints; sub-solar once (the five event times in one call).
     CHECK(syn.element_calls == 33);
     CHECK(syn.sub_solar_calls == 1);
     REQUIRE(syn.element_sizes.size() == 33);
     CHECK(syn.element_sizes[0] == 601);  // arange(-2.5, 2.5 + 1e-9, 1/120)
-    for (std::size_t k = 1; k <= 31; ++k) CHECK(syn.element_sizes[k] == 4);  // [C1, C4, C2, C3]
-    CHECK(syn.element_sizes[32] == 1);
+    CHECK(syn.element_sizes[1] == 1);    // t_max
+    for (std::size_t k = 2; k <= 32; ++k) CHECK(syn.element_sizes[k] == 4);  // [C1, C4, C2, C3]
+}
+
+TEST_CASE("local_circumstances: a central phase between two grid samples (C3)") {
+    // The axis passes y = 0.016585 Earth radii from the observer at 0.5 radii/h,
+    // closest 15 s after t = 0, so the umbra (|L2'| = 0.0166) is entered for
+    // about 2 sqrt(0.0166^2 - y^2) / 0.5 h ~ 10 s, between the samples at 0 and
+    // 30 s (both outside it). Before item C3 this came back non-central with a
+    // partial "magnitude" > 1.
+    Synthetic syn;
+    syn.y = 0.016585;
+    syn.t_off = 15.0 / 3600.0;
+    const circ::LocalRaw r = circ::local_circumstances(syn.model(2.5), 0.0, 0.0);
+    REQUIRE(r.geometric);
+    CHECK(r.central);
+    CHECK(r.c2 < r.t_max);
+    CHECK(r.t_max < r.c3);
+    const double dur_s = (r.c3 - r.c2) * 3600.0;
+    CHECK(dur_s > 5.0);
+    CHECK(dur_s < 15.0);
+    CHECK(r.magnitude > 1.0);  // the diameter ratio, as for any total
+    CHECK(r.obscuration == 1.0);
 }
 
 TEST_CASE("local_circumstances on the synthetic crossing: annular") {
@@ -404,8 +427,9 @@ TEST_CASE("local_circumstances: partial observer, night side, axis miss") {
             CHECK(std::isnan(r.az_deg[k]));
             CHECK_FALSE(r.below[k]);
         }
-        // Two brackets only: [C1, C4].
-        for (std::size_t k = 1; k <= 31; ++k) CHECK(syn.element_sizes[k] == 2);
+        // t_max, then two brackets only: [C1, C4].
+        CHECK(syn.element_sizes[1] == 1);
+        for (std::size_t k = 2; k <= 32; ++k) CHECK(syn.element_sizes[k] == 2);
     }
     SECTION("night: the geometry holds but the Sun is down at every event") {
         Synthetic syn;
